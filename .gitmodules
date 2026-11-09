@@ -1,0 +1,3 @@
+[submodule "vendor/sesame-csm-official"]
+	path = vendor/sesame-csm-official
+	url = https://github.com/SesameAILabs/csm.git

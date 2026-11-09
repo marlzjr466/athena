@@ -1,0 +1,32 @@
+.hands-free-status {
+  position: absolute;
+  z-index: 5;
+  top: 2px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 12px);
+  min-height: 22px;
+  padding: 3px 6px 3px 8px;
+  transform: translateX(-50%);
+  border: 1px solid color-mix(in srgb, var(--cyan, #6be8ff) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, #07111b 82%, transparent);
+  color: #d7f8ff;
+  font: 500 10px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: 0 3px 16px #0008;
+  pointer-events: auto;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+.hands-free-status-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #60efc0; box-shadow: 0 0 8px #60efc0a0; }
+.hands-free-listening .hands-free-status-dot { background: #ffcf6e; box-shadow: 0 0 8px #ffcf6eaa; }
+.hands-free-processing .hands-free-status-dot, .hands-free-speaking .hands-free-status-dot { background: var(--cyan, #6be8ff); box-shadow: 0 0 8px #6be8ffaa; }
+.hands-free-error .hands-free-status-dot { background: #ff727b; box-shadow: 0 0 8px #ff727baa; }
+.hands-free-status button { display: grid; width: 18px; height: 18px; flex: 0 0 18px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: #ffffff12; color: #b9d8e4; cursor: pointer; }
+.hands-free-status button:hover { color: #ff9298; background: #ff66751c; }
+.hands-free-status .hands-free-diagnostic { width: auto; flex: none; padding: 0 7px; border-radius: 999px; color: #b9d8e4; font: inherit; }
+.hands-free-status .hands-free-diagnostic[aria-pressed="true"] { color: #07111b; background: var(--cyan, #6be8ff); }
+.hands-free-status .hands-free-diagnostic:disabled { opacity: .55; cursor: default; }
+.hands-free-status button:focus-visible { outline: 2px solid var(--cyan, #6be8ff); outline-offset: 2px; }

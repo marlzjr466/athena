@@ -1,0 +1,72 @@
+.ai-key-field { padding: 22px 24px; }
+.ai-key-field label { display: block; margin-bottom: 12px; font-size: 14px; }
+.ai-key-field label span { color: var(--muted); }
+.ai-key-field input, .ai-key-mask { width: 100%; padding: 13px 15px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; }
+.ai-key-mask { letter-spacing: 2px; }
+.ai-key-field .card-description { margin-top: 12px; line-height: 1.7; }
+.ai-actions { padding: 8px 24px 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+.ai-status { white-space: nowrap; font-size: 13px; }
+.ai-active { color: var(--accent); }
+.ai-feedback { padding: 0 24px 20px; min-height: 40px; font-size: 13px; line-height: 1.6; }
+.ai-feedback[role=alert] { color: #ffb7a5; }
+.chatgpt-account-list { display: grid; gap: 12px; margin-top: 12px; padding: 0 24px 16px; }
+.chatgpt-account-card, .chatgpt-pending-card { min-width: 0; border: 1px solid var(--border, rgba(255,255,255,.09)); border-radius: 14px; background: var(--surface-raised, rgba(255,255,255,.025)); padding: 16px; }
+.chatgpt-account-card.is-active { border-color: color-mix(in srgb, var(--accent, #65d9f5) 52%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #65d9f5) 14%, transparent) inset; }
+.chatgpt-account-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.chatgpt-account-card__identity { display: grid; flex: 1 1 auto; gap: 4px; min-width: 0; }
+.chatgpt-account-card__identity textarea, .chatgpt-pending-label input { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; border: 0; outline: none; background: transparent; color: var(--text-primary, inherit); font: inherit; font-weight: 600; }
+.chatgpt-account-card__identity textarea { min-height: 1.35em; field-sizing: content; resize: none; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.35; }
+.chatgpt-account-card__identity textarea:focus-visible, .chatgpt-pending-label input:focus-visible { box-shadow: 0 2px 0 var(--accent, #65d9f5); }
+.chatgpt-account-card__identity span, .chatgpt-account-note { color: var(--text-muted, #a5a5aa); font-size: 12px; overflow-wrap: anywhere; }
+.chatgpt-account-card__controls, .chatgpt-account-card__models { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.chatgpt-account-card__models > :first-child { min-width: 220px; }
+.chatgpt-account-enabled { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; font-size: 13px; }
+.chatgpt-account-enabled input { accent-color: var(--accent, #65d9f5); }
+.chatgpt-pending-card { margin: 0 24px 16px; border-color: color-mix(in srgb, var(--accent, #65d9f5) 45%, transparent); }
+.chatgpt-pending-card p { margin: 8px 0 0; color: var(--text-muted, #a5a5aa); font-size: 13px; line-height: 1.55; }
+.chatgpt-pending-card .chatgpt-account-warning { color: var(--warning, #f0c674); }
+.chatgpt-pending-label { display: grid; gap: 6px; margin-top: 14px; font-size: 12px; }
+.chatgpt-pending-label input { border-bottom: 1px solid var(--border, rgba(255,255,255,.12)); padding: 7px 0; }
+.chatgpt-pending-actions { padding: 14px 0 0; }
+.chatgpt-pending-card .chatgpt-account-note { margin-top: 12px; }
+@media (max-width: 700px) { .chatgpt-account-card__heading { flex-direction: column; } .chatgpt-account-card__controls { align-items: stretch; } .chatgpt-account-enabled { width: 100%; } }
+.ai-removal { padding: 0 24px 20px; font-size: 13px; line-height: 1.7; }
+.ai-removal button { margin: 8px 10px 0 0; }
+.ai-settings .custom-select { width: min(330px, 100%); max-width: 330px; }
+.local-ai-presets { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; padding: 20px 24px 8px; }
+.local-ai-preset { min-height: 94px; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 7px; padding: 14px; text-align: left; color: var(--muted); background: var(--raised); border: 1px solid transparent; border-radius: 12px; cursor: pointer; transition: border-color .18s ease, background .18s ease, transform .18s ease, color .18s ease; }
+.local-ai-preset:hover, .local-ai-preset:focus-visible { color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, transparent); transform: translateY(-1px); outline: none; }
+.local-ai-preset:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.local-ai-preset.is-selected { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--raised)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent), 0 8px 20px rgba(0, 197, 255, .08); }
+.local-ai-preset-label { font-size: 13px; font-weight: 650; }
+.local-ai-preset-description { font-size: 11px; line-height: 1.45; color: var(--muted); }
+.local-ai-applied-note { margin: 7px 24px 8px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.local-ai-allocation-alert { margin: 8px 24px 12px; padding: 16px 18px 10px; border-radius: 12px; border: 1px solid #e2a15a; background: color-mix(in srgb, #c47b2b 22%, var(--raised)); box-shadow: inset 4px 0 0 #e2a15a; }
+.local-ai-allocation-alert strong { display: block; margin-bottom: 8px; color: #ffd7a1; font-size: 15px; }
+.local-ai-allocation-alert p, .local-ai-usage p, .local-ai-measure p, .local-ai-engine p, .local-ai-engine-note { margin: 0 0 6px; color: var(--text); font-size: 13px; line-height: 1.45; }
+.local-ai-usage, .local-ai-measure, .local-ai-engine { margin: 8px 24px 12px; }
+.local-ai-engine strong, .local-ai-usage { display: block; }
+.local-ai-engine { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.local-ai-engine-note { margin: 8px 24px 12px; }
+@media (max-width: 900px) { .local-ai-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ai-settings .privacy-banner p svg { vertical-align: middle; }
+.generation-settings label { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 16px 0 8px; }
+.generation-settings input { width: 150px; padding: 10px; color: var(--text); background: var(--raised); border: 0; border-radius: 8px; }
+.generation-settings p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0 16px; }
+.ai-context-settings fieldset { border: 0; padding: 0; min-width: 0; }
+.ai-context-settings label { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 16px 0; text-align: left; }
+.ai-context-settings input[type=number] { width: 150px; padding: 10px; background: var(--raised); color: var(--text); border: 0; border-radius: 8px; }
+.ai-context-settings input { accent-color: var(--accent); }
+.ai-context-settings p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.ai-context-settings button { margin-top: 12px; padding: 10px 16px; border-radius: 8px; background: var(--raised); }
+.ai-provider-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 10px; padding: 20px 24px; }
+.ai-provider-note { margin: 0 24px 20px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.ai-provider-card { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-height: 82px; padding: 14px; border: 0; border-radius: 12px; background: var(--raised); color: var(--muted); text-align: left; cursor: pointer; transition: background .18s ease, color .18s ease; }
+.ai-provider-card strong { color: var(--text); font-size: 12px; }
+.ai-provider-card span { font-size: 10px; line-height: 1.45; }
+.ai-provider-card:hover, .ai-provider-card:focus-visible { background: #19313d; outline: none; }
+.ai-provider-card.is-selected { background: #174052; color: #b9e4ef; box-shadow: inset 3px 0 0 var(--cyan); }
+.ai-capability-grid { display: grid; gap: 8px; }
+.ai-capability-row { display: grid; grid-template-columns: minmax(180px, 1.2fr) 1fr 1fr; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border-subtle, rgba(140,170,210,.18)); border-radius: 10px; color: var(--text-secondary, #9aa9bd); }
+.ai-capability-row strong { color: var(--text-primary, #edf4ff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) { .ai-capability-row { grid-template-columns: 1fr; gap: 4px; } }

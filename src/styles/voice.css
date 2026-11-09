@@ -1,0 +1,17 @@
+.voice-input { display: flex; align-items: center; }
+.voice-button { position: relative; touch-action: none; user-select: none; }
+.voice-button.voice-active { color: var(--cyan); background: var(--glass); }
+.voice-button.voice-auto-send:not(.voice-active) { color: var(--cyan); }
+.voice-auto-send-indicator { position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 7px color-mix(in srgb, var(--cyan) 75%, transparent); pointer-events: none; }
+.voice-wave { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; gap: 2px; width: auto; min-width: 116px; height: 28px; padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 10%, transparent); pointer-events: none; }
+.voice-wave span { width: 2px; min-height: 4px; height: var(--voice-height, 4px); border-radius: 999px; background: var(--cyan); opacity: .9; transition: height .08s ease-out; }
+.voice-notice { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 12px; background: var(--raised); color: var(--text); font-size: 12px; box-shadow: 0 5px 20px #0005; z-index: 4; }
+.voice-notice > span { flex: 1; }
+.voice-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ai-chat-composer { position: relative; }
+.chat-composer-tools { flex: 1 1 auto; min-width: 0; }
+.chat-composer-tools .voice-input.is-active { flex: 1 1 auto; min-width: 0; }
+.chat-composer-tools .voice-input.is-active .voice-wave { min-width: 0; }
+.voice-shortcut-setting { display: flex; align-items: center; gap: 8px; }
+.voice-shortcut-setting input { width: min(240px, 28vw); padding: 8px 10px; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 7px; }
+.voice-shortcut-setting input:focus { outline: none; }

@@ -1,0 +1,5 @@
+# Athena Youthful Chatterbox reference
+
+`athena-us-amy-reference.mp3` is the US-English synthetic Amy sample distributed in the [Piper voices repository](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/amy/medium/samples). The [voice model card](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/amy/medium/MODEL_CARD) identifies it as `en_US` and describes the voice's training provenance. The repository lists an MIT license; its underlying Mimic 3 voice data has separate licensing described by [MycroftAI](https://github.com/MycroftAI/mimic3-voices/blob/master/LICENSE). Retain this attribution when redistributing the sample.
+
+Athena copies the sample into its protected local profile directory on first use. Chatterbox Turbo's local decoder resamples it for conditioning. It is used only for Chatterbox Turbo; no sample or synthesized audio is sent to a speech service. The audio is not a recording of a child. Accent and apparent age remain perceptual properties of the model output and cannot be guaranteed by the reference alone.

@@ -1,0 +1,142 @@
+{
+  "name": "athena-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Your intelligent companion, alive on your desktop.",
+  "author": "Athena",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "out/main/main.js",
+  "scripts": {
+    "setup:local-signing": "node scripts/setup-local-signing.mjs",
+    "dev": "node scripts/build-screen-ocr.mjs && node scripts/prepare-dev.mjs && electron-vite dev --entry out-dev",
+    "build": "node scripts/build-screen-ocr.mjs && node scripts/copy-vad-assets.mjs && npm run typecheck && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "verify:build-isolation": "node scripts/verify-build-isolation.mjs",
+    "test:watch": "vitest",
+    "test:desktop": "npm run build && playwright test",
+    "generate:icon": "env -u ELECTRON_RUN_AS_NODE electron scripts/generate-icon.cjs",
+    "package": "npm run build && npm run generate:icon && electron-builder --mac --dir",
+    "dist:mac": "npm run build && npm run generate:icon && electron-builder --mac"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.28",
+    "@napi-rs/canvas": "^1.0.10",
+    "@napi-rs/keyring": "^2.1.0",
+    "@pixiv/three-vrm": "^3.5.5",
+    "@pixiv/three-vrm-animation": "^3.5.5",
+    "@react-three/drei": "^10.7.6",
+    "@react-three/fiber": "^9.3.0",
+    "@ricky0123/vad-web": "^0.0.30",
+    "framer-motion": "^12.23.24",
+    "ignore": "^7.0.12",
+    "jszip": "^3.10.2",
+    "lucide-react": "^0.468.0",
+    "mammoth": "^1.13.0",
+    "mermaid": "^12.1.0",
+    "onnxruntime-web": "^1.22.0",
+    "openai": "^7.30.0",
+    "pdfjs-dist": "^6.4.299",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "three": "^0.180.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.1.12",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@electron/osx-sign": "^1.3.3",
+    "@playwright/test": "^1.56.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^22.18.10",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/three": "^0.180.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^4.0.1",
+    "jsdom": "^27.0.1",
+    "tailwindcss": "^4.1.14",
+    "vite": "^7.1.10",
+    "vitest": "^5.0.3"
+  },
+  "overrides": {
+    "global-agent": "^4.1.3",
+    "katex": "^0.18.2",
+    "mammoth": {
+      "argparse": "^2.0.1"
+    }
+  },
+  "build": {
+    "appId": "com.athena.companion",
+    "productName": "Athena",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "voice-service",
+        "to": "voice-service",
+        "filter": [
+          "chatterbox.py",
+          "official_csm.py",
+          "higgs_tts.py",
+          "higgs_tokens.json",
+          "requirements-higgs.txt",
+          "assets/VOICE_REFERENCE.md",
+          "assets/athena-us-amy-reference.mp3"
+        ]
+      },
+      {
+        "from": "vendor/sesame-csm-official",
+        "to": "vendor/sesame-csm-official",
+        "filter": [
+          "generator.py",
+          "models.py",
+          "watermarking.py",
+          "requirements.txt",
+          "LICENSE",
+          "README.md"
+        ]
+      }
+    ],
+    "mac": {
+      "identity": "-",
+      "sign": "scripts/sign-local-mac.mjs",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Athena uses your microphone for chat dictation, optional local wake-word detection, and authorized meeting recording. Meeting audio is transcribed locally and retained only according to your meeting settings. Passive wake-word audio is not saved or uploaded.",
+        "NSAudioCaptureUsageDescription": "Athena captures system audio only when you explicitly enable authorized meeting recording.",
+        "NSScreenCaptureUsageDescription": "Athena captures only the screen context you authorize for meeting assistance."
+      },
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "darkModeSupport": true,
+      "extraResources": [
+        {
+          "from": "build/native/athena-screen-ocr",
+          "to": "native/athena-screen-ocr"
+        }
+      ]
+    },
+    "asarUnpack": [
+      "node_modules/@github/copilot-sdk-*/**"
+    ]
+  }
+}

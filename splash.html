@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'" />
+    <meta name="theme-color" content="#050810" />
+    <title>Athena — Starting</title>
+    <link rel="stylesheet" href="/src/startup/splash.css" />
+  </head>
+  <body>
+    <main class="splash" aria-label="Athena startup introduction">
+      <div class="splash-atmosphere" aria-hidden="true"></div>
+      <div class="splash-beam" aria-hidden="true"></div>
+      <div class="splash-orbit orbit-outer" aria-hidden="true"></div>
+      <div class="splash-orbit orbit-inner" aria-hidden="true"></div>
+      <div class="splash-floor" aria-hidden="true"></div>
+      <div class="splash-particles" aria-hidden="true"></div>
+      <header class="splash-header"><span class="splash-sigil" aria-hidden="true">Λ</span><span>ATHENA INTELLIGENCE</span></header>
+      <div class="splash-character" aria-label="Animated Athena character"></div>
+      <section class="splash-identity">
+        <p class="splash-eyebrow">YOUR INTELLIGENT COMPANION</p>
+        <h1 aria-label="Athena"><span>A</span><span>T</span><span>H</span><span>E</span><span>N</span><span>A</span></h1>
+        <div class="splash-rule" aria-hidden="true"></div>
+        <p class="splash-tagline">A little presence.<br /><strong>Infinite possibility.</strong></p>
+      </section>
+      <footer class="splash-footer"><span class="splash-status" role="status">A new moment begins.</span><span class="splash-footer-mark" aria-hidden="true">HERE WITH YOU.</span></footer>
+    </main>
+    <script type="module" src="/src/startup/splash.ts"></script>
+  </body>
+</html>

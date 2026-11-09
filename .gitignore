@@ -1,0 +1,43 @@
+node_modules/
+out/
+out-dev/
+release/
+coverage/
+test-results/
+playwright-report/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Local Codex conversations and nested repository metadata
+/Athena AI/
+
+# Extra local clone
+/athena/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# Generated artifacts and backups
+/artifacts/meeting-checkpoints/
+/artifacts/official-csm/
+/artifacts/sesame-verification/
+
+# Generated release diagnostics
+/release-meetings/builder-debug.yml
+
+# Local voice-service data - inspect before excluding
+/voice-service/higgs_tokens.json
+# Generated native executable
+/build/native/athena-screen-ocr

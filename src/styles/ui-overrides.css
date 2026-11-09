@@ -1,0 +1,113 @@
+/* Shared control language: consistent sizing and quiet focus states across surfaces. */
+button:not(.character-hit-area):not(.toggle),
+.button,
+.desktop-button,
+.chat-action,
+.agent-actions button {
+  border-radius: 8px;
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+
+.button,
+.desktop-button,
+.agent-actions button,
+.ai-context-settings button,
+.generation-settings button,
+.chat-choices .button {
+  min-height: 34px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Focus remains keyboard-operable without the bright border/outline treatment. */
+button:focus,
+button:focus-visible,
+button:active,
+input:focus,
+input:focus-visible,
+input:active,
+textarea:focus,
+textarea:focus-visible,
+textarea:active,
+select:focus,
+select:focus-visible,
+select:active {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+.conversation-workbench :is(button, select):focus-visible {
+  background-color: var(--raised);
+  text-decoration: none !important;
+}
+
+.custom-select-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  width: 100%;
+  padding-block: 8px;
+}
+
+.custom-select-field > span:first-child {
+  min-width: 0;
+}
+
+.settings-section {
+  margin-bottom: 32px;
+}
+
+.settings-section .settings-card {
+  padding-block: 8px;
+}
+
+.settings-section .setting-row {
+  padding-block: 20px;
+}
+
+.ai-context-settings,
+.generation-settings {
+  padding-block: 8px;
+}
+
+.ai-context-settings > p,
+.generation-settings > p {
+  margin-block: 16px;
+}
+
+.ai-context-settings > label,
+.ai-context-settings > div > label {
+  margin-block: 10px;
+  padding-block: 4px;
+}
+
+/* Keep every sub-agent picker aligned with the numeric controls beside it. */
+.ai-context-settings .custom-select {
+  flex: 0 0 150px;
+  width: 150px;
+  min-width: 150px;
+  max-width: 150px;
+}
+
+.ai-context-settings input:not([type='checkbox']):not([type='radio']) {
+  width: 150px;
+  min-width: 150px;
+  box-sizing: border-box;
+}
+
+.ai-context-settings > button,
+.ai-context-settings > fieldset > button,
+.generation-settings > button {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 620px) {
+  .custom-select-field {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}

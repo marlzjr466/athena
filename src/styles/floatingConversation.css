@@ -1,0 +1,23 @@
+.floating-conversation { display: flex; flex-direction: column; gap: 11px; margin-top: 15px; color: var(--text); }
+.floating-conversation-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 10px; color: var(--accent); }
+.floating-project { min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); text-align: right; }
+.floating-conversation-reply { min-height: 57px; max-height: 90px; overflow-y: auto; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--glass); }
+.floating-conversation-reply > span { display: block; color: var(--accent); font-size: 9px; margin-bottom: 5px; }
+.floating-conversation-reply p { font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.floating-conversation-activity { display: flex; justify-content: space-between; gap: 7px; color: var(--muted); font-size: 9px; }
+.floating-conversation-activity span:last-child { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.floating-conversation-approval { padding: 9px; border: 1px solid var(--accent); border-radius: 9px; background: var(--glass); font-size: 10px; }
+.floating-conversation-approval strong { color: var(--accent); }
+.floating-conversation-approval p { margin: 6px 0; white-space: pre-wrap; max-height: 55px; overflow-y: auto; line-height: 1.5; }
+.floating-conversation-approval > div { display: flex; gap: 7px; justify-content: flex-end; }
+.floating-conversation-approval button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.floating-conversation-approval button:last-child { background: var(--accent); color: var(--bg); }
+.floating-conversation form { border: 1px solid var(--border); border-radius: 11px; padding: 8px; background: var(--glass); }
+.floating-conversation textarea { display: block; width: 100%; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 11px; line-height: 1.45; }
+.floating-conversation textarea:focus, .floating-conversation textarea:focus-visible { outline: 0; box-shadow: none; }
+.floating-conversation-actions { display: flex; align-items: center; gap: 4px; }
+.floating-conversation-actions > button:last-child { margin-left: auto; color: var(--accent); }
+.floating-conversation-actions button { display: grid; place-items: center; min-width: 29px; min-height: 29px; border-radius: 7px; color: var(--muted); }
+.floating-conversation-actions button:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.floating-conversation-error { display: flex; align-items: center; gap: 8px; color: #ffb7a5; font-size: 10px; line-height: 1.4; }
+.floating-conversation-error button { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0; white-space: nowrap; }

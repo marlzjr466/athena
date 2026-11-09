@@ -1,0 +1,16 @@
+{
+  "entireFileUnchanged": true,
+  "coursesUnchanged": true,
+  "sourcesUnchanged": true,
+  "profilesUnchanged": true,
+  "sourceCount": 79,
+  "passedModules": [
+    "coding",
+    "git",
+    "jira",
+    "languages",
+    "frameworks",
+    "devops",
+    "other"
+  ]
+}

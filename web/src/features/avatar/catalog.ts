@@ -1,0 +1,25 @@
+// Original filenames are preserved except model-pose: an ASCII web filename avoids production URL normalization issues.
+export const animations: Record<string, { label: string; file?: string; loop?: boolean }> = {
+  idle: { label: 'Idle', file: 'idle.vrma', loop: true },
+  wave: { label: 'Wave', file: 'goodbye.vrma' }, // Matches the desktop controller's wave mapping.
+  greeting: { label: 'Greeting', file: 'VRMA_02(挨拶).vrma' },
+  jump: { label: 'Jump', file: 'jump.vrma' },
+  thinking: { label: 'Thinking', file: 'thinking.vrma', loop: true },
+  talking: { label: 'Talking', file: 'Talking.vrma', loop: true },
+  gestures: { label: 'Talking gestures', file: 'Talking_Gestures_Only.vrma', loop: true },
+  goodbye: { label: 'Goodbye', file: 'goodbye.vrma' },
+  bow: { label: 'Bow', file: 'bow.vrma' },
+  clapping: { label: 'Clap', file: 'clapping.vrma' },
+  blush: { label: 'Blush', file: 'blush.vrma' },
+  relax: { label: 'Relax', file: 'relax.vrma' },
+  'look-around': { label: 'Look around', file: 'look-around.vrma' },
+  sad: { label: 'Sad', file: 'sad.vrma' },
+  sleepy: { label: 'Sleepy', file: 'sleepy.vrma', loop: true },
+  surprised: { label: 'Surprised', file: 'surprised.vrma' },
+  angry: { label: 'Angry', file: 'angry.vrma' },
+  'show-full-body': { label: 'Full body', file: 'VRMA_01(全身を見せる).vrma' },
+  'peace-sign': { label: 'Peace', file: 'VRMA_03(Vサイン).vrma' },
+  'shooting-gesture': { label: 'Finger gesture', file: 'VRMA_04(撃つ).vrma' },
+  'model-pose': { label: 'Model pose', file: 'model-pose.vrma' },
+  'squat-exercise': { label: 'Stretch', file: 'VRMA_07(屈伸運動).vrma' },
+};

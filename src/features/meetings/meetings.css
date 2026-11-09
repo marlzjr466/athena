@@ -1,0 +1,118 @@
+.meeting{color:#d9e8f4;background:#081320;border:1px solid #234155;border-radius:18px;font:13px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;overflow:hidden;--cyan:#62e1ec}
+.meeting-page-shell{display:flex;flex-direction:column;height:calc(100vh - 66px);max-height:calc(100vh - 66px);min-height:0;overflow:hidden}
+.meeting-page{display:flex;flex:1;flex-direction:column;width:100%;height:100%;min-height:0;margin:0}
+.meeting-floating{height:100vh;display:flex;flex-direction:column;border-radius:16px}
+.meeting-header{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid #213446;color:var(--cyan)}
+.meeting-header-icon{color:#8adbe9;filter:drop-shadow(0 0 7px #42d9e655);flex:0 0 auto}
+.meeting-header.is-draggable{-webkit-app-region:drag}
+.meeting-header>div:first-of-type{flex:1;min-width:0}
+.meeting-header strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meeting-header small{display:block;color:#9aafc2;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meeting-window-actions{display:flex;align-items:center;gap:9px;margin-left:8px;align-self:flex-start;margin-top:1px;-webkit-app-region:no-drag}
+.meeting button,.meeting input,.meeting select,.meeting textarea{-webkit-app-region:no-drag;font:inherit;color:inherit}
+.meeting button:not(.custom-select-trigger):not([role=option]){border:1px solid #294457;background:#102537;border-radius:8px;padding:7px 10px;cursor:pointer}
+.meeting button:not(.custom-select-trigger):not([role=option]):hover,.meeting button.selected{border-color:var(--cyan);color:var(--cyan);background:#163746}
+.meeting button:disabled{opacity:.4;cursor:default}
+.meeting input:not([type=checkbox]):not([type=range]),.meeting select,.meeting textarea{background:#070f1b;border:1px solid #2b4355;border-radius:7px;padding:8px;max-width:100%;min-width:0}
+.meeting input[type=checkbox]{accent-color:var(--cyan);margin-right:7px}
+.meeting-body{padding:16px;overflow:auto;flex:1;min-height:0}
+.meeting h2{font-size:26px;font-weight:500}
+.meeting h3{color:var(--cyan);margin:15px 0 6px}
+.meeting small{color:#91a9bf}
+.meeting p{margin:8px 0}
+.meeting-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
+.meeting-library{padding-bottom:16px;border-bottom:1px solid #22374a;margin-bottom:14px}
+.meeting details{margin-top:14px}
+.meeting summary{cursor:pointer;color:var(--cyan)}
+.meeting-status{display:flex;gap:12px;flex-wrap:wrap;color:#91a9bf;font-size:11px}
+.meeting-status meter{width:40px;height:8px;margin:0 4px}
+.meeting-dot{display:inline-block;width:7px;height:7px;background:#5b7285;border-radius:50%;margin-right:5px}
+.meeting-dot.recording{background:#ff667c;box-shadow:0 0 8px #ff667c88;animation:meeting-pulse 2s ease-in-out infinite}
+.meeting-settings{display:grid;gap:0;padding:4px 14px;background:#0d1d2b;border:1px solid #254455;border-radius:10px;margin:12px 0}
+.meeting-settings label{display:block}
+.meeting-settings label>input:not([type=checkbox]),.meeting-settings label>select{display:block;width:100%;margin-top:4px}
+.meeting-tabs{display:flex;gap:5px;overflow-x:auto;margin:14px 0}
+.meeting-tabs button{white-space:nowrap;font-size:11px}
+.meeting-content{min-height:120px}
+.meeting-empty{color:#7f9bb1;text-align:center;padding:35px 10px}
+.meeting-segment{border-left:2px solid #285266;padding:8px 12px;margin:8px 0;background:#0d1d2a;border-radius:5px}
+.meeting pre{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.meeting-answer,.meeting-question{border:1px solid #285266;border-radius:9px;padding:12px;margin:10px 0}
+.meeting-composer-shell{position:relative;z-index:20;display:block;flex-shrink:0;min-width:0;margin:0;padding:10px 24px 14px;background:#081320;border-top:1px solid #213b4b}
+.meeting-floating .meeting-composer-shell{padding:10px 16px 12px}
+.meeting-attachment-list{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+.meeting-attachment{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:5px 8px;border:1px solid #315062;border-radius:9px;background:#0d1d2a;color:#aac2d0;font-size:10px}
+.meeting-attachment button{display:inline-grid!important;place-items:center;width:18px;min-width:18px!important;height:18px;padding:0!important;border:0!important;background:transparent!important;color:#91a9bf!important;border-radius:50%!important}
+.meeting-attachment button:hover{background:#19384b!important;color:#d9e8f4!important}
+.meeting-ai-composer{margin:0}
+.meeting .meeting-ai-composer textarea{display:block;width:100%;min-height:30px;max-height:180px;resize:none;background:transparent;border:0;padding:0;color:#d9e8f4;font:inherit;font-size:14px;line-height:1.6}
+.meeting .meeting-ai-composer textarea:focus,.meeting .meeting-ai-composer textarea:focus-visible{outline:none;box-shadow:none}
+.meeting .meeting-ai-composer .chat-composer-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px}
+.meeting .meeting-ai-composer .chat-composer-tools{display:flex;align-items:center;gap:5px;min-width:0}
+.meeting .meeting-ai-composer .chat-action{display:inline-flex;align-items:center;justify-content:center;min-width:30px;min-height:30px;padding:6px;border:0!important;background:transparent!important;color:#91a9bf;border-radius:7px;box-shadow:none}
+.meeting .meeting-ai-composer .chat-action:hover:not(:disabled),.meeting .meeting-ai-composer .chat-action:focus-visible{background:#173347!important;color:#d9e8f4}
+.meeting .meeting-ai-composer .chat-send{display:grid;place-items:center;align-items:center;justify-items:center;width:34px;height:34px;min-width:34px;padding:0;border:0!important;border-radius:50%;background:#62e1ec!important;color:#081320;line-height:0;box-shadow:none}
+.meeting .meeting-ai-composer .chat-send svg{display:block;flex:0 0 auto}
+.meeting .meeting-ai-composer .chat-send:disabled{opacity:.3;cursor:not-allowed}
+.meeting-toolbar{position:relative;display:flex;align-items:center;gap:5px;padding:10px;border-top:1px solid #315062;background:#0b1c2b;flex-shrink:0}
+.meeting-toolbar button{display:flex;align-items:center;justify-content:center;padding:8px;min-width:34px}
+.meeting-secondary{display:flex;gap:5px;flex-wrap:wrap}
+.meeting-error{color:#ff9aaa;border:1px solid #704355;background:#261621;border-radius:8px;padding:10px}
+.meeting-notice,.meeting-consent{display:block;border:1px solid #326276;border-radius:8px;padding:10px;margin:10px 0}
+.meeting .meeting-window-actions button.window-control{position:relative;width:15px!important;height:15px;min-width:15px;padding:0!important;border:0!important;border-radius:50%;display:flex;align-items:center;justify-content:center;color:transparent;box-sizing:border-box;box-shadow:inset 0 0 0 1px #0004,0 1px 2px #0007;transition:filter .15s ease,transform .15s ease}
+.meeting .meeting-window-actions button.window-control:hover{transform:scale(1.08);filter:brightness(1.12)}
+.meeting .meeting-window-actions button.window-control:focus-visible{outline:2px solid #d8faff;outline-offset:3px}
+.meeting .meeting-window-actions button.window-control svg{opacity:0;stroke:#17212a;stroke-width:2.5;transition:opacity .12s ease}
+.meeting .meeting-window-actions button.window-control:hover svg,.meeting .meeting-window-actions button.window-control:focus-visible svg{opacity:1;stroke:#0b151d}
+.meeting .meeting-window-actions button.window-control-close{background:#ff4f57!important}
+.meeting .meeting-window-actions button.window-control-minimize{background:#ffc400!important}
+.meeting .meeting-window-actions button.window-control-maximize{background:#16d94a!important}
+.meeting-compact .meeting-header{padding:10px}
+.meeting-compact .meeting-body{padding:10px}@media(max-width:700px){.meeting-secondary{display:none}
+.meeting-secondary.open{display:flex;position:absolute;bottom:58px;right:8px;padding:10px;background:#0b1c2b;border:1px solid #315062;border-radius:10px;max-width:240px;box-shadow:0 10px 30px #0008}
+.meeting-toolbar{justify-content:space-around}}@keyframes meeting-pulse{50%{box-shadow:0 0 2px #ff667c44}}@media(prefers-reduced-motion:reduce){.meeting-dot.recording{animation:none}}html[data-surface=meeting],html[data-surface=meeting] body,html[data-surface=meeting] #root{margin:0;width:100%;height:100%;overflow:hidden;background:#081320}
+
+.meeting-page .meeting-body{padding:24px}
+.meeting-library h2{margin:0 0 8px;font-size:27px}
+.meeting-library>p{color:#91a9bf;margin-bottom:20px;max-width:650px}
+.meeting-library>.meeting-row>input{flex:1;min-width:180px}
+.meeting-settings>details{margin:0;padding:14px 0;border-bottom:1px solid #213a4c}
+.meeting-settings>details:last-child{border-bottom:0}
+.meeting-settings summary{font-weight:550;list-style-position:inside}
+.meeting-setting-fields{display:grid;gap:13px;padding:16px 0 4px}
+.meeting-setting-fields>button{justify-self:start}
+.meeting-setting-fields label{line-height:1.7}
+.meeting-field{display:grid;gap:6px}
+.meeting .custom-select{width:100%;max-width:100%;font-size:12px}
+.meeting-library .custom-select{width:210px;flex-shrink:0}
+.meeting .custom-select-menu{max-width:min(330px,calc(100vw - 64px));z-index:90}
+.meeting .custom-select-menu button{border:0;font-size:12px}
+.meeting .custom-select-menu button span{white-space:normal;overflow-wrap:anywhere}
+.meeting .custom-select-trigger{font-size:12px;min-height:38px}
+.meeting-quick-start{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:18px 0;padding:18px;background:#0c1d2a;border:1px solid #254455;border-radius:12px}
+.meeting-quick-start>div{display:flex;flex-direction:column;gap:9px}
+.meeting-quick-start strong{color:#b8e8f1;font-weight:550}
+.meeting-quick-start label,.meeting-screen-card>label{font-size:12px;line-height:1.7}
+.meeting-screen-card{display:grid;gap:13px;padding:18px;background:#0c1d2a;border:1px solid #254455;border-radius:12px}
+.meeting-screen-card h3{margin:0;font-size:16px}
+.meeting-screen-card p{color:#9aafc2;max-width:680px}
+.meeting button.meeting-primary{background:#8adbe9;border-color:#a9ebf5;color:#06222a;font-weight:600}
+.meeting-screen-card .custom-select{max-width:420px}
+.meeting-screen-card .meeting-row>button:not(:disabled){opacity:1;visibility:visible}
+.meeting-screen-card button.meeting-primary:not(:disabled){display:inline-flex;align-items:center;justify-content:center;background:#8adbe9;border-color:#a9ebf5;color:#06222a;opacity:1;visibility:visible}
+.meeting-screen-card button.meeting-primary:not(:disabled):hover{background:#a9ebf5;color:#06222a}
+.meeting-screen-card button.meeting-screen-follow:not(:disabled){display:inline-flex;align-items:center;justify-content:center;background:#102c3c;border-color:#4f93a5;color:#d9e8f4;opacity:1;visibility:visible}
+.meeting-screen-card button.meeting-screen-follow:not(:disabled):hover{background:#173f51;color:#f3fbff}
+.meeting-screen-access{padding:12px;border:1px solid #315062;border-radius:8px}
+.meeting-screen-access summary{cursor:pointer;color:#b8e8f1}
+.meeting-screen-access code{display:block;overflow-wrap:anywhere;font-size:11px;line-height:1.6;margin:10px 0}
+.meeting-screen-access .meeting-row{margin:12px 0}
+.meeting-floating .meeting-quick-start{grid-template-columns:1fr;gap:16px;padding:14px}
+.meeting-floating .meeting-screen-card{padding:14px}
+.meeting-floating .meeting-settings{padding:0 12px}
+.meeting-floating .meeting-body{display:flex;flex-direction:column;overflow:hidden}
+.meeting-floating .meeting-tabs{position:relative;z-index:4;flex:0 0 auto;margin:14px 0 10px;padding-bottom:2px;background:#081320}
+.meeting-floating .meeting-content{flex:1;min-height:0;overflow:auto;padding:0 2px 12px;scrollbar-gutter:stable}
+.meeting-page .meeting-header{padding:18px 24px}
+@media(max-width:1100px){.meeting-page .meeting-quick-start{grid-template-columns:1fr}}
+@media(max-width:700px){.meeting-screen-card .meeting-row{align-items:stretch;flex-direction:column}}

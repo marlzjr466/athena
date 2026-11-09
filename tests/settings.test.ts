@@ -1,0 +1,151 @@
+import { describe, expect, it } from 'vitest'
+import { defaultSettings, mergeSettings, restoreSettings, settingsPatchSchema } from '../shared/settings'
+import { automationPermissionDefaults } from '../shared/automation'
+
+describe('validated preferences', () => {
+  it('defaults every automation category to least privilege', () => {
+    expect(Object.values(automationPermissionDefaults).every(value => value === false)).toBe(true)
+  })
+  it('defaults Athena Chat avatar linking on and persists an explicit unlink independently of model choices', () => {
+    expect(defaultSettings.athenaChatAvatarLinked).toBe(true)
+    const saved = mergeSettings(defaultSettings, { athenaChatAvatarLinked: false })
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved))).athenaChatAvatarLinked).toBe(false)
+    expect(saved.localAI).toEqual(defaultSettings.localAI)
+    expect(saved.aiMode).toBe(defaultSettings.aiMode)
+  })
+  it('defaults bounded read-only delegation and persists sub-agent configuration', () => {
+    expect(restoreSettings({}).subagents).toMatchObject({ enabled: true, maxConcurrent: 2, maxIterations: 24, maxToolCalls: 40, timeoutMinutes: 10, requireWriteApproval: true })
+    const saved = mergeSettings(defaultSettings, { subagents: { ...defaultSettings.subagents, coldReadModel: 'gpt-5-mini', coldReadEffort: 'high', parallelReadOnly: false, maxToolCalls: 60, maxIterations: 20 } })
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved))).subagents).toEqual(saved.subagents)
+    expect(mergeSettings(saved, { size: 220 }).subagents).toEqual(saved.subagents)
+    expect(settingsPatchSchema.safeParse({ subagents: { ...saved.subagents, maxConcurrent: 100 } }).success).toBe(false)
+  })
+  it.each(['cloud', 'subscription', 'claude-api', 'cursor'] as const)('switches %s without changing the local offline preference', (aiMode) => {
+    const local = mergeSettings(defaultSettings, { aiMode: 'local', strictOffline: true })
+    const switched = mergeSettings(local, { aiMode })
+    expect(switched.aiMode).toBe(aiMode)
+    expect(switched.strictOffline).toBe(true)
+    expect(switched.localAI).toEqual(local.localAI)
+    expect(restoreSettings(JSON.parse(JSON.stringify(switched))).strictOffline).toBe(true)
+    expect(restoreSettings(JSON.parse(JSON.stringify(switched))).aiMode).toBe(aiMode)
+  })
+  it('migrates legacy local selection without activating an online provider or losing local configuration', () => {
+    const legacy = { ...structuredClone(defaultSettings), aiMode: 'local', strictOffline: true, localAI: { ...defaultSettings.localAI, model: 'qwen2.5:3b' } }
+    const restored = restoreSettings(legacy)
+    expect(restored.aiMode).toBe('unconfigured')
+    expect(restored.localAI).toEqual(legacy.localAI)
+    expect(restored.strictOffline).toBe(true)
+    expect(restoreSettings(JSON.parse(JSON.stringify(restored)))).toEqual(restored)
+    expect(mergeSettings(restored, { size: 200 }).aiMode).toBe('unconfigured')
+    expect(mergeSettings(restored, { localAI: { ...restored.localAI, model: 'other' } }).aiMode).toBe('unconfigured')
+  })
+  it('persists safe voice settings and rejects invalid values', () => {
+    const saved = mergeSettings(defaultSettings, { voiceEnabled: true, voiceAutoSend: true, voiceMuted: true, voiceName: 'marin', voiceSpeed: 1.25, voiceVolume: 0.4 })
+    expect(restoreSettings({}).voiceAutoSend).toBe(false)
+    expect(settingsPatchSchema.safeParse({ voiceAutoSend: 'yes' }).success).toBe(false)
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved)))).toEqual(saved)
+    expect(mergeSettings(saved, { size: 200 }).voiceName).toBe('marin')
+    for (const patch of [{ voiceName: 'unknown' }, { voiceSpeed: 0 }, { voiceSpeed: Infinity }, { voiceVolume: -1 }, { voiceVolume: 2 }]) expect(settingsPatchSchema.safeParse(patch).success).toBe(false)
+    expect(restoreSettings({ voiceEnabled: true, voiceName: 'unknown', voiceVolume: 2 }).voiceEnabled).toBe(true)
+    expect(restoreSettings({ voiceEnabled: true, voiceName: 'unknown', voiceVolume: 2 }).voiceName).toBe(defaultSettings.voiceName)
+  })
+  it('persists real-time clock and web access settings while preserving defaults on partial changes', () => {
+    expect(defaultSettings.webAccess).toMatchObject({ systemInformationEnabled: true, webSearchEnabled: false, automaticSearch: true, searchProvider: 'brave', maxResults: 5, timeoutSeconds: 10, openAIResponseTimeoutSeconds: 45, timezone: 'local', timeFormat: '12h' })
+    const saved = mergeSettings(defaultSettings, { webAccess: { ...defaultSettings.webAccess, webSearchEnabled: true, maxResults: 8, timezone: 'Asia/Tokyo' } })
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved))).webAccess).toEqual(saved.webAccess)
+    expect(mergeSettings(saved, { pinned: true }).webAccess).toEqual(saved.webAccess)
+    expect(settingsPatchSchema.safeParse({ webAccess: { ...defaultSettings.webAccess, timeoutSeconds: 99 } }).success).toBe(false)
+  })
+  it('keeps the API search model independent of chat selection and restores older web settings', () => {
+    const saved = mergeSettings(defaultSettings, { aiMode: 'subscription', webAccess: { ...defaultSettings.webAccess, searchProvider: 'openai-built-in', openAIModel: 'gpt-4.1-mini' } })
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved))).webAccess.openAIModel).toBe('gpt-4.1-mini')
+    expect(mergeSettings(saved, { aiMode: 'cloud' }).webAccess.openAIModel).toBe('gpt-4.1-mini')
+    const legacy = { ...saved, webAccess: { ...saved.webAccess } } as Record<string, unknown>
+    delete (legacy.webAccess as Record<string, unknown>).openAIModel
+    expect(restoreSettings(legacy).webAccess.openAIModel).toBeNull()
+    expect(settingsPatchSchema.safeParse({ webAccess: { ...saved.webAccess, openAIModel: '../invalid' } }).success).toBe(false)
+  })
+  it('persists hands-free wake and endpointing preferences with explicit opt-in', () => {
+    expect(defaultSettings.voiceInteraction.handsFreeEnabled).toBe(false)
+    expect(defaultSettings.voiceInteraction.wakePhrases).toContain('Hey Athena')
+    expect(defaultSettings.voiceInteraction.endOfSpeechDelayMs).toBe(450)
+    expect(defaultSettings.voiceInteraction.noiseSuppression).toBe(true)
+    expect(defaultSettings.voiceInteraction.noiseSuppressionLevel).toBe('balanced')
+    expect(defaultSettings.voiceInteraction.automaticNoiseCalibration).toBe(true)
+    const saved = mergeSettings(defaultSettings, { voiceInteraction: { ...defaultSettings.voiceInteraction, handsFreeEnabled: true, endOfSpeechDelayMs: 450, followUpTimeoutSeconds: 20 }, showFloatingBubble: false })
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved)))).toEqual(saved)
+    expect(mergeSettings(saved, { size: 220 }).voiceInteraction.handsFreeEnabled).toBe(true)
+    expect(mergeSettings(defaultSettings, { voiceInteraction: { ...defaultSettings.voiceInteraction, noiseSuppression: false } }).voiceInteraction.noiseSuppression).toBe(true)
+    expect(restoreSettings({ voiceInteraction: { ...defaultSettings.voiceInteraction, noiseSuppression: false } }).voiceInteraction.noiseSuppression).toBe(true)
+    expect(settingsPatchSchema.safeParse({ voiceInteraction: { ...defaultSettings.voiceInteraction, endOfSpeechDelayMs: 250 } }).success).toBe(false)
+    expect(restoreSettings({ floatingVoiceAutoSend: true, clickToTalk: true }).voiceInteraction.handsFreeEnabled).toBe(false)
+  })
+  it('persists output recovery settings without changing unrelated preferences', () => {
+    const settings = mergeSettings(defaultSettings, { aiGeneration: { outputTokens: 32000, maxOutputContinuations: 2 } })
+    expect(restoreSettings(JSON.parse(JSON.stringify(settings)))).toEqual(settings)
+    expect(mergeSettings(settings, { size: 200 }).aiGeneration).toEqual(settings.aiGeneration)
+    expect(restoreSettings({ aiGeneration: { outputTokens: -1 } }).aiGeneration).toEqual(defaultSettings.aiGeneration)
+  })
+  it('persists action and position choices, repairing legacy or malformed values', () => {
+    const customized = mergeSettings(defaultSettings, { enabledPositions: ['top-left'], randomActions: true, actionIntervalSeconds: 15, enabledActions: ['wave', 'bow'] })
+    expect(restoreSettings(JSON.parse(JSON.stringify(customized)))).toEqual(customized)
+    expect(restoreSettings({}).actionIntervalSeconds).toBe(30)
+    expect(restoreSettings({ enabledPositions: [] }).enabledPositions.length).toBeGreaterThan(0)
+    expect(restoreSettings({ actionIntervalSeconds: -20 }).actionIntervalSeconds).toBe(10)
+    expect(restoreSettings({ actionIntervalSeconds: Infinity }).actionIntervalSeconds).toBe(30)
+    expect(restoreSettings({ actionIntervalSeconds: 999 }).actionIntervalSeconds).toBe(300)
+    expect(() => mergeSettings(customized, { enabledPositions: [] })).toThrow()
+    expect(() => mergeSettings(customized, { enabledActions: ['shell'] })).toThrow()
+    expect(mergeSettings(customized, { enabledActions: [] }).enabledActions).toEqual([])
+    expect(mergeSettings(customized, { glowIntensity: 0.3 }).enabledActions).toEqual(['wave', 'bow'])
+  })
+  it.each([79, 401, 180.5, NaN, Infinity, '180'])('rejects an invalid character size: %s', (size) => {
+    expect(settingsPatchSchema.safeParse({ size }).success).toBe(false)
+  })
+  it('accepts both size limits', () => {
+    expect(mergeSettings(defaultSettings, { size: 80 }).size).toBe(80)
+    expect(mergeSettings(defaultSettings, { size: 400 }).size).toBe(400)
+  })
+  it('preserves valid preferences while repairing corrupted fields', () => {
+    const settings = restoreSettings({ size: 200, glowIntensity: 'extreme', randomMovement: false, position: { x: NaN, y: 2 } })
+    expect(settings.size).toBe(200)
+    expect(settings.glowIntensity).toBe(1)
+    expect(settings.randomMovement).toBe(false)
+    expect(settings.position).toBe(null)
+  })
+  it('recovers from invalid documents and unsupported schema versions', () => {
+    for (const input of [null, [], 'bad', { version: 99, size: 300 }]) expect(restoreSettings(input)).toEqual(defaultSettings)
+  })
+  it('pinning preserves the independent wander preference', () => {
+    const pinned = mergeSettings(defaultSettings, { pinned: true })
+    expect(pinned.pinned).toBe(true)
+    expect(pinned.randomMovement).toBe(true)
+    expect(mergeSettings(pinned, { randomMovement: true }).pinned).toBe(true)
+    expect(restoreSettings(pinned).randomMovement).toBe(true)
+  })
+  it('does not inject defaults into partial updates or reset unrelated settings', () => {
+    expect(settingsPatchSchema.parse({ pinned: true })).toEqual({ pinned: true })
+    const customized = { ...defaultSettings, size: 280, glowIntensity: 0.4, randomMovement: false }
+    const result = mergeSettings(customized, { alwaysOnTop: false })
+    expect(result.size).toBe(280)
+    expect(result.glowIntensity).toBe(0.4)
+    expect(result.randomMovement).toBe(false)
+    expect(result.alwaysOnTop).toBe(false)
+  })
+  it('rejects unknown fields and renderer-owned location writes', () => {
+    expect(() => mergeSettings(defaultSettings, { command: 'rm -rf' })).toThrow()
+    expect(() => mergeSettings(defaultSettings, { position: { x: 1, y: 1 } })).toThrow()
+    expect(() => mergeSettings(defaultSettings, { version: 2 })).toThrow()
+  })
+  it('defaults legacy profiles to 30 seconds and clamps corrupt saved intervals', () => {
+    expect(defaultSettings.wanderIntervalSeconds).toBe(30)
+    expect(restoreSettings({ size: 240 }).wanderIntervalSeconds).toBe(30)
+    for (const value of [0, -10, 1]) expect(restoreSettings({ wanderIntervalSeconds: value }).wanderIntervalSeconds).toBe(10)
+    expect(restoreSettings({ wanderIntervalSeconds: 9999 }).wanderIntervalSeconds).toBe(300)
+    for (const value of [NaN, Infinity, '60']) expect(restoreSettings({ wanderIntervalSeconds: value }).wanderIntervalSeconds).toBe(30)
+    expect(restoreSettings({ wanderIntervalSeconds: 45 }).wanderIntervalSeconds).toBe(45)
+  })
+  it.each([0, -1, 301, NaN, Infinity, '30'])('rejects unsafe live interval %s', (value) => {
+    expect(settingsPatchSchema.safeParse({ wanderIntervalSeconds: value }).success).toBe(false)
+  })
+})

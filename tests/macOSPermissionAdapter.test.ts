@@ -1,0 +1,47 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+const os = vi.hoisted(() => ({ getMediaAccessStatus: vi.fn(() => 'not-determined'), askForMediaAccess: vi.fn(async () => true), isTrustedAccessibilityClient: vi.fn(() => false), openExternal: vi.fn(async () => {}), getSources: vi.fn(async () => []) }))
+vi.mock('electron', () => ({ systemPreferences: os, shell: { openExternal: os.openExternal }, desktopCapturer: { getSources: os.getSources } }))
+import { MacOSPermissionAdapter, mediaPermissionStatus } from '../electron/main/permissions/macOSPermissionAdapter'
+beforeEach(() => vi.clearAllMocks())
+describe('macOS permission adapter', () => {
+  it.each([['granted', 'allowed'], ['not-determined', 'not-requested'], ['denied', 'denied'], ['restricted', 'restricted'], ['unknown', 'unavailable']])('maps real OS %s to %s', (source, expected) => expect(mediaPermissionStatus(source)).toBe(expected))
+  it('reads media permission and accurately marks basic desktop actions as requiring no OS grant', () => {
+    const adapter = new MacOSPermissionAdapter('darwin')
+    expect(adapter.getStatus('microphone').status).toBe('not-requested')
+    expect(adapter.getStatus('screenCapture').canRequest).toBe(true)
+    expect(adapter.getStatus('desktopAutomation')).toMatchObject({ status: 'not-required', canRequest: false })
+    expect(os.isTrustedAccessibilityClient).not.toHaveBeenCalled()
+    expect(os.getSources).not.toHaveBeenCalled()
+    expect(os.askForMediaAccess).not.toHaveBeenCalled()
+    expect(os.openExternal).not.toHaveBeenCalled()
+  })
+  it('requests only supported permission prompts and never captures the screen', async () => {
+    const adapter = new MacOSPermissionAdapter('darwin')
+    await adapter.request('microphone'); await adapter.request('desktopAutomation'); await adapter.request('screenCapture')
+    expect(os.askForMediaAccess).toHaveBeenCalledExactlyOnceWith('microphone')
+    expect(os.getSources).toHaveBeenCalledExactlyOnceWith({ types: ['screen'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false })
+    expect(os.isTrustedAccessibilityClient).not.toHaveBeenCalled()
+  })
+  it('checks and requests Accessibility UI control separately from basic app launch permission', async () => {
+    const adapter = new MacOSPermissionAdapter('darwin')
+    expect(adapter.getStatus('accessibilityControl')).toMatchObject({ status: 'denied', canRequest: true, canOpenSettings: true })
+    await adapter.request('accessibilityControl')
+    expect(os.isTrustedAccessibilityClient).toHaveBeenNthCalledWith(1, false)
+    expect(os.isTrustedAccessibilityClient).toHaveBeenNthCalledWith(2, false)
+    expect(os.isTrustedAccessibilityClient).toHaveBeenNthCalledWith(3, true)
+    await adapter.openSettings('accessibilityControl')
+    expect(os.openExternal).toHaveBeenCalledWith('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')
+  })
+  it('opens only fixed OS settings destinations', async () => {
+    const adapter = new MacOSPermissionAdapter('darwin')
+    await adapter.openSettings('screenCapture')
+    expect(os.openExternal).toHaveBeenCalledExactlyOnceWith('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
+    await expect(adapter.openSettings('personalFiles')).rejects.toThrow()
+  })
+  it('never pretends unsupported platforms have OS consent', async () => {
+    const adapter = new MacOSPermissionAdapter('linux')
+    expect(adapter.getStatus('microphone').status).toBe('unavailable')
+    await adapter.request('microphone')
+    expect(os.askForMediaAccess).not.toHaveBeenCalled()
+  })
+})

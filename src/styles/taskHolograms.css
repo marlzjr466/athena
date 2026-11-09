@@ -1,0 +1,8 @@
+.task-holograms { position: absolute; inset: 0; z-index: 2; overflow: hidden; pointer-events: none; }
+.task-holo-orbit { position: absolute; width: 46px; height: 18px; border: 1px solid #58ebffb3; border-radius: 50%; opacity: 0; transform: translate(-50%, -50%); }
+.task-holograms-completed .task-holo-orbit { animation: holo-ring 1300ms ease-out both; border-color: #91ffd0; }
+.task-holograms-failed .task-holo-orbit { animation: holo-ring 1300ms ease-out both; border-color: #ffb175; }
+.task-holograms.is-hidden { visibility: hidden; }
+.task-holograms.is-hidden *, .task-holograms-reduced * { animation-play-state: paused !important; }
+@keyframes holo-ring { 15% { opacity: .8; } to { opacity: 0; transform: translate(-50%, -50%) scale(3); } }
+@media (prefers-reduced-motion: reduce) { .task-holograms * { animation: none !important; } }

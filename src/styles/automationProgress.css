@@ -1,0 +1,13 @@
+.automation-progress { padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--glass); font-size: 10px; }
+.automation-progress header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.automation-progress header strong { color: var(--accent); }
+.automation-progress header button { display: grid; place-items: center; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
+.automation-progress > p { margin: 4px 0 6px; color: var(--muted); overflow-wrap: anywhere; }
+.automation-progress ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; max-height: 100px; overflow: auto; }
+.automation-step { display: flex; align-items: flex-start; gap: 5px; color: var(--muted); }
+.automation-step svg { flex: 0 0 auto; margin-top: 1px; }
+.automation-step.complete { color: var(--text); }
+.automation-step.failed, .automation-step.cancelled { color: #ffb7a5; }
+.automation-spinner { animation: automation-spin 1s linear infinite; }
+@keyframes automation-spin { to { transform: rotate(360deg); } }
+.athena-automation-progress { margin: 0 20px 8px; }

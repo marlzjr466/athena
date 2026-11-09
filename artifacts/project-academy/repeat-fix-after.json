@@ -1,0 +1,39 @@
+{
+  "hash": "906a81031078cd93099be191bbb5462487634cfbbee56d358eb168f959debdef",
+  "unchanged": false,
+  "courses": [
+    {
+      "id": "coding",
+      "results": 27
+    },
+    {
+      "id": "git",
+      "results": 8
+    },
+    {
+      "id": "jira",
+      "results": 12
+    },
+    {
+      "id": "languages",
+      "results": 12
+    },
+    {
+      "id": "frameworks",
+      "results": 10
+    },
+    {
+      "id": "devops",
+      "results": 6
+    },
+    {
+      "id": "other",
+      "results": 10
+    },
+    {
+      "id": "project",
+      "results": 5
+    }
+  ],
+  "sources": 92
+}

@@ -1,0 +1,51 @@
+:root { color-scheme: dark; font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #050810; color: #e5f9ff; --intro: 5s; }
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; }
+.splash { position: relative; width: 100vw; height: 100vh; overflow: hidden; isolation: isolate; background: #050810; -webkit-app-region: drag; }
+.splash::after { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 6; background: radial-gradient(ellipse at 55% 48%, transparent 38%, #02050a99 100%); box-shadow: inset 0 0 0 1px #a9ddff14; }
+.splash-atmosphere { position: absolute; inset: 0; opacity: .25; background: radial-gradient(ellipse at 72% 43%, #134b705e, transparent 42%), radial-gradient(ellipse at 91% 23%, #493b7038, transparent 38%), radial-gradient(ellipse at 58% 93%, #07556440, transparent 48%); }
+.playing .splash-atmosphere { animation: atmosphere var(--intro) ease-out both; }
+.splash-beam { position: absolute; left: 50%; top: -35%; width: 32%; height: 140%; transform: rotate(27deg); background: linear-gradient(90deg, transparent, #59d8ff08 45%, #b8e7ff0c 50%, transparent 75%); filter: blur(26px); opacity: 0; }
+.playing .splash-beam { animation: atmosphere 2.4s 1s ease-out forwards; }
+.splash-orbit { position: absolute; border: 1px solid #84d8ff18; border-radius: 50%; width: 58vw; height: 58vw; left: 41%; top: 6%; transform: rotate(-24deg) scaleX(.72); opacity: 0; }
+.splash-orbit::after { content: ''; position: absolute; width: 5px; height: 5px; background: #8eedff; border-radius: 50%; left: 14%; top: 15%; box-shadow: 0 0 20px 5px #55d8ff40; }
+.orbit-inner { width: 47vw; height: 47vw; left: 46.5%; top: 14%; border-style: dashed; border-color: #78d2f410; transform: rotate(22deg) scaleX(.72); }
+.playing .splash-orbit { animation: orbit-in 3s .5s ease-out forwards; }
+.splash-floor { position: absolute; width: 56%; height: 14%; right: 1%; bottom: 7%; border-radius: 50%; background: radial-gradient(ellipse, #63caff20 0, #326aa813 25%, #326aa806 42%, transparent 68%); filter: blur(8px); opacity: 0; }
+.playing .splash-floor { animation: atmosphere 2s 1.5s ease-out forwards; }
+.splash-header, .splash-footer { position: absolute; left: 6.5%; right: 6.5%; z-index: 7; display: flex; align-items: center; color: #8baab9; font-size: 10px; letter-spacing: .25em; }
+.splash-header { top: 6%; gap: 14px; }
+.splash-sigil { font-size: 30px; line-height: 1; color: #9ceeff; font-weight: 200; text-shadow: 0 0 20px #46caff88; }
+.splash-footer { bottom: 6%; justify-content: space-between; font-size: 10px; letter-spacing: .12em; }
+.splash-status { color: #83b3c6; }
+.splash-status::before { content: ''; display: inline-block; width: 4px; height: 4px; margin: 0 11px 2px 0; border-radius: 50%; background: #8fe4f0; box-shadow: 0 0 12px #59dcff80; }
+.splash-footer-mark { color: #597282; letter-spacing: .22em; }
+.splash-identity { position: absolute; left: 8%; top: 34%; z-index: 5; }
+.splash-eyebrow { color: #70b8d1; font-size: 10px; font-weight: 500; letter-spacing: .34em; margin: 0 0 28px 5px; opacity: 0; }
+.playing .splash-eyebrow { animation: type-in 1.4s .25s both; }
+h1 { display: flex; margin: 0; font-size: clamp(56px, 7.6vw, 110px); line-height: 1.05; font-weight: 250; letter-spacing: .13em; }
+h1 span { opacity: 0; color: #daf4ff; text-shadow: 0 0 26px #6ddcff24, 0 0 90px #30a4f31c; }
+.playing h1 span { animation: type-in 1.8s cubic-bezier(.16, 1, .3, 1) both, identity-glow 2s 3s ease-out both; animation-delay: calc(.4s + var(--letter) * .12s), 3s; }
+.splash-rule { margin: 29px 0 24px 5px; width: 72px; height: 1px; transform-origin: left; background: linear-gradient(90deg, #9fe8ff, #53bfee10); box-shadow: 0 0 16px #56ceff50; opacity: 0; }
+.playing .splash-rule { animation: rule-in 1.7s 1.1s both; }
+.splash-tagline { margin: 0 0 0 5px; font-size: clamp(17px, 1.8vw, 24px); font-weight: 300; line-height: 1.7; letter-spacing: .01em; color: #86a1b1; opacity: 0; }
+.splash-tagline strong { color: #d1e6ef; font-weight: 350; }
+.playing .splash-tagline { animation: type-in 1.6s 2.8s both; }
+.splash-character { position: absolute; inset: 7% 0 8% 43%; z-index: 3; opacity: 0; transform: translateY(12px) scale(.96); transition: opacity 1.3s ease, transform 1.8s cubic-bezier(.16, 1, .3, 1); -webkit-app-region: no-drag; }
+.splash-character.revealed { opacity: 1; transform: translateY(0) scale(1); }
+.splash-character canvas { display: block; width: 100%; height: 100%; }
+.splash-particles { position: absolute; inset: 0; pointer-events: none; z-index: 4; overflow: hidden; opacity: 0; }
+.playing .splash-particles { animation: atmosphere 2.5s .1s both; }
+.splash-particle { position: absolute; border-radius: 50%; width: var(--size); height: var(--size); left: var(--x); top: var(--y); opacity: 0; background: #89dfff; box-shadow: 0 0 7px #57baff70; animation: drift var(--drift) var(--delay) ease-in-out infinite; }
+.exiting .splash-character { opacity: 0; transform: translateY(-5px) scale(1.015); transition-duration: 1s; }
+.exiting .splash-particles, .exiting .splash-beam { transition: opacity .9s; opacity: 0; animation: none; }
+@keyframes atmosphere { to { opacity: 1; } }
+@keyframes orbit-in { from { opacity: 0; translate: 0 15px; } to { opacity: 1; translate: 0 0; } }
+@keyframes type-in { from { opacity: 0; filter: blur(6px); transform: translateY(8px); } to { opacity: 1; filter: blur(0); transform: translateY(0); } }
+@keyframes rule-in { from { opacity: 0; transform: scaleX(0); } to { opacity: 1; transform: scaleX(1); } }
+@keyframes identity-glow { 50% { text-shadow: 0 0 22px #a0eaff60, 0 0 80px #31baff40; } }
+@keyframes drift { 0%, 100% { opacity: 0; transform: translate3d(0, 15px, 0); } 35%, 65% { opacity: var(--alpha); } 100% { transform: translate3d(12px, -42px, 0); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .25s !important; }
+  .splash-particle { animation: none !important; opacity: .2; }
+}

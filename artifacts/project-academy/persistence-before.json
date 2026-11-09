@@ -1,0 +1,44 @@
+{
+  "fileHash": "afe1c16fc3083d84539342361ee5aab76165dc8d3f07cc499151967d7119a11c",
+  "coursesHash": "486373d0333f5c1b6ec5559df8113260de27e01e5ed783bd3bf62398328ae4e6",
+  "sourcesHash": "fb285035fcb3293c6073c495b1104b5cf0571386ec6a11e68f99deeed0e4c2eb",
+  "profilesHash": "3575fecf0be8e3522163acce63e10fb081eae81483575c0e492cb19fb81b2834",
+  "courses": [
+    {
+      "courseId": "coding",
+      "passed": true,
+      "resultCount": 26
+    },
+    {
+      "courseId": "git",
+      "passed": true,
+      "resultCount": 8
+    },
+    {
+      "courseId": "jira",
+      "passed": true,
+      "resultCount": 12
+    },
+    {
+      "courseId": "languages",
+      "passed": true,
+      "resultCount": 12
+    },
+    {
+      "courseId": "frameworks",
+      "passed": true,
+      "resultCount": 10
+    },
+    {
+      "courseId": "devops",
+      "passed": true,
+      "resultCount": 6
+    },
+    {
+      "courseId": "other",
+      "passed": true,
+      "resultCount": 10
+    }
+  ],
+  "sourceCount": 79
+}
