@@ -40,6 +40,19 @@ beforeEach(() => {
 })
 
 describe('private Athena Chat page', () => {
+  it('offers Full Access for an authorized local project only after the activation warning', async () => {
+    const value = snapshot()
+    value.workspaces = [{ id: secondId, name: 'Project', authorized: true }]
+    api.getAthenaChat.mockResolvedValue(value)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<AthenaChat />)
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Athena Chat project permissions' }))
+    expect(screen.getByRole('option', { name: 'Full Access' })).toHaveAttribute('title', 'Automatically allow permission-controlled operations without asking for confirmation.')
+    fireEvent.click(screen.getByRole('option', { name: 'Full Access' }))
+    await waitFor(() => expect(api.athenaChatSession).toHaveBeenCalledWith({ action: 'agent-mode', id: sessionId, mode: 'full-access', confirmed: true }))
+    expect(confirm).toHaveBeenCalledOnce()
+    confirm.mockRestore()
+  })
   it('uses its session model without changing the floating model or online provider and manages private history', async () => {
     render(<AthenaChat />)
     expect(await screen.findByRole('combobox', { name: 'Athena Chat model' })).toHaveValue('coder:3b')
@@ -101,16 +114,16 @@ describe('private Athena Chat page', () => {
     expect(screen.getByRole('button', { name: 'Toggle local conversation sidebar' })).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('renders streaming local content, source evidence and real tool records', async () => {
+  it('renders streaming local content and real tool records without source evidence', async () => {
     render(<AthenaChat />)
     await screen.findByRole('combobox', { name: 'Athena Chat model' })
     act(() => useAthenaChat.setState({ snapshot: { ...snapshot(), revision: 3, phase: 'thinking', messages: [{ id: secondId, role: 'assistant', content: 'Local answer with `code`.', status: 'streaming', createdAt: 100, sources: [{ workspace: 'Project', path: 'src/main.ts', start: 1, end: 3 }], execution: { startedAt: 100, updatedAt: 101, status: 'working', activities: [{ id: sessionId, tool: 'read_file', label: 'Read file · src/main.ts', startedAt: 100, finishedAt: 101, status: 'complete', summary: 'Read actual file.' }], timeline: [{ id: secondId, kind: 'activity', activityId: sessionId, createdAt: 100 }] } }] } }))
     expect(screen.getByText(/Local answer with/)).toBeInTheDocument()
-    fireEvent.click(screen.getByText('1 operation'))
+    fireEvent.click(screen.getByText('Read 1 file · 1 operation'))
     fireEvent.click(screen.getByText('src/main.ts · complete'))
     expect(screen.getByText('Read actual file.')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Source Evidence · 1'))
-    expect(screen.getByText('Project/src/main.ts:1–3')).toBeInTheDocument()
+    expect(screen.queryByText('Source Evidence · 1')).not.toBeInTheDocument()
+    expect(screen.queryByText('Project/src/main.ts:1–3')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Stop local response' })).toBeInTheDocument()
   })
 
@@ -179,7 +192,8 @@ it('keeps approval buttons usable during a waiting local generation and renders 
   api.getAthenaChat.mockResolvedValue(value)
   render(<AthenaChat />)
   const prompt = await screen.findByRole('region', { name: 'Local tool approval' })
-  expect(prompt.parentElement).toHaveClass('chat-composer-shell')
+  expect(prompt.parentElement).toHaveClass('agent-approval-host')
+  expect(prompt.parentElement?.parentElement).toHaveClass('chat-composer-shell')
   const approve = screen.getByRole('button', { name: 'Allow once' })
   expect(approve).toBeEnabled()
   expect(screen.getByText('+export const add = 1')).toBeInTheDocument()

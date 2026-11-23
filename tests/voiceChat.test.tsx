@@ -14,7 +14,7 @@ const mock = vi.hoisted(() => ({
   beginVoice: vi.fn(async () => ({ ok: true })), voiceRecording: vi.fn(async () => ({ ok: true })),
   transcribeVoice: vi.fn(async () => ({ ok: true, transcript: 'Explain authentication.' })), cancelVoice: vi.fn(async () => ({ ok: true })),
   sendChat: vi.fn(async () => ({ ok: true })), chatSession: vi.fn(async () => ({ ok: true })),
-  getChat: vi.fn(), getAIStatus: vi.fn(), onVoice: vi.fn((_callback: (snapshot: VoiceSnapshot) => void) => () => {}),
+  getChat: vi.fn(), getAIStatus: vi.fn(), getUnifiedAccounts: vi.fn(async () => ({ accounts: [], refreshedAt: Date.now() })), onVoice: vi.fn((_callback: (snapshot: VoiceSnapshot) => void) => () => {}),
   onChat: vi.fn(() => () => {}), onSpeech: vi.fn(() => () => {}), stopSpeech: vi.fn(async () => ({ ok: true })),
   reportSpeechLevel: vi.fn(async () => ({ ok: true })),
 }))
@@ -106,7 +106,7 @@ describe('voice into the existing conversation', () => {
     const view = render(<ChatView />)
     try {
       const input = await screen.findByRole('textbox', { name: 'Message Athena' })
-      await screen.findByText(/Choose an online provider in Settings/)
+      await screen.findByText(/Connect an AI account in Settings/)
       expect(input).toBeDisabled()
       fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
       expect(mock.sendChat).not.toHaveBeenCalled()

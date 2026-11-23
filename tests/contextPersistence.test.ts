@@ -14,7 +14,7 @@ describe('context checkpoints independent of UI history', () => {
   it('persists canonical memory privately, restores it without resending the covered prefix, and invalidates it for model changes', async () => {
     const storage = new ConversationRepository(mkdtempSync(join(tmpdir(), 'athena-checkpoint-')))
     const calls: { messages: ChatMessage[]; options: StreamOptions }[] = []
-    const provider: AIProvider = { testConnection: async () => true, streamMessage: async function* (messages, options = {}) {
+    const provider: AIProvider = { contextCheckpointFormat: 'openai-responses', testConnection: async () => true, streamMessage: async function* (messages, options = {}) {
       calls.push({ messages: structuredClone(messages), options })
       options.onCheckpoint?.([{ role: 'user', content: 'Checkpoint: preserve original constraints; task pending verification.' }])
       yield { type: 'text', text: 'Answer' }; yield { type: 'done' }

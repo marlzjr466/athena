@@ -39,7 +39,9 @@ export function filesystemToolError(error: unknown, requestedPath: string, opera
     authorizationScope: scope, effectiveToolAuthorization, operation, project,
     policyRule: typed?.policyRule ?? null,
     macOSAccessAttempted: typed?.macOSAccessAttempted ?? Boolean(code),
-    recovery: reason === 'operation_requires_approval'
+    recovery: reason === 'file_not_found'
+      ? 'Use list_directory on the nearest existing parent, or search_files in the authorized project for the basename. Use returned paths; do not repeat the same missing read or treat it as permission denial. Continue unrelated work if this evidence is optional.'
+      : reason === 'operation_requires_approval'
       ? typed?.policyRule === 'authorization_refresh_required' ? 'Explicitly continue the preserved task to refresh authorization. Completed operations must not be replayed.'
         : 'Request approval for this exact operation in the parent conversation. Do not retry after a decline without new user direction.'
       : reason === 'filesystem_policy_denied' ? 'Inspect the policy rule. Full Mac Access does not override protected resources. Use an eligible exact-file read approval or a redacted copy; do not change ownership or ACLs.'

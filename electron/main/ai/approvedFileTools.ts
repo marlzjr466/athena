@@ -22,6 +22,7 @@ export function createApprovedFileTools(service: AttachmentService, sessionId: s
       return { name, description, parameters }
     }),
     assertAccess,
+    operationRisk: (name, input) => definitions.find(tool => tool.name === name)?.schema.safeParse(input).success ? 'read-only' : 'unknown',
     parallelSafe: () => true,
     async execute(name, input, signal) {
       const check = () => { assertAccess(); if (signal.aborted) throw new ChatError('Approved file reading cancelled.') }

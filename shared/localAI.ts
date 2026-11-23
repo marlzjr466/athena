@@ -81,7 +81,7 @@ export interface LocalStatus {
   macVoices: Array<{ name: string; locale: string }>
   contextAllocations?: Array<{ model: string; tokens: number; confirmedAt: string; promptTokens: number; durationMs: number }>
   /** Last reply measured by the inference engine. System and history counts come from the GGUF tokenizer when it is available. */
-  lastPromptUsage?: { model: string; promptTokens: number; outputTokens: number; contextWindow: number; reservedOutputTokens: number; systemTokens: number | null; historyTokens: number | null; at: string }
+  lastPromptUsage?: { model: string; promptTokens: number; cachedPromptTokens?: number; outputTokens: number; contextWindow: number; reservedOutputTokens: number; systemTokens: number | null; historyTokens: number | null; totalDurationNs?: number; loadDurationNs?: number; promptEvalDurationNs?: number; generationDurationNs?: number; at: string }
   engineFindings?: import('./engineSupport').EngineFinding[]
   longContextNote?: string
   llamaValidation?: import('./llamaLongContext').LlamaValidation | null

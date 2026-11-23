@@ -1,3 +1,4 @@
+import { credentialEntry } from './secureCredentialEntry'
 import { app } from 'electron'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
@@ -6,7 +7,10 @@ import { request as httpsRequest, type RequestOptions as HttpsRequestOptions } f
 import { isIP } from 'node:net'
 import { z } from 'zod'
 import { apiKeySchema, modelIdSchema } from '../../../shared/ai'
-import type { WebCitation } from '../../../shared/webAccess'
+import type { WebCitation, WebAccessSettings } from '../../../shared/webAccess'
+import { searxngEngines, type SearxngRuntime } from './searxngRuntime'
+import { SearchError } from '../../../shared/searchOutcome'
+import { log } from '../logger'
 import { billingErrorMessage } from './apiErrors'
 import { ChatError } from './AIProvider'
 import { readResponseBytes } from './responseBody'
@@ -52,7 +56,8 @@ function privateAddress(address: string): boolean {
   return first < 0x2000 || first > 0x3fff || normalized.startsWith('2001:db8:')
 }
 
-async function resolvePublicHost(hostname: string): Promise<{ address: string; family: 4 | 6 }> {
+async function resolvePublicHost(hostname: string, signal?: AbortSignal): Promise<{ address: string; family: 4 | 6 }> {
+  signal?.throwIfAborted()
   const literalFamily = isIP(hostname)
   if (literalFamily) {
     if (privateAddress(hostname)) throw new ChatError('That page address is on a private or local network, so Athena will not access it.')
@@ -60,7 +65,13 @@ async function resolvePublicHost(hostname: string): Promise<{ address: string; f
   }
   if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw new ChatError('That page address is local or private, so Athena will not access it.')
   let addresses: Array<{ address: string; family: number }>
-  try { addresses = await lookup(hostname, { all: true, verbatim: true }) }
+  try {
+    addresses = await new Promise((resolve, reject) => {
+      const abort = () => reject(new ChatError('Website lookup was cancelled or timed out.'))
+      signal?.addEventListener('abort', abort, { once: true })
+      void lookup(hostname, { all: true, verbatim: true }).then(resolve, reject).finally(() => signal?.removeEventListener('abort', abort))
+    })
+  }
   catch { throw new ChatError('Athena could not resolve that website address.') }
   if (!addresses.length || addresses.some((entry) => privateAddress(entry.address))) throw new ChatError('That website resolves to a private or local network address, so Athena will not access it.')
   const selected = addresses[0]
@@ -111,9 +122,8 @@ export interface SearchCredentialStore { read(): Promise<string | null>; write(k
 export class BraveSearchCredentialStore {
   private async entry() {
     if (process.platform !== 'darwin') throw new Error('Brave credentials are stored in macOS Keychain.')
-    const { AsyncEntry } = await import('@napi-rs/keyring')
     const profile = app.isPackaged ? 'prod' : createHash('sha256').update(app.getPath('userData')).digest('hex').slice(0, 24)
-    return new AsyncEntry(`com.athena.companion.websearch.${profile}`, 'brave-search-api-key')
+    return credentialEntry(`com.athena.companion.websearch.${profile}`, 'brave-search-api-key')
   }
   async read(): Promise<string | null> {
     const raw = await (await this.entry()).getPassword()
@@ -127,6 +137,23 @@ export class BraveSearchCredentialStore {
 }
 
 export class WebSearchService {
+  private configuration?: () => { webAccess: WebAccessSettings; strictOffline: boolean }
+  private runtime?: SearxngRuntime
+  private network = new AbortController()
+  configure(settings: () => { webAccess: WebAccessSettings; strictOffline: boolean }, runtime: SearxngRuntime): void { this.configuration = settings; this.runtime = runtime }
+  localStatus() { return this.runtime?.status() }
+  private assertInternet(): void {
+    const config = this.configuration?.()
+    if (config && (config.strictOffline || !config.webAccess.webSearchEnabled)) throw new ChatError('Internet Access is disabled. Enable it in Tools & Web Access to search or read public pages.')
+  }
+  reconcile(): void {
+    this.network.abort(); this.network = new AbortController()
+    const config = this.configuration?.()
+    if (!config || !this.runtime) return
+    if (!config.strictOffline && config.webAccess.webSearchEnabled && config.webAccess.searchProvider === 'searxng' && config.webAccess.automaticStartup) void this.runtime.start(this.network.signal).catch(() => {})
+    else void this.runtime.stop()
+  }
+  async restartLocal(): Promise<void> { this.assertInternet(); if (!this.runtime) throw new ChatError('Local search runtime is unavailable.'); await this.runtime.restart() }
   private readonly verifiedOpenAI = new Map<string, number>()
   private readonly recentResults = new Map<string, WebCitation[]>()
   constructor(private credentials: SearchCredentialStore, private fetcher: typeof fetch = (...args) => fetch(...args)) {}
@@ -145,7 +172,34 @@ export class WebSearchService {
   async saveKey(key: string): Promise<void> { await this.credentials.write(braveKeySchema.parse(key)) }
   async removeKey(): Promise<void> { await this.credentials.remove() }
   async search(query: string, count: number, timeoutMs: number, news = false, apiKeyOverride?: string, requestSignal?: AbortSignal): Promise<SearchResult[]> {
+    this.assertInternet()
+    requestSignal = AbortSignal.any([this.network.signal, ...(requestSignal ? [requestSignal] : [])])
     const q = z.string().trim().min(1).max(500).parse(query)
+    if (this.configuration?.().webAccess.searchProvider === 'searxng' && !apiKeyOverride) {
+      if (!this.runtime) throw new SearchError('disconnected', 'Local SearXNG is unavailable. Retry Initialization in Tools & Web Access.')
+      try {
+        const parsed = z.object({ results: z.array(z.object({ title: z.string(), url: z.string(), content: z.string().optional(), publishedDate: z.string().nullable().optional() }).passthrough()), unresponsive_engines: z.array(z.array(z.unknown())).optional() }).safeParse(await this.runtime.search(q, news, timeoutMs, requestSignal))
+        if (!parsed.success) throw new SearchError('invalid-response', 'Local SearXNG returned an unexpected JSON search response.')
+        const response = parsed.data
+        const failed = new Set((response.unresponsive_engines ?? []).map(entry => entry[0]).filter((name): name is string => typeof name === 'string' && searxngEngines(news).includes(name)))
+        log('web.searxng_engines', { provider: 'searxng', queryId: createHash('sha256').update(q).digest('hex'), resultCount: response.results.length, failedEngineCount: failed.size, engineErrors: [...failed].join(','), serviceStatus: this.runtime.status().state })
+        if (!response.results.length && failed.size) throw new SearchError(searxngEngines(news).every(name => failed.has(name)) ? 'upstream-failure' : 'engine-unavailable', 'Local SearXNG returned no sources and reported unavailable upstream engines. External evidence could not be verified; local work can continue.')
+        this.assertInternet(); requestSignal.throwIfAborted()
+        const seen = new Set<string>(), retrievedAt = new Date().toISOString()
+        return response.results.flatMap(item => {
+          try {
+            const url = new URL(item.url)
+            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || seen.has(url.href) || url.hostname === 'localhost' || isIP(url.hostname) && privateAddress(url.hostname)) return []
+            seen.add(url.href)
+            return [{ title: decodeEntities(item.title).slice(0, 300), url: url.href, snippet: decodeEntities(item.content ?? '').replace(/<[^>]+>/g, ' ').slice(0, 1600), source: hostDomain(url.href), retrievedAt, ...(item.publishedDate ? { publicationDate: item.publishedDate.slice(0, 100) } : {}) }]
+          } catch { return [] }
+        }).slice(0, Math.max(1, Math.min(10, count)))
+      } catch (error) {
+        if (error instanceof ChatError || error instanceof SearchError) throw error
+        requestSignal.throwIfAborted()
+        throw new ChatError(requestSignal.aborted ? 'Local search was cancelled.' : this.runtime.status().state === 'error' ? this.runtime.status().message : 'Local SearXNG could not complete this search. Check your internet connection or restart the search service.')
+      }
+    }
     const key = apiKeyOverride ? braveKeySchema.parse(apiKeyOverride) : await this.credentials.read()
     if (!key) throw new ChatError('Web search is not connected. Add a Brave Search API key in Settings → AI → Tools & Web Access, or choose another configured search option.')
     const controller = new AbortController()
@@ -158,7 +212,7 @@ export class WebSearchService {
       if (response.status === 401 || response.status === 403) { await response.body?.cancel(); throw new ChatError('Brave rejected the saved search credential. Replace it in Settings → AI → Tools & Web Access.') }
       if (response.status === 429) { await response.body?.cancel(); throw new ChatError('Brave Search rate or plan limit was reached. Check your Brave API dashboard; Athena did not switch providers.') }
       if (!response.ok) { await response.body?.cancel(); throw new ChatError(`Brave Search is unavailable (HTTP ${response.status}). Retry later or test the connection in Settings → AI.`) }
-      const parsed = braveResponseSchema.safeParse(await response.json())
+      const parsed = braveResponseSchema.safeParse(JSON.parse(Buffer.from(await readResponseBytes(response, 2_000_000, signal)).toString('utf8')))
       if (!parsed.success) throw new ChatError('Brave returned an unexpected search response. Try another query.')
       const retrievedAt = new Date().toISOString()
       const results = [...(news ? parsed.data.news?.results ?? [] : []), ...(parsed.data.web?.results ?? [])]
@@ -180,11 +234,13 @@ export class WebSearchService {
   }
 
   async fetchPage(input: string, timeoutMs: number, maxCharacters = 12_000, signal?: AbortSignal, redirectCount = 0): Promise<ExtractedPage> {
+    this.assertInternet()
+    signal = AbortSignal.any([this.network.signal, AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
     const url = z.string().url().max(2048).parse(input)
     let target: URL
     try { target = new URL(url) } catch { throw new ChatError('Enter a valid HTTP or HTTPS web address.') }
     if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || (target.port && target.port !== '80' && target.port !== '443')) throw new ChatError('Athena can open only public HTTP or HTTPS pages on standard ports.')
-    const address = await resolvePublicHost(target.hostname)
+    const address = await resolvePublicHost(target.hostname, signal)
     const merged = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)])
     const requestOptions = {
       protocol: target.protocol, hostname: target.hostname, port: target.port || undefined,
@@ -233,7 +289,10 @@ export class WebSearchService {
         })
         response.on('error', fail)
       }
-      merged.addEventListener('abort', () => client.destroy(new Error('Request aborted.')), { once: true })
+      const abort = () => client.destroy(new Error('Request aborted.'))
+      merged.addEventListener('abort', abort, { once: true })
+      client.once('close', () => merged.removeEventListener('abort', abort))
+      if (merged.aborted) abort()
       client.on('error', fail)
       client.end()
     })
@@ -320,6 +379,8 @@ export class WebSearchService {
    * receive the same OpenAI-sourced evidence.
    */
   async searchOpenAI(query: string, apiKey: string, model: string, timeoutMs: number, requestSignal?: AbortSignal): Promise<OpenAIWebSearchEvidence> {
+    this.assertInternet()
+    requestSignal = AbortSignal.any([this.network.signal, ...(requestSignal ? [requestSignal] : [])])
     const parsedQuery = z.string().trim().min(1).max(500).safeParse(query)
     const parsedKey = apiKeySchema.safeParse(apiKey)
     const parsedModel = modelIdSchema.safeParse(model)

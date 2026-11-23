@@ -1,46 +1,57 @@
 import { useId, useState, type FormEvent } from 'react'
+import { parseChoiceInteraction, type ChoiceInteraction } from '../../../shared/chatInteraction'
 
+export { parseChoiceInteraction }
+
+/** Compatibility shape retained for existing callers and focused parser tests. */
 export interface ChoicePrompt { mode: 'single' | 'multiple'; options: string[] }
-
-/** Be conservative: only a terminal option list preceded by an explicit question is interactive. */
 export function parseChoicePrompt(content: string): ChoicePrompt | null {
-  const withoutFences = content.replace(/```[\s\S]*?```/g, '')
-  const lines = withoutFences.trim().split('\n')
-  const options: string[] = []
-  let index = lines.length - 1
-  while (index >= 0 && !lines[index].trim()) index--
-  for (; index >= 0; index--) {
-    const match = /^\s{0,3}(?:[-*+] |\d+[.)] |[A-Z][.)] )(.+?)\s*$/.exec(lines[index])
-    if (!match) break
-    const option = match[1].replace(/^\*\*|\*\*$/g, '').replace(/^`|`$/g, '').trim()
-    if (!option || option.length > 180 || /^\[[ xX]\]/.test(option)) return null
-    options.unshift(option)
-  }
-  if (options.length < 2 || options.length > 8) return null
-  const introduction = lines.slice(Math.max(0, index - 5), index + 1).join(' ').trim()
-  if (!/(?:\?|\b(?:choose|select|pick|which (?:option|approach|one|of these)|would you (?:like|prefer))\b)/i.test(introduction)) return null
-  if (/\b(?:for example|examples include|such as)\b/i.test(introduction)) return null
-  const mode = /\b(?:select|choose|pick|check)\s+(?:all|multiple|any|more than one)\b|\bmultiple (?:choices|options|answers)\b/i.test(introduction) ? 'multiple' : 'single'
-  return { mode, options: options.filter(option => !/^other(?:\s*[:—–-].*)?$/i.test(option)) }
+  const parsed = parseChoiceInteraction(content, { conversationId: 'compat', messageId: 'compat' })
+  return parsed ? { mode: parsed.interaction.mode, options: parsed.interaction.options.filter(option => !parsed.interaction.freeTextOptions.includes(option) && !/^other(?:\s*[:—–-].*)?$/i.test(option)) } : null
 }
 
-export function ChatChoices({ prompt, disabled, onAnswer }: { prompt: ChoicePrompt; disabled: boolean; onAnswer(answer: string): Promise<boolean> }) {
+export function ChatChoices({ interaction, disabled, onAnswer }: { interaction: ChoiceInteraction; disabled: boolean; onAnswer(answer: string): Promise<boolean> }) {
   const name = useId()
   const [selected, setSelected] = useState<string[]>([])
   const [other, setOther] = useState('')
   const [sending, setSending] = useState(false)
-  const toggle = (value: string) => setSelected(current => prompt.mode === 'single' ? [value] : current.includes(value) ? current.filter(item => item !== value) : [...current, value])
+  const [sent, setSent] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const selectedNeedsText = selected.some(option => interaction.freeTextOptions.includes(option)) || (interaction.allowOther && selected.includes('Other'))
+  const toggle = (value: string) => {
+    setFailed(false)
+    setSelected(current => interaction.mode === 'single' ? [value] : current.includes(value) ? current.filter(item => item !== value) : [...current, value])
+  }
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (disabled || sending || !selected.length || (selected.includes('Other') && !other.trim())) return
-    const choices = [...prompt.options.filter(option => selected.includes(option)), ...(selected.includes('Other') ? [`Other: ${other.trim()}`] : [])]
+    if (disabled || sending || sent || !selected.length || (selectedNeedsText && !other.trim())) return
+    const choices = selected.map(choice => {
+      if (interaction.freeTextOptions.includes(choice)) return `${choice}: ${other.trim()}`
+      if (choice === 'Other' && interaction.allowOther) return `Other: ${other.trim()}`
+      return choice
+    })
     setSending(true)
-    try { await onAnswer(prompt.mode === 'single' ? choices[0] : `My choices:\n${choices.map(choice => `- ${choice}`).join('\n')}`) }
+    setFailed(false)
+    try {
+      const accepted = await onAnswer(interaction.mode === 'single' ? choices[0] : `My choices:\n${choices.map(choice => `- ${choice}`).join('\n')}`)
+      if (accepted) setSent(true)
+      else setFailed(true)
+    } catch { setFailed(true) }
     finally { setSending(false) }
   }
-  return <form className="chat-choices" onSubmit={(event) => void submit(event)}><fieldset disabled={disabled || sending}><legend>{prompt.mode === 'multiple' ? 'Select all that apply' : 'Choose one'}</legend>
-    {[...prompt.options, 'Other'].map(option => <label key={option} className="chat-choice"><input type={prompt.mode === 'multiple' ? 'checkbox' : 'radio'} name={name} checked={selected.includes(option)} onChange={() => toggle(option)} /><span>{option}</span></label>)}
-    {selected.includes('Other') && <textarea aria-label="Explain other choice" placeholder="Tell Athena what you prefer…" value={other} onChange={event => setOther(event.target.value)} maxLength={1000} rows={2} />}
-    <button type="submit" className="button primary" disabled={!selected.length || (selected.includes('Other') && !other.trim())}>{sending ? 'Sending…' : 'Send choice'}</button>
-  </fieldset></form>
+  const options = [...interaction.options, ...(interaction.allowOther ? ['Other'] : [])]
+  const alreadyAnswered = interaction.status === 'answered'
+  return <form className="chat-choices" onSubmit={(event) => void submit(event)}>
+    <fieldset disabled={disabled || sending || sent || alreadyAnswered}>
+      <legend>{interaction.question}</legend>
+      {options.map((option, index) => <label key={`${index}-${option}`} className="chat-choice">
+        <input type={interaction.mode === 'multiple' ? 'checkbox' : 'radio'} name={name} checked={selected.includes(option) || (alreadyAnswered && (interaction.answer === option || interaction.answer?.startsWith(`${option}:`) === true || interaction.answer?.includes(`- ${option}`) === true))} onChange={() => toggle(option)} />
+        <span>{option}</span>
+      </label>)}
+      {selectedNeedsText && <textarea aria-label="Explain your choice" placeholder="Add your answer…" value={other} onChange={event => { setOther(event.target.value); setFailed(false) }} maxLength={1000} rows={2} />}
+      {alreadyAnswered && interaction.answer && <p className="chat-message-note">Answer sent: {interaction.answer}</p>}
+      <button type="submit" className="button primary" disabled={alreadyAnswered || !selected.length || (selectedNeedsText && !other.trim())}>{alreadyAnswered || sent ? 'Choice sent' : sending ? 'Sending…' : 'Send choice'}</button>
+      {failed && <p role="alert" className="chat-error">Athena could not send that choice. Your selection is saved here; try again.</p>}
+    </fieldset>
+  </form>
 }

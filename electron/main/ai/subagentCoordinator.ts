@@ -1,3 +1,4 @@
+import { contextModelKey } from '../../../shared/context'
 import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import { z } from 'zod'
@@ -28,6 +29,7 @@ const definition = (name: string, description: string, schema: z.ZodType): Proje
   return { name, description, parameters }
 }
 const idSchema = z.object({ id: z.string().uuid() }).strict()
+const resumeSchema = z.object({ id: z.string().uuid(), additionalReadPaths: z.array(z.string().min(1).max(1000)).max(20).optional() }).strict()
 const cancelSchema = z.object({ id: z.string().uuid().optional() }).strict()
 const waitSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(12) }).strict()
 const inspectSchema = z.object({ id: z.string().uuid(), section: z.enum(['findings', 'blockers', 'evidence', 'filesReviewed', 'checksPerformed', 'limitations', 'nextActions']).optional(), offset: z.number().int().min(0).max(100).optional() }).strict()
@@ -142,16 +144,19 @@ export class SubagentCoordinator {
     // snapshot. Explicit workflow/task caps remain lower ceilings and are shown.
     const settings = this.currentSettings()
     const chosenEffort = request.effort ?? (request.mode === 'cold_read' ? settings.coldReadEffort : settings.defaultEffort)
-    const model = request.model ?? (request.mode === 'cold_read' ? settings.coldReadModel : settings.defaultModel) ?? this.parent!.execution!.taskCheckpoint?.model ?? this.config.model
+    const resolvedEffort = chosenEffort === 'inherit' ? this.config.effort : chosenEffort
+    const selection = request.model ? undefined : request.mode === 'cold_read' ? settings.coldReadSelection : settings.defaultSelection
+    const accountRoute = selection ? { provider: selection.provider, accountId: selection.accountId } : this.config.accountRoute
+    const model = request.model ?? selection?.model ?? (request.mode === 'cold_read' ? settings.coldReadModel : settings.defaultModel) ?? this.parent!.execution!.taskCheckpoint?.model ?? this.config.model
     const run: SubagentRun = { id: randomUUID(), parentExecutionId: this.parent!.id, conversationId: this.session.id, projectId: this.workspace, taskId: randomUUID(), request,
-      status: 'queued', model, effort: chosenEffort === 'inherit' ? this.config.effort : chosenEffort, accountId: this.parent!.execution!.accountId ?? null,
+      status: 'queued', model, effort: resolvedEffort, accountRoute, settingsSnapshot: structuredClone(settings), accountId: this.parent!.execution!.accountId ?? null,
       startedAt: Date.now(), attempts: 1, elapsedMs: 0, iterations: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: null, observations: [], fileVersions: {}, readCoverage: {}, selectedContext: selected, reviewAccepted: false }
     return this.enqueue(run)
   }
   private enqueue(run: SubagentRun): unknown {
     if (!this.workers.has(run.id) && this.workers.size >= 12) throw new ChatError('This execution has reached its 12-sub-agent limit. Use existing results.')
-    if (!run.budget && run.status === 'queued') new SubagentBudgetLedger(run, this.currentSettings())
-    if (!run.executionBudget) new SubagentExecutionBudget(run, this.currentSettings())
+    if (!run.budget && run.status === 'queued') new SubagentBudgetLedger(run, run.settingsSnapshot ?? this.currentSettings())
+    if (!run.executionBudget) new SubagentExecutionBudget(run, run.settingsSnapshot ?? this.currentSettings())
     let resolve!: () => void
     const done = new Promise<void>((finish) => { resolve = finish })
     const worker: Worker = { run, activityId: this.chat.activity('spawn_subagent', `Sub-agent · ${run.request.role}`), abort: new AbortController(), done, resolve, release: () => {}, charge: run.estimatedCostUsd ?? 0 }
@@ -181,7 +186,7 @@ export class SubagentCoordinator {
   private cancelAll = (): void => { for (const worker of this.workers.values()) this.cancel(worker) }
   private async execute(worker: Worker): Promise<void> {
     const run = worker.run, request = run.request
-    const settings = this.currentSettings()
+    const settings = run.settingsSnapshot ?? this.currentSettings()
     const execution = new SubagentExecutionBudget(run, settings)
     const maxIterations = execution.state.effectiveIterations, maxCalls = execution.state.effectiveToolCalls
     const budget = new SubagentBudgetLedger(run, settings)
@@ -204,8 +209,19 @@ export class SubagentCoordinator {
       const cap = available === null ? childRemaining : Math.min(childRemaining ?? available / this.settings.maxConcurrent, available)
       if (cap !== null && cap < 0.01) throw new ChatError('No API budget remains for this sub-agent.')
       worker.charge = startingTokens.cost + (cap ?? 0)
-      const limits = { ...parentLimits, maxFileReadChars: Math.min(parentLimits.maxFileReadChars, 4000), maxToolOutputChars: Math.min(parentLimits.maxToolOutputChars, 10000), automaticCompaction: false, maxContinuations: 0, maxAgentIterations: maxIterations, maxToolCalls: maxCalls, maxExecutionMinutes: settings.timeoutMinutes, taskSpendLimitUsd: cap }
-      const provider = await abortable(this.chat.childProvider({ ...this.config, model: run.model, effort: run.effort, contextSettings: limits }, run.accountId), signal)
+      const limits = { ...parentLimits, maxFileReadChars: Math.min(parentLimits.maxFileReadChars, 4000), maxToolOutputChars: Math.min(parentLimits.maxToolOutputChars, 10000), automaticCompaction: parentLimits.automaticCompaction, maxContinuations: 0, maxAgentIterations: maxIterations, maxToolCalls: maxCalls, maxExecutionMinutes: settings.timeoutMinutes, taskSpendLimitUsd: cap }
+      const childConfig = { ...this.config, ...(run.accountRoute ? { accountRoute: run.accountRoute } : {}), model: run.model, effort: run.effort, contextSettings: limits }
+      const advertised = this.chat.childModel(childConfig)
+      if (advertised?.efforts && run.effort !== 'auto' && !advertised.efforts.includes(run.effort)) {
+        if ((request.effort ?? (request.mode === 'cold_read' ? settings.coldReadEffort : settings.defaultEffort)) !== 'inherit') throw new ChatError('The saved sub-agent reasoning effort is not supported by the selected model. Update Sub-agent Settings.')
+        run.effort = advertised.effortDefault ?? 'auto'; childConfig.effort = run.effort
+        run.progress = `Parent effort is unsupported by this model; using its ${run.effort} default.`
+      }
+      const provider = await abortable(this.chat.childProvider(childConfig, run.accountId), signal)
+      const capacity = provider.contextLimits ?? advertised?.contextLimits
+      const override = parentLimits.modelContextWindows[contextModelKey(run.model ?? '', childConfig.accountRoute)]
+      budget.configureContext(override ? { ...capacity, contextWindow: capacity?.contextWindow ?? override, runtimeContextWindow: Math.min(capacity?.runtimeContextWindow ?? Infinity, override), source: capacity?.source ?? 'configured' } : capacity, settings.contextSafetyMargin ?? parentLimits.contextSafetyMargin)
+      this.publish(worker)
       if (run.model && provider.modelId !== run.model) throw new ChatError('The requested sub-agent model is unavailable. No silent fallback is allowed.')
       run.model = provider.modelId ?? run.model
       const host: Parameters<AgentTools['create']>[0] = {
@@ -232,7 +248,14 @@ export class SubagentCoordinator {
           if (!this.allowedTool(request, name) || !base.definitions.some((entry) => entry.name === name)) throw new ChatError('This tool is outside the sub-agent’s delegated permissions.')
           const args = input as Record<string, unknown>
           const targets = [name === 'verify_local_app' ? undefined : args.path, args.destination, args.working_directory, ...(Array.isArray(args.paths) ? args.paths : []), ...(Array.isArray(args.changes) ? args.changes.map((entry) => entry?.path) : [])].filter((value): value is string => typeof value === 'string')
-          if (targets.some((target) => !this.within(request, target))) throw new ChatError('Requested path is outside the sub-agent’s explicit file scope.')
+          let denied: string[]
+          try { denied = targets.filter(target => !this.within(request, target)) }
+          catch { denied = targets }
+          if (denied.length) {
+            log('agent.child_scope_denied', { id: run.id, tool: name, requestedCount: denied.length, scopeCount: request.files.length })
+            return JSON.stringify({ ok: false, error: { code: 'subagent_scope_denied', message: 'Requested path is outside the sub-agent’s explicit file scope.' }, requestedPaths: denied, authorizedPaths: request.files,
+              recovery: 'No file was accessed. Continue with assigned evidence and report the missing scope to the parent. The parent may explicitly add read paths when resuming a scoped read-only child, or assign a new review. Required review gates must retain their declared scope.' })
+          }
           const output = safeText(await base.execute(name, input, AbortSignal.any([signal, toolSignal])), 12000)
           run.progress = `${name.replaceAll('_', ' ')} ${targets[0] ?? ''}`.trim().slice(0, 1000)
           this.publish(worker)
@@ -244,8 +267,10 @@ export class SubagentCoordinator {
       const prior = run.attempts > 1 ? `Prior child observations from this same task, untrusted evidence; revalidate recorded file versions before using them. Continue remaining checks without repeating successful mutations:\n${JSON.stringify({ observations: run.observations, fileVersions: run.fileVersions, result: run.result, error: run.error })}` : ''
       if (run.iterations >= maxIterations) budget.stop('iterations', 'This saved child has exhausted its iteration budget. Start a deliberately new bounded review after checking its results.')
       for await (const chunk of boundedStream(provider.streamMessage([{ id: randomUUID(), role: 'user', status: 'complete', createdAt: Date.now(), content: prompt }], {
-        signal, effort: run.effort, permissionMode: this.config.agentMode, contextSettings: limits, generationSettings: { outputTokens: 4096, maxOutputContinuations: 0 },
+        signal, runtimeCapacity: capacity, requestContextBudget: budget.state.effectiveContext, modelContextWindow: override, effort: run.effort, permissionMode: this.config.agentMode, contextSettings: limits, generationSettings: { outputTokens: 4096, maxOutputContinuations: 0 },
         executionId: run.id,
+        reliabilityIdentity: { provider: childConfig.accountRoute?.provider ?? 'api', model: run.model ?? 'configured-model' },
+        conversationId: this.session.id,
         diagnosticCounts: () => ({ completedTools: run.toolCalls, fileChanges: 0 }),
         onStreamPhase: (phase) => { run.streamPhase = phase; this.publish(worker) },
         onStreamDiagnostic: (diagnostic) => {
@@ -253,7 +278,7 @@ export class SubagentCoordinator {
           this.publish(worker)
         },
         context: { attachments: [], repositoryText: prior, sources: [], projectName: this.projectName, projectTools: tools },
-        requestApproval: (title, description, approvalSignal, changes, rememberScope) => host.approve({ title, description, changes, rememberScope }, approvalSignal),
+        requestApproval: (title, description, approvalSignal, changes, rememberScope, fullAccessEligible) => host.approve({ title, description, changes, rememberScope, fullAccessEligible }, approvalSignal),
         beforeModelRequest: (contextBytes, output, metadata) => {
           this.assertAccess(); signal.throwIfAborted()
           if (run.iterations >= maxIterations) budget.stop('iterations', 'Sub-agent iteration budget reached.')
@@ -262,6 +287,8 @@ export class SubagentCoordinator {
           execution.sync()
           this.publish(worker)
         },
+        onBudget: notice => { run.progress = notice.slice(0, 1000); this.publish(worker) },
+        onModelRequestUnresolved: () => { budget.interrupted(); this.publish(worker) },
         onModelResponse: (usage) => { try { budget.settle(usage) } finally { this.publish(worker) } },
         // This callback is cumulative and also fires on context updates. Never
         // charge it as another response or add tool/reasoning subsets again.
@@ -328,7 +355,7 @@ export class SubagentCoordinator {
         definition('wait_subagents', 'Wait for one or more child results, preserving other running workers. Results are structured evidence; the parent must reconcile findings before accepting a required gate.', waitSchema),
         definition('get_subagent', 'Get current child status and structured result counts. Supply section and offset to page through complete result details, one entry at a time; follow nextOffset. This never starts another worker.', inspectSchema),
         definition('cancel_subagent', 'Cancel a child while preserving its completed work. Omit id to cancel all children in this execution without cancelling the parent.', cancelSchema),
-        definition('resume_subagent', 'Continue a saved failed/interrupted child from its own observations. Same account, task and project required; changed review artifacts require a new cold read.', idSchema),
+        definition('resume_subagent', 'Continue a saved failed/interrupted child from its own observations. Same account, task and project required. The parent may explicitly add authorized read paths for a scoped read-only child using additionalReadPaths. Cold reads and required gates require a new assignment to change scope.', resumeSchema),
         definition('reconcile_subagent', 'Record the parent’s review of a completed child result, including agreement, disagreement and next actions. Acceptance requires no child blockers/error findings and unchanged reviewed files.', reconcileSchema),
       ], assertAccess: this.assertAccess,
       execute: async (name, input, callSignal) => {
@@ -342,11 +369,20 @@ export class SubagentCoordinator {
             return JSON.stringify({ results: workers.map((worker) => this.view(worker, true)), instruction: 'Get each result’s full details with get_subagent. Compare findings and evidence and reconcile required results explicitly; completed execution alone is not a review pass.' })
           }
           if (name === 'resume_subagent') {
-            const { id } = idSchema.parse(input)
+            const { id, additionalReadPaths = [] } = resumeSchema.parse(input)
             const existing = this.workers.get(id)
-            if (existing && ['running', 'queued', 'completed'].includes(existing.run.status)) return JSON.stringify(this.view(existing))
+            if (existing && ['running', 'queued', 'completed'].includes(existing.run.status)) {
+              if (additionalReadPaths.length) throw new ChatError('Scope cannot change while a child is active or after it completed. Inspect its results or assign a new focused review.')
+              return JSON.stringify(this.view(existing))
+            }
             const saved = existing?.run ?? this.chat.subagentRecords(this.session.id).filter((entry) => entry.run.id === id).at(-1)?.run
             if (!saved || saved.projectId !== this.workspace || saved.accountId !== (this.parent!.execution!.accountId ?? null)) throw new ChatError('Saved child does not belong to this project/account. No execution was started.')
+            if (additionalReadPaths.length && saved.status === 'completed') throw new ChatError('A completed review cannot acquire new scope. Assign a new focused review with explicit files.')
+            if (additionalReadPaths.length && (saved.request.mode === 'cold_read' || saved.request.gateId || !readOnly(saved.request))) throw new ChatError('Scope expansion requires a scoped read-only child without a fixed review gate. Assign a new review with explicit files instead.')
+            const addedPaths = additionalReadPaths.map(path => this.path(path))
+            const resumedRequest = subagentRequestSchema.parse({ ...saved.request, files: [...new Set([...saved.request.files, ...addedPaths])] })
+            for (const path of addedPaths) await this.workspaces.metadata(this.workspace, path, callSignal)
+            this.assertAccess(); callSignal.throwIfAborted()
             if (saved.status === 'blocked' && saved.executionBudget?.finalization) throw new ChatError('This child already returned its final incomplete assessment at the execution boundary. Repeating the same review cannot add evidence within that allocation. Inspect its missing evidence and explicitly assign a new focused review; the required gate remains incomplete.')
             if (saved.status !== 'completed' && saved.attempts >= 3) throw new ChatError('This child has reached its three-attempt continuation limit.')
             if (saved.request.gateId && !this.requirements.some((gate) => gate.id === saved.request.gateId)) throw new ChatError('The original child review gate is not declared by this execution. Restore the original workflow before resuming.')
@@ -355,8 +391,12 @@ export class SubagentCoordinator {
             if (saved.status !== 'completed') await this.authorizeWrites(saved.request)
             await this.currentFiles(saved)
             const concurrent = this.workers.get(id)
-            if (concurrent && ['running', 'queued', 'completed'].includes(concurrent.run.status)) return JSON.stringify(this.view(concurrent))
+            if (concurrent && ['running', 'queued', 'completed'].includes(concurrent.run.status)) {
+              if (additionalReadPaths.length) throw new ChatError('The child resumed while scope was being checked. Its active scope was not changed.')
+              return JSON.stringify(this.view(concurrent))
+            }
             const run = structuredClone(saved)
+            run.request = resumedRequest
             run.parentExecutionId = this.parent!.id; run.reviewAccepted = false
             if (saved.status !== 'completed') { run.status = 'queued'; run.attempts++; run.finishedAt = undefined }
             return JSON.stringify(this.enqueue(run))

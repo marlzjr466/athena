@@ -1,0 +1,34 @@
+name: Managed search runtime
+on: [workflow_dispatch]
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prepare:search
+      - run: npm run typecheck
+      - run: npm test -- --run tests/searxngRuntime.test.ts tests/realtimeTools.test.ts tests/settings.test.ts tests/chatContextOpenAISearch.test.ts
+        env:
+          ATHENA_SEARXNG_LIVE: '1'
+      - run: npm run build
+      - if: runner.os == 'Windows'
+        run: npx electron-builder --win --x64 --dir
+      - if: runner.os == 'macOS'
+        run: npx electron-builder --mac --dir --config.mac.sign=null --config.mac.identity=null
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: search-runtime-${{ matrix.os }}
+          path: release/
+      - run: node scripts/test-packaged-search.mjs

@@ -33,6 +33,9 @@ describe('Copilot settings connected account', () => {
     expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Refresh status & models' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Refresh Usage' })).toBeEnabled()
+    expect(api.copilot).toHaveBeenCalledWith({ action: 'status' })
+    expect(api.getAIStatus).not.toHaveBeenCalled()
   })
 
   it('signs out the selected account and returns to sign-in', async () => {
@@ -47,8 +50,22 @@ describe('Copilot settings connected account', () => {
   it('refreshes model availability without offering another login', async () => {
     render(<CopilotSettings />)
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh status & models' }))
-    await waitFor(() => expect(api.getAIStatus).toHaveBeenCalledOnce())
-    expect(await screen.findByText(/2 models available/)).toBeInTheDocument()
+    await waitFor(() => expect(api.copilot).toHaveBeenCalledWith({ action: 'verify' }))
+    expect(api.getAIStatus).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Sign in with GitHub (Browser)' })).not.toBeInTheDocument()
+  })
+
+  it('refreshes quota only after an explicit click and displays the account-scoped result', async () => {
+    const quota = { accountId: 'cli:octocat', fetchedAt: Date.now(), quotas: [{ id: 'premium_interactions', name: 'Premium Interactions', isUnlimitedEntitlement: false, entitlementRequests: 300, usedRequests: 90, remainingPercentage: 70, resetDate: null, usageAllowedWithExhaustedQuota: false, overage: 0, overageAllowedWithExhaustedQuota: false }] }
+    api.copilot.mockImplementation(async (command: { action: string }) => command.action === 'usage' ? { ...connected, usage: quota } : connected)
+    render(<CopilotSettings />)
+    await screen.findByText('● Connected')
+    expect(api.copilot).toHaveBeenCalledTimes(1)
+    expect(api.copilot).toHaveBeenCalledWith({ action: 'status' })
+    expect(screen.getByText(/No usage metrics are available from this source yet/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh Usage' }))
+    expect(await screen.findByText('70% remaining')).toBeInTheDocument()
+    expect(api.copilot).toHaveBeenCalledWith({ action: 'usage' })
+    expect(api.getAIStatus).not.toHaveBeenCalled()
   })
 })

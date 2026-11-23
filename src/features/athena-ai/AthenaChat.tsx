@@ -15,23 +15,46 @@ import { AthenaChatSidebar } from './AthenaChatSidebar'
 import { SlashCommandPicker } from '../chat/SlashCommandPicker'
 import { BUILTIN_SLASH_COMMANDS, commandAtStart, filterSlashCommands, resolveSlashCommand, slashQuery, type SlashCommandCatalog, type SlashCommandDefinition } from '../../../shared/slashCommands'
 import { localContextNotice } from './localContextNotice'
-import { operationLabel, timelineBlocks } from '../chat/agentTimelinePresentation'
+import { conversationScrollKey } from '../chat/conversationScrollKey'
+import { ChatChoices } from '../chat/ChatChoices'
+import { parseChoiceInteraction } from '../../../shared/chatInteraction'
+import { activityFileSummaryLabels, operationLabel, timelineBlocks } from '../chat/agentTimelinePresentation'
 import '../../styles/chat.css'
 import '../../styles/conversations.css'
 import '../../styles/athenaChat.css'
 import '../../styles/automationProgress.css'
 
-function LocalMessage({ message, sessionId, retry, command, busy, canRetry = false }: {
-  message: Message; sessionId?: string; retry(): void; command: ReturnType<typeof useAthenaChat.getState>['command']; busy: boolean; canRetry?: boolean
+function localActivitySummary(activities: NonNullable<Message['execution']>['activities'], workspaceRoot?: string): string {
+  const unique = [...new Map(activities.map(activity => [activity.id, activity])).values()]
+  const files = activityFileSummaryLabels(unique, workspaceRoot)
+  const operationCount = unique.length
+  return [...files, `${operationCount} ${operationCount === 1 ? 'operation' : 'operations'}`, ...(unique.some(activity => activity.status === 'error') ? ['failed'] : [])].join(' · ')
+}
+
+function LocalMessage({ message, sessionId, workspaceRoot, retry, command, busy, canRetry = false, onAnswerChoice }: {
+  message: Message; sessionId?: string; workspaceRoot?: string; retry(): void; command: ReturnType<typeof useAthenaChat.getState>['command']; busy: boolean; canRetry?: boolean; onAnswerChoice?(answer: string): Promise<boolean>
 }) {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(message.content)
   const assistant = message.role === 'assistant'
   const execution = message.execution
-  const blocks = execution ? timelineBlocks(execution, message.id) : []
-  const timelineText = blocks.some(block => block.kind === 'text' && block.text.trim())
   const visible = assistant ? stripTrailingSourcesSection(message.content) : message.content
+  const blocks = execution ? timelineBlocks(execution, message.id) : []
+  const parsedChoice = assistant && message.status === 'complete' ? parseChoiceInteraction(visible, { conversationId: sessionId ?? 'conversation', messageId: message.id }) : null
+  const storedInteraction = message.interaction?.messageId === message.id && (!sessionId || message.interaction.conversationId === sessionId) ? message.interaction : undefined
+  const choiceInteraction = assistant && message.status === 'complete' ? storedInteraction ?? (onAnswerChoice ? parsedChoice?.interaction : undefined) : undefined
+  const choiceBody = parsedChoice?.bodyContent ?? visible
+  if (choiceInteraction && execution) {
+    let finalText = -1
+    for (let index = blocks.length - 1; index >= 0; index--) if (blocks[index].kind === 'text') { finalText = index; break }
+    if (finalText >= 0) {
+      const block = blocks[finalText]
+      if (choiceBody.trim() && block.kind === 'text') block.text = choiceBody
+      else blocks.splice(finalText, 1)
+    }
+  }
+  const timelineText = blocks.some(block => block.kind === 'text' && block.text.trim())
   const revert = async (id: string) => {
     if (!sessionId || !window.confirm('Restore this file if the recorded change still matches its current state?')) return
     const result = await desktop.athenaChatContext({ action: 'revert-change', sessionId, id, confirmed: true })
@@ -43,16 +66,16 @@ function LocalMessage({ message, sessionId, retry, command, busy, canRetry = fal
     {editing ? <form className="chat-edit" onSubmit={event => { event.preventDefault(); if (!sessionId) return; void command({ action: 'edit', id: sessionId, messageId: message.id, text }).then(ok => { if (ok) setEditing(false) }) }}><textarea autoFocus aria-label="Edit message" value={text} maxLength={MAX_MESSAGE_LENGTH} onChange={event => setText(event.target.value)} /><p className="chat-message-note">Resending replaces all later messages in this local conversation.</p><button type="button" className="chat-action" onClick={() => setEditing(false)}>Cancel</button><button className="chat-action" disabled={busy || !text.trim()}>Save &amp; resend</button></form> : !assistant ? <div className="chat-message-content"><MessageMarkdown content={message.content} stripSources={false} /></div> : <>
       {blocks.map(block => block.kind === 'text' ? <div className="chat-message-content" key={block.id}><MessageMarkdown content={block.text} /></div>
         : block.kind === 'note' ? <p className="chat-message-note" key={block.id}>{block.text}</p>
-          : <details className="athena-chat-activity" key={block.id}><summary>{block.legacy ? 'Earlier activity · ' : ''}{block.activities.length} {block.activities.length === 1 ? 'operation' : 'operations'}{block.activities.some(activity => activity.status === 'error') ? ' · failed' : ''}</summary>
-            {block.activities.map(activity => <details key={activity.id} className="athena-chat-operation"><summary>{operationLabel(activity)} · {activity.status}</summary><p><code>{activity.tool}</code> · {new Date(activity.startedAt).toLocaleTimeString()}{activity.finishedAt ? `–${new Date(activity.finishedAt).toLocaleTimeString()}` : ''}</p>{activity.summary && <p>{activity.summary}</p>}{activity.fullOutput && <details><summary>Output</summary><pre>{activity.fullOutput}</pre></details>}{activity.changes?.map(change => <details key={change.id}><summary>{change.path} · {change.status}</summary><MessageMarkdown content={`\`\`\`diff\n${change.diff}\n\`\`\``} />{change.status === 'applied' && execution?.status !== 'working' && <button type="button" className="chat-action" onClick={() => void revert(change.id)}>Undo recorded change</button>}</details>)}{activity.subagent?.error && <p role="alert">{activity.subagent.error}</p>}</details>)}
+          : <details className="athena-chat-activity" key={block.id}><summary>{block.legacy ? 'Earlier activity · ' : ''}{localActivitySummary(block.activities, workspaceRoot)}</summary>
+            {block.activities.map(activity => <details key={activity.id} className="athena-chat-operation"><summary>{operationLabel(activity)} · {activity.status}</summary><p><code>{activity.tool}</code> · {new Date(activity.startedAt).toLocaleTimeString()}{activity.finishedAt ? `–${new Date(activity.finishedAt).toLocaleTimeString()}` : ''}</p>{activity.summary && <p>{activity.summary}</p>}{activity.fullOutput && <details><summary>Output</summary><pre>{activity.fullOutput}</pre></details>}{activity.changes?.map(change => <details key={change.id}><summary>{change.path} · {change.status}</summary><MessageMarkdown content={`\`\`\`diff\n${change.diff}\n\`\`\``} />{change.status === 'applied' && change.revertible !== false && execution?.status !== 'working' && <button type="button" className="chat-action" onClick={() => void revert(change.id)}>Undo recorded change</button>}</details>)}{activity.subagent?.error && <p role="alert">{activity.subagent.error}</p>}</details>)}
           </details>)}
-      {visible && !timelineText && <div className="chat-message-content"><MessageMarkdown content={visible} /></div>}
+      {visible && !timelineText && <div className="chat-message-content"><MessageMarkdown content={choiceInteraction ? choiceBody : visible} /></div>}
       {message.status === 'streaming' && !visible && <div className="chat-thinking" aria-label="Local model responding"><span /><span /><span /></div>}
-      {message.sources?.length ? <details className="chat-sources"><summary>Source Evidence · {message.sources.length}</summary>{message.sources.map((source, index) => <p key={`${source.path}:${source.start}:${index}`}><code>{source.workspace}/{source.path}:{source.start}–{source.end}</code></p>)}</details> : null}
       {message.error && <p className="chat-error" role="alert">{message.error}</p>}
       {message.status === 'stopped' && <p className="chat-message-note">Stopped · partial local response preserved</p>}
       {error && <p className="chat-error" role="alert">{error}</p>}
     </>}
+    {choiceInteraction && <ChatChoices key={choiceInteraction.id} interaction={choiceInteraction} disabled={busy || !onAnswerChoice} onAnswer={onAnswerChoice ?? (async () => false)} />}
     {assistant && !!message.attachments?.length && sessionId && <AttachmentCards sessionId={sessionId} attachments={message.attachments} context={desktop.athenaChatContext} />}
     {assistant && message.status !== 'streaming' && <footer>{visible && <CopyText text={visible} compact />}{canRetry && <ChatTooltip label="Regenerate response"><button type="button" className="chat-action chat-icon-action" aria-label="Regenerate local response" disabled={busy} onClick={retry}><RefreshCw size={16} /></button></ChatTooltip>}<span className="chat-message-timestamp"><time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time></span></footer>}
   </article>
@@ -75,12 +98,15 @@ export function AthenaChat() {
   const [notice, setNotice] = useState('')
   const [uploading, setUploading] = useState(false)
   const [sidebar, setSidebar] = useState(true)
+  const [activityWorkspaceRoot, setActivityWorkspaceRoot] = useState<string | undefined>()
   const fileInput = useRef<HTMLInputElement>(null)
   const transcript = useRef<HTMLDivElement>(null)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingDraft = useRef<{ id: string; text: string } | null>(null)
   const follow = useRef(true)
   const sessionId = snapshot.sessionId
+  const workspaceKey = snapshot.workspaces?.map(workspace => `${workspace.id}:${workspace.authorized}`).join('|') ?? ''
+  const scrollKey = useMemo(() => conversationScrollKey(snapshot.messages), [snapshot.messages])
   const model = useMemo(() => status?.models.find(item => item.name === snapshot.config?.model), [status, snapshot.config?.model])
   const connected = status?.connected ?? false
   const modelReady = Boolean(connected && model && localChatCompatibility(model) !== 'unsupported')
@@ -92,6 +118,16 @@ export function AthenaChat() {
     return () => { live = false }
   }, [])
   useEffect(() => { setDraft(snapshot.draft ?? ''); setNotice(''); follow.current = true }, [sessionId])
+  useEffect(() => {
+    let current = true
+    setActivityWorkspaceRoot(undefined)
+    const workspace = snapshot.workspaces?.find(entry => entry.authorized)
+    if (!sessionId || !workspace || !isDesktop) return () => { current = false }
+    void desktop.athenaChatContext({ action: 'project-status', sessionId, id: workspace.id }).then(result => {
+      if (current && result.ok) setActivityWorkspaceRoot(result.root)
+    }).catch(() => {})
+    return () => { current = false }
+  }, [sessionId, workspaceKey])
   useEffect(() => () => {
     clearTimeout(draftTimer.current)
     const pending = pendingDraft.current
@@ -107,7 +143,7 @@ export function AthenaChat() {
   }, [sessionId])
   useLayoutEffect(() => {
     if (follow.current && transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight
-  }, [snapshot.revision, sessionId])
+  }, [scrollKey, sessionId])
   const requestContext = async (input: ContextCommand) => {
     try { const result = await desktop.athenaChatContext(input); setNotice(result.ok ? '' : result.message ?? 'Local file access failed.'); return result.ok }
     catch { setNotice('Could not reach local file access.'); return false }
@@ -201,10 +237,14 @@ export function AthenaChat() {
       <div className="chat-transcript-wrap"><div className="athena-chat-transcript chat-transcript" ref={transcript} role="log" aria-label="Athena Chat history" onScroll={event => { const element = event.currentTarget; follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90 }}>
         {snapshot.hasMore && sessionId && <button className="chat-action" onClick={() => void command({ action: 'more', id: sessionId })}>Load earlier messages</button>}
         {!snapshot.messages.length && <div className="chat-empty"><div className="chat-empty-symbol"><Sparkles size={28} /></div><span className="chat-empty-eyebrow">PRIVATE. LOCAL. YOURS.</span><h1>What’s on your mind?</h1><p>Ask your local Athena a question or work through code.<br />Your online conversations stay separate.</p><div className="chat-starters"><button type="button" disabled={!modelReady} onClick={() => changeDraft('Help me understand a piece of code.')}><Code2 size={18} /><span>Work through code</span><ArrowUp size={14} /></button><button type="button" disabled={!modelReady} onClick={() => changeDraft('Help me brainstorm an idea.')}><Sparkles size={18} /><span>Explore an idea</span><ArrowUp size={14} /></button></div></div>}
-        {snapshot.messages.map(message => <LocalMessage key={message.id} message={message} sessionId={sessionId} retry={() => void retry()} command={command} busy={busy || pending} canRetry={message.id === snapshot.messages.at(-1)?.id} />)}
+        {snapshot.messages.map(message => <LocalMessage key={message.id} message={message} sessionId={sessionId} workspaceRoot={activityWorkspaceRoot} retry={() => void retry()} command={command} busy={busy || pending} canRetry={message.id === snapshot.messages.at(-1)?.id} onAnswerChoice={message.id === snapshot.messages.at(-1)?.id && message.role === 'assistant' ? async answer => {
+          if (busy || pending || uploading || !modelReady) return false
+          follow.current = true
+          return send(answer)
+        } : undefined} />)}
       </div></div>
       {(notice || issue || snapshot.error || contextualNotice) && <p role={notice || issue || snapshot.error ? 'alert' : 'status'} className="athena-chat-notice">{notice || issue || snapshot.error || contextualNotice}</p>}
-      <div className="chat-composer-shell">{sessionId && <HeldPermissionPrompt messages={snapshot.messages} sessionId={sessionId} label="Local tool approval" decide={(approvalId, allow, remember) => command({ action: 'agent-approval', id: sessionId, approvalId, allow, remember })} />}{slashOpen && <SlashCommandPicker entries={suggestions} index={slashIndex} select={chooseSlash} highlight={setSlashIndex} refresh={() => void refreshCommands()} globals={() => void refreshCommands(catalog.globalEnabled ? 'revoke-global' : 'authorize-global')} globalEnabled={catalog.globalEnabled} />}<form className="ai-chat-composer" onSubmit={submit}>
+      <div className="chat-composer-shell">{sessionId && <HeldPermissionPrompt messages={snapshot.messages} sessionId={sessionId} phase={snapshot.phase} label="Local tool approval" decide={(approvalId, allow, remember) => command({ action: 'agent-approval', id: sessionId, approvalId, allow, remember })} />}{slashOpen && <SlashCommandPicker entries={suggestions} index={slashIndex} select={chooseSlash} highlight={setSlashIndex} refresh={() => void refreshCommands()} globals={() => void refreshCommands(catalog.globalEnabled ? 'revoke-global' : 'authorize-global')} globalEnabled={catalog.globalEnabled} />}<form className="ai-chat-composer" onSubmit={submit}>
         {!!snapshot.attachments?.length && sessionId && <AttachmentCards sessionId={sessionId} attachments={snapshot.attachments} context={desktop.athenaChatContext} remove={id => void requestContext({ action: 'remove', sessionId, id })} />}
         <textarea ref={composer} aria-controls={slashOpen ? 'local-slash-list' : undefined} aria-activedescendant={slashOpen ? `local-slash-option-${slashIndex}` : undefined} aria-label="Message local Athena" placeholder="Ask Athena..." value={draft} maxLength={MAX_MESSAGE_LENGTH} rows={1} onChange={event => { changeDraft(event.target.value); const open = slashQuery(event.target.value, event.target.selectionStart) !== null; setSlashOpen(open); setSlashIndex(0); if (open && !slashOpen) void refreshCommands() }} onKeyDown={event => {
           if (slashOpen && !event.nativeEvent.isComposing) {
@@ -214,7 +254,12 @@ export function AthenaChat() {
           }
  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(event) } }} />
         <div className="chat-composer-toolbar"><div className="chat-composer-tools"><input ref={fileInput} type="file" multiple hidden aria-label="Choose local attachments" onChange={event => void attach(event.target.files)} /><button type="button" className="chat-action" aria-label="Attach local files" title="Attach local files" disabled={!sessionId || busy || uploading} onClick={() => fileInput.current?.click()}><Paperclip size={17} /></button><button type="button" className="chat-action" aria-label="Connect local project folder" title="Authorize a local project folder" disabled={!sessionId || busy} onClick={() => sessionId && void requestContext({ action: 'connect', sessionId })}><FolderOpen size={17} /></button></div>
-          <div className="conversation-selectors athena-chat-selectors">{!!snapshot.workspaces?.length && <CustomSelect ariaLabel="Athena Chat project permissions" value={snapshot.config?.agentMode ?? 'ask'} disabled={!sessionId || busy || pending} options={[{ value: 'ask', label: 'Ask before changes' }, { value: 'read-only', label: 'Read only' }]} onChange={mode => sessionId && void command({ action: 'agent-mode', id: sessionId, mode: mode as 'ask' | 'read-only' })} menuPlacement="up" className="athena-chat-permissions" />}<CustomSelect ariaLabel="Athena Chat model" value={activeModel ?? ''} disabled={busy || pending || !connected} options={[...activeModel && !status?.models.some(item => item.name === activeModel) ? [{ value: activeModel, label: `${activeModel} · unavailable`, disabled: true }] : [], ...(status?.models.map(item => ({ value: item.name, label: `${item.label ?? item.name} · ${item.provider === 'mlx' ? 'MLX' : 'Ollama'}${localChatCompatibility(item) === 'unsupported' ? ' · no chat' : ''}`, disabled: localChatCompatibility(item) === 'unsupported' })) ?? [])]} onChange={name => void changeModel(name)} menuPlacement="up" className="conversation-model-selector" /></div>
+          <div className="conversation-selectors athena-chat-selectors">{!!snapshot.workspaces?.length && <CustomSelect ariaLabel="Athena Chat project permissions" value={snapshot.config?.agentMode ?? 'ask'} disabled={!sessionId || pending} options={[{ value: 'ask', label: 'Ask before changes' }, { value: 'read-only', label: 'Read only' }, { value: 'full-access', label: 'Full Access', description: 'Automatically allow permission-controlled operations without asking for confirmation.' }]} onChange={mode => {
+            if (!sessionId) return
+            const needsConfirmation = mode === 'full-access' && snapshot.config?.fullAccessWorkspaceId !== snapshot.workspaces?.[0]?.id
+            if (needsConfirmation && !window.confirm('Enable Full Access for this conversation and project? Athena may automatically modify or overwrite files, delete files, execute terminal commands, install dependencies, change project configuration, and perform other authorized operations. Project boundaries and system permissions still apply.')) return
+            void command({ action: 'agent-mode', id: sessionId, mode: mode as 'ask' | 'read-only' | 'full-access', ...(needsConfirmation ? { confirmed: true as const } : {}) })
+          }} menuPlacement="up" className={`athena-chat-permissions ${snapshot.config?.agentMode === 'full-access' ? 'full-access-active' : ''}`} />}<CustomSelect ariaLabel="Athena Chat model" value={activeModel ?? ''} disabled={busy || pending || !connected} options={[...activeModel && !status?.models.some(item => item.name === activeModel) ? [{ value: activeModel, label: `${activeModel} · unavailable`, disabled: true }] : [], ...(status?.models.map(item => ({ value: item.name, label: `${item.label ?? item.name} · ${item.provider === 'mlx' ? 'MLX' : 'Ollama'}${localChatCompatibility(item) === 'unsupported' ? ' · no chat' : ''}`, disabled: localChatCompatibility(item) === 'unsupported' })) ?? [])]} onChange={name => void changeModel(name)} menuPlacement="up" className="conversation-model-selector" /></div>
           {busy ? <button className="chat-send" type="button" aria-label="Stop local response" onClick={() => void stop()}><Square size={16} /></button> : <button className="chat-send" type="submit" aria-label="Send local message" disabled={!draft.trim() || !modelReady || pending || uploading}><ArrowUp size={19} /></button>}</div>
       </form></div>
       <p className="chat-privacy-note">AI can make mistakes · History saved on this Mac · Requests use your selected local model · {model?.provider === 'mlx' ? 'MLX inference' : 'Ollama inference'}</p>

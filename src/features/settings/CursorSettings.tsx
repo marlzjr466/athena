@@ -2,10 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Section, SettingRow } from '../../components/ui/Controls'
 import { desktop } from '../../services/desktop'
 import type { AthenaAPI } from '../../../shared/contracts'
+import { UsageDashboard } from './UsageDashboard'
+import { observedConversationUsage } from './observedUsage'
+import { useChat } from '../../store/chatStore'
 type CursorStatus = Awaited<ReturnType<AthenaAPI['getCursorStatus']>>
 const initialStatus: CursorStatus = { installed: false, authenticated: false, authenticationStatus: 'unknown', identity: null, version: null, message: 'Choose Check Cursor status to connect your existing CLI account.', models: [], modelCatalogAvailable: false }
 
 export function CursorSettings() {
+  const chat = useChat()
   const [status, setStatus] = useState<CursorStatus>(initialStatus)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
@@ -31,7 +35,9 @@ export function CursorSettings() {
     finally { inFlight.current = false; if (id === operationId.current) setBusy(false) }
   }
   const refresh = () => act(() => desktop.getCursorStatus({ refreshModels: true }), 'Checking Cursor status and models…')
-  return <Section title="Cursor Subscription · Cursor CLI" description="Athena connects through Cursor’s documented Agent Client Protocol (ACP) and Cursor CLI authentication. The CLI retains one active account profile managed by Cursor; Athena does not copy its credentials or rotate accounts.">
+  const observed = observedConversationUsage(chat.snapshot.messages, ['cursor-subscription'])
+  return <>
+  <Section title="Cursor Subscription · Cursor CLI" description="Athena connects through Cursor’s documented Agent Client Protocol (ACP) and Cursor CLI authentication. The CLI retains one active account profile managed by Cursor; Athena does not copy its credentials or rotate accounts.">
     <SettingRow title="Cursor CLI status" description={`${status.message}${status.version ? ` · ${status.version}` : ''}`}><span className={`ai-status ${status.authenticated ? 'ai-active' : ''}`}>{busy ? '○ Connecting…' : status.authenticated ? '● Connected' : status.authenticationStatus === 'unknown' ? '○ Status not verified' : !status.installed ? '○ CLI not installed' : '○ Sign in required'}</span></SettingRow>
     {status.authenticated && <SettingRow title="Signed-in identity" description="Identity reported by the official Cursor CLI; not stored separately by Athena."><span>{status.identity ?? 'Authenticated Cursor CLI profile'}</span></SettingRow>}
     <SettingRow title="Capabilities" description="Streams Cursor Agent responses and project coding actions through ACP. Each Cursor permission prompt is sent to Athena’s existing approval UI. Cursor controls its plan limits and model availability."><span>Project agent · streaming · cancellable</span></SettingRow>
@@ -42,4 +48,6 @@ export function CursorSettings() {
     <p className="card-description">Cursor plan limits apply. Athena does not rotate accounts, bypass limits, or fall back to API billing. ACP access is coding/project-oriented; Athena’s separate desktop automation tools are not exposed through Cursor.</p>
     <p className="ai-feedback" role="status" aria-live="polite">{notice}</p>
   </Section>
+  <UsageDashboard data={{ provider: 'Cursor Subscription', account: status.identity ?? (status.authenticated ? 'Active Cursor CLI account · identity unavailable' : 'Not authenticated'), usageType: 'Subscription quota · local response count only', availability: !status.authenticated ? 'authentication-required' : observed.metrics.length ? 'partial' : 'unavailable', source: 'Cursor CLI exposes account status, but no documented machine-readable usage quota interface is configured in Athena', refreshedAt: observed.updatedAt, metrics: observed.metrics, officialUrl: 'https://cursor.com/help/models-and-usage/usage-limits', officialLabel: 'Open official Cursor usage guide', explanation: 'Cursor usage amounts, billing pools, and reset dates remain on Cursor’s account dashboard. Athena does not scrape editor settings or use undocumented quota endpoints. Local response counts cover this conversation only; Refresh Usage reloads the saved conversation snapshot.' }} onRefresh={chat.refresh} />
+  </>
 }

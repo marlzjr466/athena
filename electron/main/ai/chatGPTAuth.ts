@@ -1,3 +1,4 @@
+import { credentialEntry } from './secureCredentialEntry'
 import { createHash, createPublicKey, randomBytes, randomUUID, verify } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { app, shell } from 'electron'
@@ -71,11 +72,14 @@ export interface ChatGPTVault {
 export class ChatGPTKeychainVault implements ChatGPTVault {
   private async entry(name: string) {
     if (process.platform !== 'darwin') throw new Error('ChatGPT credential storage requires macOS Keychain.')
-    const { AsyncEntry } = await import('@napi-rs/keyring')
-    return new AsyncEntry(credentialServiceName().replace(/\.openai(\.|$)/, '.chatgpt$1'), name)
+    return credentialEntry(credentialServiceName().replace(/\.openai(\.|$)/, '.chatgpt$1'), name)
   }
   private async read<T>(name: string, schema: z.ZodType<T>): Promise<T | null> {
-    const raw = await (await this.entry(name)).getPassword()
+    let raw: string | null | undefined
+    try { raw = await (await this.entry(name)).getPassword() }
+    catch {
+      throw new Error('Athena could not read a saved ChatGPT credential from macOS Keychain. Unlock the login Keychain or allow Athena in the macOS prompt, then restart Athena. No credential was changed.')
+    }
     if (raw == null) return null
     try { return schema.parse(JSON.parse(raw)) } catch { throw new Error('Saved ChatGPT credentials could not be read.') }
   }
@@ -115,7 +119,10 @@ export class ChatGPTAuth {
 
   private async load() {
     if (this.loaded) return
-    if (!this.loadTask) this.loadTask = this.loadAccounts().finally(() => { this.loadTask = undefined })
+    // Keep a failed first read cached for this process. Repeated status calls
+    // must not keep retrying an inaccessible Keychain item and re-triggering
+    // macOS prompts. A full app restart starts a fresh, explicit read attempt.
+    if (!this.loadTask) this.loadTask = this.loadAccounts()
     await this.loadTask
   }
   private async loadAccounts() {
@@ -144,8 +151,9 @@ export class ChatGPTAuth {
         await this.persistIndex()
         await this.vault.removeLegacy()
       } else {
+        // A read-only status check with no saved account should not create a
+        // Keychain item. Persist the host id together with the first account.
         this.hostId = randomUUID()
-        await this.vault.writeIndex({ hostId: this.hostId, ids: [], activeId: null })
       }
     }
     this.loaded = true
@@ -197,6 +205,8 @@ export class ChatGPTAuth {
 
   /** Opens OpenAI's documented authorization UI and holds verified credentials in memory pending explicit confirmation. */
   async beginAddAccount(): Promise<ChatGPTStatus> {
+    await this.load()
+    if (this.accounts.size) throw new ChatError('A ChatGPT account is already connected. Reconnect or remove it before adding a different account.')
     if (this.signInTask) { await this.signInTask; return this.status() }
     if (this.pending) throw new ChatError('Confirm, cancel, or retry the pending ChatGPT account before starting another sign-in.')
     this.signInTask = this.authorize().then((account) => { this.pending = { id: randomUUID(), account } }).finally(() => { this.signInTask = undefined })
@@ -219,6 +229,7 @@ export class ChatGPTAuth {
   }
   async confirmPendingAccount(pendingId: string, label?: string): Promise<ChatGPTStatus> {
     await this.load()
+    if (this.accounts.size) throw new ChatError('A ChatGPT account is already connected. Remove it before confirming a different account.')
     if (!this.pending || this.pending.id !== pendingId) throw new ChatError('This ChatGPT sign-in confirmation expired. Add the account again.')
     const account = { ...this.pending.account, label: this.uniqueLabel(label?.trim().slice(0, 80) || this.pending.account.label) }
     if ([...this.accounts.values()].some((existing) => existing.session.clientId === account.session.clientId)) {
@@ -340,9 +351,16 @@ export class ChatGPTAuth {
   private async fetchModels(accessToken: string): Promise<ChatGPTModel[]> {
     const response = await this.request(`${RESOURCE}/models`, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(30_000), redirect: 'error' })
     if (!response.ok) throw await chatGPTResponseError(response, 'model_catalog')
-    const body = await response.json() as { models?: Array<{ visibility?: string; slug?: string; display_name?: string }> }
+    const body = await response.json() as { models?: Array<{ visibility?: string; slug?: string; display_name?: string; context_window?: number }> }
     if (!Array.isArray(body.models)) throw new ChatError('ChatGPT returned an unreadable model catalog.')
-    return body.models.filter((model) => model.visibility === 'list').map((model) => chatGPTModelSchema.safeParse({ slug: model.slug, displayName: model.display_name ?? model.slug })).filter((value) => value.success).map((value) => value.data)
+    return body.models.filter(model => model.visibility === 'list').flatMap(model => {
+      const window = model.context_window
+      const parsed = chatGPTModelSchema.safeParse({
+        slug: model.slug, displayName: model.display_name ?? model.slug,
+        contextWindow: typeof window === 'number' && Number.isSafeInteger(window) && window > 0 && window <= 10_000_000 ? window : undefined,
+      })
+      return parsed.success ? [parsed.data] : []
+    })
   }
   private requireAccount(id = this.activeId): StoredAccount {
     const account = id ? this.accounts.get(id) : undefined
@@ -469,15 +487,16 @@ export class ChatGPTAuth {
     if (this.accounts.get(accountId) !== account) throw new ChatError('ChatGPT account changed during refresh. Start a new request with the selected account.')
     await this.persistAccount({ ...account, reconnectRequired: false, session: next })
   }
-  async activeModel(selected: string | null): Promise<{ accessToken: string; model: string; accountId: string; requestIdentity: SubscriptionRequestIdentity }> {
+  async activeModel(selected: string | null, expectedAccountId?: string): Promise<{ accessToken: string; model: string; accountId: string; contextWindow?: number; requestIdentity: SubscriptionRequestIdentity }> {
     await this.load()
     const accountId = this.activeId
+    if (expectedAccountId && expectedAccountId !== accountId) throw new ChatError('The selected ChatGPT account changed. Reconnect or choose its model again in the conversation.')
     const accessToken = await this.accessToken(accountId)
     const account = this.requireAccount(accountId)
     if (selected && !account.session.models.some((entry) => entry.slug === selected)) throw new ChatError('The conversation model is not in the selected ChatGPT account catalog. Choose an available model; Athena did not silently substitute the account default.')
     const model = selected || account.session.model
     if (!model) throw new ChatError('No ChatGPT subscription model is available for the active account. Refresh its models in Settings → AI.')
-    return { accessToken, model, accountId: account.id, requestIdentity: { accountId: account.id,
+    return { accessToken, model, accountId: account.id, contextWindow: account.session.models.find(entry => entry.slug === model)?.contextWindow, requestIdentity: { accountId: account.id,
       registrationRef: createHash('sha256').update(account.session.clientId).digest('hex').slice(0, 12),
       modelSource: selected ? 'conversation' : 'account-default', workspace: 'registration-bound-not-disclosed' } }
   }

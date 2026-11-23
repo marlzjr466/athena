@@ -28,7 +28,7 @@ function harness() {
   let issuedRegistration = 0
   let forcedIssuedClientId: string | null = null
   let refreshed = false
-  let refreshFailure: { status: number; code: string } | null = null
+  let refreshFailure: { status: number; code: string; oauth?: boolean } | null = null
   const legacy = { session: null as Awaited<ReturnType<ChatGPTVault['readLegacySession']>>, registration: null as Awaited<ReturnType<ChatGPTVault['readLegacyRegistration']>> }
   const vault: ChatGPTVault = {
     readIndex: async () => index, writeIndex: async (value) => { index = value },
@@ -43,13 +43,13 @@ function harness() {
     if (url.endsWith('/jwks')) return json({ keys: [jwk] })
     if (url.endsWith('/oauth/token')) {
       const form = init?.body as URLSearchParams
-      if (form.get('grant_type') === 'refresh_token') { refreshed = true; if (refreshFailure) return json({ error: { code: refreshFailure.code, message: 'sensitive diagnostic' } }, refreshFailure.status); const subject = String(form.get('refresh_token')).replace(/^refresh-/, '').replace(/-new$/, ''); return json({ access_token: `refreshed-${subject}`, refresh_token: `refresh-${subject}-new`, token_type: 'Bearer', scope, expires_in: 3600 }) }
+      if (form.get('grant_type') === 'refresh_token') { refreshed = true; if (refreshFailure) return json(refreshFailure.oauth ? { error: refreshFailure.code, error_description: 'sensitive diagnostic' } : { error: { code: refreshFailure.code, message: 'sensitive diagnostic' } }, refreshFailure.status); const subject = String(form.get('refresh_token')).replace(/^refresh-/, '').replace(/-new$/, ''); return json({ access_token: `refreshed-${subject}`, refresh_token: `refresh-${subject}-new`, token_type: 'Bearer', scope, expires_in: 3600 }) }
       const clientId = String(form.get('client_id'))
       expect(form.get('code_verifier')).toBeTruthy()
       const who = accountIdentity.shift() ?? identity
       return json({ access_token: `token-${who.sub}`, refresh_token: `refresh-${who.sub}`, id_token: idToken(lastNonce, clientId, who), token_type: 'Bearer', scope, expires_in: 3600 })
     }
-    if (url.endsWith('/v1/models')) return json({ models: [{ slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list' }, { slug: 'hidden', display_name: 'Hidden', visibility: 'hide' }] })
+    if (url.endsWith('/v1/models')) return json({ models: [{ slug: 'gpt-6.1-sol', display_name: 'GPT-6.1 Sol', visibility: 'list', context_window: 272000 }, { slug: 'hidden', display_name: 'Hidden', visibility: 'hide' }] })
     if (url.endsWith('/revoke')) return new Response(null, { status: 200 })
     throw new Error(`Unexpected request to ${url}`)
   })
@@ -83,7 +83,7 @@ function harness() {
     auth, request, openBrowser, registrations, issuedClientIds, accounts, vault, getIndex: () => index, wasRefreshed: () => refreshed,
     deliver: (params: URLSearchParams) => deliverCallback?.(params),
     forceNextIssuedClientId: (value: string) => { forcedIssuedClientId = value },
-    failRefresh: (status: number, code: string) => { refreshFailure = { status, code } },
+    failRefresh: (status: number, code: string, oauth = false) => { refreshFailure = { status, code, oauth } },
     clearRefreshFailure: () => { refreshFailure = null },
     expire: (id: string) => { const account = accounts.get(id); if (account) account.session.expiresAt = Date.now() - 1 },
     addIdentity: async (value: Identity) => { accountIdentity.push(value); identity = value; return auth.beginAddAccount() },
@@ -92,12 +92,54 @@ function harness() {
 }
 
 describe('ChatGPT OAuth account profiles', () => {
+  it('does not create an empty Keychain index just because Athena starts without an account', async () => {
+    const fixture = harness()
+    const writeIndex = vi.spyOn(fixture.vault, 'writeIndex')
+    await fixture.auth.status()
+    await fixture.auth.status()
+    expect(writeIndex).not.toHaveBeenCalled()
+  })
+
+  it('does not repeat a failed Keychain read on every status request in one app process', async () => {
+    const fixture = harness()
+    const readIndex = vi.spyOn(fixture.vault, 'readIndex').mockRejectedValue(new Error('Keychain access denied'))
+    const restored = new ChatGPTAuth(fixture.vault, fixture.request, fixture.openBrowser)
+    await expect(restored.status()).rejects.toThrow('Keychain access denied')
+    await expect(restored.status()).rejects.toThrow('Keychain access denied')
+    expect(readIndex).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads existing Keychain records once per app start without rewriting them', async () => {
+    const fixture = harness()
+    let status = await fixture.auth.beginAddAccount()
+    status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
+    const writeIndex = vi.spyOn(fixture.vault, 'writeIndex')
+    const writeAccount = vi.spyOn(fixture.vault, 'writeAccount')
+    const readIndex = vi.spyOn(fixture.vault, 'readIndex')
+    const readAccount = vi.spyOn(fixture.vault, 'readAccount')
+
+    // Each new ChatGPTAuth instance models a fresh app process. Repeated
+    // status calls within one process must share the same initial Keychain read.
+    for (let restart = 0; restart < 3; restart++) {
+      const restored = new ChatGPTAuth(fixture.vault, fixture.request, fixture.openBrowser)
+      const [first, second] = await Promise.all([restored.status(), restored.status()])
+      expect(first.activeAccountId).toBe(status.activeAccountId)
+      expect(second.accounts).toHaveLength(1)
+    }
+
+    expect(readIndex).toHaveBeenCalledTimes(3)
+    expect(readAccount).toHaveBeenCalledTimes(3)
+    expect(writeIndex).not.toHaveBeenCalled()
+    expect(writeAccount).not.toHaveBeenCalled()
+  })
+
   it('loads and pins the saved account on the first request without requiring Settings to open first', async () => {
     const f = harness()
     const pending = await f.auth.beginAddAccount()
     const status = await f.auth.confirmPendingAccount(pending.pendingAccount!.id)
     const restored = new ChatGPTAuth(f.vault, f.request, f.openBrowser)
     const result = await restored.activeModel(null)
+    expect(result.contextWindow).toBe(272000)
     expect(result).toMatchObject({ accessToken: 'token-user-1', accountId: status.activeAccountId, requestIdentity: { accountId: status.activeAccountId, modelSource: 'account-default', workspace: 'registration-bound-not-disclosed' } })
     expect(result.requestIdentity.registrationRef).toMatch(/^[a-f0-9]{12}$/)
     expect(JSON.stringify(result.requestIdentity)).not.toMatch(/example.com|token-user|user-1|oaiapp/)
@@ -143,17 +185,44 @@ describe('ChatGPT OAuth account profiles', () => {
     await fixture.auth.reconnectAccount(accountId)
     expect((await fixture.auth.status()).accounts[0]).toMatchObject({ connected: true })
   })
-  it('refreshes the pinned account after selection changes without borrowing the newly selected token', async () => {
+  it('persists a standard OAuth rejection and does not resend the unusable token after restart or model changes', async () => {
+    const f = harness()
+    const pending = await f.auth.beginAddAccount()
+    const status = await f.auth.confirmPendingAccount(pending.pendingAccount!.id)
+    const id = status.activeAccountId!
+    f.expire(id); f.failRefresh(400, 'invalid_grant', true)
+    const before = f.request.mock.calls.length
+    await expect(f.auth.activeModel('gpt-6.1-sol')).rejects.toMatchObject({ code: 'auth-reconnect' })
+    expect(f.request.mock.calls.length).toBe(before + 1)
+    expect((await f.auth.status()).accounts[0].connected).toBe(false)
+    const restored = new ChatGPTAuth(f.vault, f.request, f.openBrowser)
+    await expect(restored.activeModel(null)).rejects.toMatchObject({ code: 'auth-reconnect' })
+    await expect(restored.refreshModels(id)).rejects.toMatchObject({ code: 'auth-reconnect' })
+    expect(f.request.mock.calls.length).toBe(before + 1)
+    expect(f.getIndex()?.activeId).toBe(id)
+    f.clearRefreshFailure(); await f.auth.reconnectAccount(id)
+    expect((await f.auth.activeModel('gpt-6.1-sol')).accountId).toBe(id)
+  })
+
+  it('preserves credentials and permits recovery after a temporary OAuth server error', async () => {
+    const f = harness(), pending = await f.auth.beginAddAccount()
+    const status = await f.auth.confirmPendingAccount(pending.pendingAccount!.id)
+    f.expire(status.activeAccountId!); f.failRefresh(503, 'temporarily_unavailable', true)
+    await expect(f.auth.accessToken()).rejects.toThrow()
+    expect((await f.auth.status()).accounts[0].connected).toBe(true)
+    f.clearRefreshFailure()
+    expect(await f.auth.accessToken()).toBe('refreshed-user-1')
+  })
+
+  it('refreshes the pinned account and rejects another account reference', async () => {
     const f = harness()
     let status = await f.auth.beginAddAccount()
     status = await f.auth.confirmPendingAccount(status.pendingAccount!.id)
     const pinned = await f.auth.activeModel(null)
-    status = await f.addIdentity({ sub: 'user-2', email: 'two@example.com', name: 'Account Two' })
-    status = await f.auth.confirmPendingAccount(status.pendingAccount!.id)
-    await f.auth.selectAccount(status.accounts.find(a => a.id !== pinned.accountId)!.id)
+    await expect(f.auth.activeModel(null, 'another-account')).rejects.toThrow('selected ChatGPT account changed')
     const results = await Promise.all([f.auth.accessTokenForRound(pinned.accountId, pinned.accessToken), f.auth.accessTokenForRound(pinned.accountId, pinned.accessToken)])
     expect(results).toEqual(['refreshed-user-1', 'refreshed-user-1'])
-    expect((await f.auth.activeModel(null)).accessToken).toBe('token-user-2')
+    expect((await f.auth.activeModel(null, pinned.accountId)).accessToken).toBe('refreshed-user-1')
     const refreshes = f.request.mock.calls.filter(([, init]) => init?.body instanceof URLSearchParams && init.body.get('grant_type') === 'refresh_token')
     expect(refreshes).toHaveLength(1)
     expect((refreshes[0][1]!.body as URLSearchParams).get('client_id')).toBe(f.issuedClientIds[0])
@@ -173,73 +242,58 @@ describe('ChatGPT OAuth account profiles', () => {
     expect((await fixture.auth.activeModel(null)).accessToken).toBe('token-user-1')
   })
 
-  it('isolates two accounts, keeps the original active, and selects only the explicitly chosen profile', async () => {
+  it('requires disconnecting the existing account before adding another', async () => {
     const fixture = harness()
     let status = await fixture.auth.beginAddAccount()
-    const firstId = status.pendingAccount!.id
-    status = await fixture.auth.confirmPendingAccount(firstId)
-    const activeBefore = status.activeAccountId
+    status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
+    const firstId = status.activeAccountId!
+    await expect(fixture.addIdentity({ sub: 'user-2', email: 'two@example.com', name: 'Account Two' })).rejects.toThrow('already connected')
+    expect((await fixture.auth.status()).accounts).toHaveLength(1)
+    await fixture.auth.removeAccount(firstId)
     status = await fixture.addIdentity({ sub: 'user-2', email: 'two@example.com', name: 'Account Two' })
-    const secondId = status.pendingAccount!.id
-    status = await fixture.auth.confirmPendingAccount(secondId)
-    expect(status.accounts).toHaveLength(2)
-    expect(status.activeAccountId).toBe(activeBefore)
-    expect(fixture.registrations[0].searchParams.get('ext_agent_host_id')).toBe(fixture.registrations[1].searchParams.get('ext_agent_host_id'))
-    const second = status.accounts.find((account) => account.email === 'two@example.com')!
-    expect((await fixture.auth.selectAccount(second.id)).activeAccountId).toBe(second.id)
+    status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
+    expect(status.accounts).toHaveLength(1)
+    expect(status.accounts[0].email).toBe('two@example.com')
     expect((await fixture.auth.activeModel(null)).accessToken).toBe('token-user-2')
-    expect(fixture.getIndex()?.ids).toHaveLength(2)
+    expect(fixture.getIndex()?.ids).toHaveLength(1)
   })
 
-  it('persists the selected account across auth service restoration and refreshes only that account token', async () => {
+  it('persists the sole account across auth service restoration', async () => {
     const fixture = harness()
     let status = await fixture.auth.beginAddAccount()
     status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    status = await fixture.addIdentity({ sub: 'user-2', email: 'two@example.com', name: 'Account Two' })
-    status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    const second = status.accounts.find((account) => account.email === 'two@example.com')!
-    await fixture.auth.selectAccount(second.id)
-    fixture.expire(second.id)
+    const accountId = status.activeAccountId!
+    fixture.expire(accountId)
     const restored = new ChatGPTAuth(fixture.vault, fixture.request, fixture.openBrowser)
-    expect((await restored.status()).activeAccountId).toBe(second.id)
-    expect(await restored.accessToken()).toBe('refreshed-user-2')
+    expect((await restored.status()).activeAccountId).toBe(accountId)
+    expect(await restored.accessToken()).toBe('refreshed-user-1')
     expect(fixture.wasRefreshed()).toBe(true)
-    expect((await restored.activeModel(null)).accountId).toBe(second.id)
+    expect((await restored.activeModel(null)).accountId).toBe(accountId)
   })
 
-  it('requires the active account to be changed before disabling it and never rotates automatically', async () => {
+  it('does not disable the sole active account implicitly', async () => {
     const fixture = harness()
     let status = await fixture.auth.beginAddAccount()
-    const first = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    const firstId = first.activeAccountId!
-    status = await fixture.addIdentity({ sub: 'user-2', email: 'two@example.com', name: 'Account Two' })
     status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    const secondId = status.accounts.find((account) => account.email === 'two@example.com')!.id
-    await expect(fixture.auth.setAccountEnabled(firstId, false)).rejects.toThrow('Select another ChatGPT account')
-    await fixture.auth.selectAccount(secondId)
-    status = await fixture.auth.setAccountEnabled(firstId, false)
-    expect(status.activeAccountId).toBe(secondId)
-    expect(status.accounts.find((account) => account.id === firstId)?.enabled).toBe(false)
+    await expect(fixture.auth.setAccountEnabled(status.activeAccountId!, false)).rejects.toThrow('Select another ChatGPT account')
+    expect((await fixture.auth.status()).activeAccountId).toBe(status.activeAccountId)
   })
 
-  it('keeps separate registrations even when verified identity and email match, and labels them distinctly', async () => {
+  it('rejects another registration even when the same identity could sign in again', async () => {
     const fixture = harness()
     let status = await fixture.auth.beginAddAccount()
     await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    status = await fixture.auth.beginAddAccount()
-    status = await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    expect(status.accounts).toHaveLength(2)
-    expect(status.accounts.map((account) => account.email)).toEqual(['one@example.com', 'one@example.com'])
-    expect(status.accounts[0].label).not.toBe(status.accounts[1].label)
-    expect(new Set(status.accounts.map((account) => fixture.accounts.get(account.id)?.session.clientId)).size).toBe(2)
+    await expect(fixture.auth.beginAddAccount()).rejects.toThrow('already connected')
+    expect((await fixture.auth.status()).accounts).toHaveLength(1)
   })
 
-  it('rejects an exact duplicate issued client registration', async () => {
+  it('does not start a second browser authorization flow for a connected account', async () => {
     const fixture = harness()
     let status = await fixture.auth.beginAddAccount()
     await fixture.auth.confirmPendingAccount(status.pendingAccount!.id)
-    fixture.forceNextIssuedClientId(fixture.issuedClientIds[0])
-    await expect(fixture.auth.beginAddAccount()).rejects.toThrow('registration is already saved')
+    const attempts = fixture.registrations.length
+    await expect(fixture.auth.beginAddAccount()).rejects.toThrow('already connected')
+    expect(fixture.registrations).toHaveLength(attempts)
     expect((await fixture.auth.status()).accounts).toHaveLength(1)
   })
 

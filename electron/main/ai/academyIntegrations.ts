@@ -1,3 +1,4 @@
+import { credentialEntry } from './secureCredentialEntry'
 import { createHash } from 'node:crypto'
 import { app } from 'electron'
 import { academyRepositorySchema, type AcademyCodeHost, type AcademyIntegrationStatus, type AcademyReviewEvidence } from '../../../shared/academyIntegrations'
@@ -12,9 +13,8 @@ export interface IntegrationSecretStore {
 export class KeychainIntegrationSecretStore implements IntegrationSecretStore {
   private async entry(provider: AcademyCodeHost) {
     if (process.platform !== 'darwin') throw new Error('Code-host credential storage currently requires macOS Keychain.')
-    const { AsyncEntry } = await import('@napi-rs/keyring')
     const profile = app.isPackaged ? '' : `.dev.${createHash('sha256').update(app.getPath('userData')).digest('hex').slice(0, 24)}`
-    return new AsyncEntry(`com.athena.companion.academy.${provider}${profile}`, 'read-only-code-host')
+    return credentialEntry(`com.athena.companion.academy.${provider}${profile}`, 'read-only-code-host')
   }
   async read(provider: AcademyCodeHost): Promise<string | null> { return await (await this.entry(provider)).getPassword() ?? null }
   async write(provider: AcademyCodeHost, token: string): Promise<void> { await (await this.entry(provider)).setPassword(token) }

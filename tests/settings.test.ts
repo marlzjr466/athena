@@ -13,6 +13,15 @@ describe('validated preferences', () => {
     expect(saved.localAI).toEqual(defaultSettings.localAI)
     expect(saved.aiMode).toBe(defaultSettings.aiMode)
   })
+  it('defaults migrated accounts to enabled and preserves independent account toggles across updates and restart', () => {
+    const keyA = JSON.stringify(['third-party', 'gateway-a']), keyB = JSON.stringify(['third-party', 'gateway-b'])
+    expect(restoreSettings({}).unifiedAccountEnabled).toEqual({})
+    const disabledA = mergeSettings(defaultSettings, { unifiedAccountEnabled: { [keyA]: false } })
+    const disabledBoth = mergeSettings(disabledA, { unifiedAccountEnabled: { [keyB]: false } })
+    const persisted = restoreSettings(JSON.parse(JSON.stringify(disabledBoth)))
+    expect(persisted.unifiedAccountEnabled).toEqual({ [keyA]: false, [keyB]: false })
+    expect(mergeSettings(persisted, { unifiedAccountEnabled: { [keyA]: true } }).unifiedAccountEnabled).toEqual({ [keyA]: true, [keyB]: false })
+  })
   it('defaults bounded read-only delegation and persists sub-agent configuration', () => {
     expect(restoreSettings({}).subagents).toMatchObject({ enabled: true, maxConcurrent: 2, maxIterations: 24, maxToolCalls: 40, timeoutMinutes: 10, requireWriteApproval: true })
     const saved = mergeSettings(defaultSettings, { subagents: { ...defaultSettings.subagents, coldReadModel: 'gpt-5-mini', coldReadEffort: 'high', parallelReadOnly: false, maxToolCalls: 60, maxIterations: 20 } })
@@ -50,7 +59,7 @@ describe('validated preferences', () => {
     expect(restoreSettings({ voiceEnabled: true, voiceName: 'unknown', voiceVolume: 2 }).voiceName).toBe(defaultSettings.voiceName)
   })
   it('persists real-time clock and web access settings while preserving defaults on partial changes', () => {
-    expect(defaultSettings.webAccess).toMatchObject({ systemInformationEnabled: true, webSearchEnabled: false, automaticSearch: true, searchProvider: 'brave', maxResults: 5, timeoutSeconds: 10, openAIResponseTimeoutSeconds: 45, timezone: 'local', timeFormat: '12h' })
+    expect(defaultSettings.webAccess).toMatchObject({ systemInformationEnabled: true, webSearchEnabled: false, automaticSearch: true, searchProvider: 'searxng', automaticStartup: true, maxResults: 5, timeoutSeconds: 10, openAIResponseTimeoutSeconds: 45, timezone: 'local', timeFormat: '12h' })
     const saved = mergeSettings(defaultSettings, { webAccess: { ...defaultSettings.webAccess, webSearchEnabled: true, maxResults: 8, timezone: 'Asia/Tokyo' } })
     expect(restoreSettings(JSON.parse(JSON.stringify(saved))).webAccess).toEqual(saved.webAccess)
     expect(mergeSettings(saved, { pinned: true }).webAccess).toEqual(saved.webAccess)

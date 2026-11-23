@@ -1,5 +1,7 @@
 import { copilotCommandSchema } from '../../shared/copilot'
 import type { CopilotService } from './ai/copilotService'
+import type { AntigravityACPService, AntigravityGeneralWorkspace } from './ai/antigravityACP'
+import { antigravityCommandSchema } from '../../shared/antigravity'
 import { app, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { stat, writeFile } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
@@ -59,8 +61,13 @@ import type { AcademyIntegrations } from './ai/academyIntegrations'
 import { academyStudioCommandSchema } from '../../shared/academyStudio'
 import type { AcademyStudio } from './ai/academyStudio'
 import type { AcademyTraining } from './ai/academyTraining'
+import type { ThirdPartyInferenceService } from './ai/thirdPartyInference'
+import { inferenceCommandSchema } from '../../shared/thirdPartyInference'
+import type { UnifiedAccounts } from './ai/unifiedAccounts'
 import { trainingCommandSchema } from '../../shared/academyTraining'
 import type { LocalWhisperTranscription } from './voice/localVoiceServices'
+import { usageCommandSchema } from '../../shared/providerUsage'
+import type { ProviderUsageService } from './ai/providerUsageService'
 import { wakeAcknowledgementCacheKey } from './voice/wakeAcknowledgement'
 
 interface AthenaChatRuntime extends CompanionConversation { commands?: SlashCommandService; focus(active: boolean, sessionId?: string): boolean }
@@ -68,7 +75,8 @@ type CachedLocalVoice = SpeechService & {
   generateCached?: (text: string, voice: Parameters<SpeechService['generate']>[1], speed: number, signal: AbortSignal, cacheKey: string, contextKey?: string) => Promise<{ bytes: Uint8Array; cached: boolean }>
 }
 
-export function registerIPC(controller: AthenaController, ai: AIConfiguration, chat: ChatController, permissions: PermissionService, context?: ChatContextService, voice?: VoiceController, speech?: SpeechController, applications?: ApplicationDetectionController, ollama?: OllamaService, localVoice?: CachedLocalVoice & { dispose?(): void }, chatGPT?: ChatGPTAuth, handsFree?: HandsFreeController, desktopActions?: DesktopTools, claudeAPI?: ClaudeAPIConfiguration, cursorACP?: CursorACPService, slashCommands?: SlashCommandService, webSearch?: WebSearchService, codexCLI?: CodexCLIService, companion?: CompanionConversation, athenaChat?: AthenaChatRuntime, academy?: AcademyService, academyIntegrations?: AcademyIntegrations, academyStudio?: AcademyStudio, localTranscription?: LocalWhisperTranscription, academyTraining?: AcademyTraining, officialCSM?: OfficialCSM, higgsTTS?: HiggsTTS, copilot?: CopilotService): void {
+export function registerIPC(controller: AthenaController, ai: AIConfiguration, chat: ChatController, permissions: PermissionService, context?: ChatContextService, voice?: VoiceController, speech?: SpeechController, applications?: ApplicationDetectionController, ollama?: OllamaService, localVoice?: CachedLocalVoice & { dispose?(): void }, chatGPT?: ChatGPTAuth, handsFree?: HandsFreeController, desktopActions?: DesktopTools, claudeAPI?: ClaudeAPIConfiguration, cursorACP?: CursorACPService, slashCommands?: SlashCommandService, webSearch?: WebSearchService, codexCLI?: CodexCLIService, companion?: CompanionConversation, athenaChat?: AthenaChatRuntime, academy?: AcademyService, academyIntegrations?: AcademyIntegrations, academyStudio?: AcademyStudio, localTranscription?: LocalWhisperTranscription, academyTraining?: AcademyTraining, officialCSM?: OfficialCSM, higgsTTS?: HiggsTTS, copilot?: CopilotService, antigravityACP?: AntigravityACPService, antigravityGeneralWorkspace?: AntigravityGeneralWorkspace, thirdParty?: ThirdPartyInferenceService, unifiedAccounts?: UnifiedAccounts, providerUsage?: ProviderUsageService): void {
+  const accountChanged = async <T,>(operation: Promise<T> | T): Promise<T> => { const result = await operation; unifiedAccounts?.invalidate(); return result }
   controller.windows.control.webContents.on('render-process-gone', () => controller.avatarModels.interrupt())
   controller.windows.control.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) controller.avatarModels.interrupt() })
   let previewAbort: AbortController | undefined
@@ -99,6 +107,15 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       }
     })
   }
+  handle(IPC.providerUsage, async (_event, input) => {
+    if (!providerUsage) throw new ChatError('Usage storage is unavailable.')
+    const command = usageCommandSchema.parse(input)
+    if (command.action === 'configure-admin') { await providerUsage.configure(command.key, command.projectId); return { ok: true } }
+    if (command.action === 'remove-admin') { await providerUsage.remove(); return { ok: true } }
+    const query = command.query
+    const accountId = query.accountId ?? (query.provider === 'openai-api' ? await ai.usageAccountId() : (await chatGPT?.status())?.activeAccountId) ?? 'not-connected'
+    return providerUsage.snapshot({ ...query, accountId })
+  })
   handle(IPC.snapshot, () => controller.snapshot())
   handle(IPC.vroidCatalog, (_event, input) => {
     // Old renderer reports remain compatible, but can only describe the bundled model.
@@ -111,7 +128,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   })
   handle(IPC.vroidPlay, (_event, input) => controller.vroidActions.trigger(z.enum(VROID_ACTION_IDS).parse(input)))
   handle(IPC.settings, (event, input) => {
-    if (input && typeof input === 'object' && ['aiMode', 'strictOffline', 'localAI', 'localVoice', 'athenaChatAvatarLinked', 'chatGPTCodingBackend'].some((key) => key in input) && event.sender.id !== controller.windows.control.webContents.id) throw new ChatError('AI configuration is only available in Settings.')
+    if (input && typeof input === 'object' && ['aiMode', 'strictOffline', 'localAI', 'localVoice', 'athenaChatAvatarLinked', 'chatGPTCodingBackend', 'unifiedAccountEnabled'].some((key) => key in input) && event.sender.id !== controller.windows.control.webContents.id) throw new ChatError('AI configuration is only available in Settings.')
     const previousVoice = JSON.stringify(controller.settings.localVoice), previousLocal = JSON.stringify(controller.settings.localAI)
     const snapshot = controller.updateSettings(input)
     if (previousVoice !== JSON.stringify(controller.settings.localVoice) || previousLocal !== JSON.stringify(controller.settings.localAI) || !controller.settings.voiceEnabled || controller.settings.voiceMuted || controller.settings.doNotDisturb) {
@@ -277,10 +294,26 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     try { await shell.openExternal(url.toString()); return { ok: true } }
     catch { return { ok: false, message: 'macOS could not open that web link.' } }
   })
-  aiHandle(IPC.copilot, input => { if (!copilot) throw new ChatError('Copilot integration unavailable.'); return copilot.command(copilotCommandSchema.parse(input)) })
+  aiHandle(IPC.copilot, input => { if (!copilot) throw new ChatError('Copilot integration unavailable.'); const command = copilotCommandSchema.parse(input); return command.action === 'status' || command.action === 'usage' ? copilot.command(command) : accountChanged(copilot.command(command)) })
+  aiHandle(IPC.antigravityCommand, async input => {
+    if (!antigravityACP) throw new ChatError('Antigravity ACP integration is unavailable.')
+    const command = antigravityCommandSchema.parse(input)
+    if ((command.action === 'login' || command.action === 'logout') && chat.hasActiveExecutions()) throw new ChatError('Finish or stop active conversations before changing Antigravity sign-in.')
+    if (['login', 'refresh'].includes(command.action) && antigravityGeneralWorkspace) {
+      const workspace = await antigravityGeneralWorkspace.authorize()
+      return accountChanged(antigravityACP.commandAction(command, workspace.root))
+    }
+    return command.action === 'status' || command.action === 'usage' ? antigravityACP.commandAction(command) : accountChanged(antigravityACP.commandAction(command))
+  })
   conversationHandle(IPC.aiStatus, async () => {
     if (controller.settings.aiMode === 'local' || controller.settings.aiMode === 'unconfigured') return { ok: false, status: emptyAIStatus(), message: ONLINE_SELECTION_REQUIRED }
     if (controller.settings.aiMode === 'copilot') return copilot!.aiStatus()
+    if (controller.settings.aiMode === 'third-party') return thirdParty ? thirdParty.status(controller.settings.thirdPartyConnectionId) : {ok:false,status:emptyAIStatus(),message:'Third-party inference is unavailable.'}
+    if (controller.settings.aiMode === 'antigravity') {
+      if (!antigravityACP || !antigravityGeneralWorkspace) throw new ChatError('Antigravity ACP integration is unavailable.')
+      const workspace = await antigravityGeneralWorkspace.authorize()
+      return antigravityACP.aiStatus(workspace.root)
+    }
     if (controller.settings.aiMode === 'claude-api') {
       if (!claudeAPI) throw new ChatError('Claude API settings are unavailable.')
       return claudeAPI.getStatus()
@@ -625,11 +658,26 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   aiHandle(IPC.permissionSettings, (input) => permissions.openPermissionSettings(input))
   aiHandle(IPC.permissionAllowed, (input) => permissions.isCapabilityAllowed(permissionInputSchema.parse(input).permission))
   aiHandle(IPC.aiTest, (input) => ai.test(input))
-  aiHandle(IPC.aiActivate, (input) => ai.activate(input))
+  aiHandle(IPC.openAIAccountStatus, () => ai.getStatus())
+  aiHandle(IPC.aiActivate, (input) => accountChanged(ai.activate(input)))
   aiHandle(IPC.aiModel, (input) => ai.selectModel(input))
-  aiHandle(IPC.aiRemove, () => ai.remove())
+  aiHandle(IPC.aiRemove, () => accountChanged(ai.remove()))
+  aiHandle(IPC.inferenceConnections, (input) => {
+    if (!thirdParty) throw new ChatError('Third-party inference is unavailable.')
+    const command = inferenceCommandSchema.parse(input)
+    return accountChanged(thirdParty.command(command, controller.settings, patch => { controller.updateSettings(patch) }))
+  })
+  aiHandle(IPC.unifiedAccounts, (input) => {
+    if (!unifiedAccounts) return { accounts: [], refreshedAt: 0 }
+    const { refresh } = z.object({ refresh: z.boolean().optional() }).strict().parse(input ?? {})
+    return unifiedAccounts.list(refresh)
+  })
   aiHandle(IPC.webSearchStatus, async () => {
     const settings = onlineContextSettings(controller.settings)
+    if (settings.webAccess.searchProvider === 'searxng') {
+      const local = webSearch?.localStatus()
+      return { hasKey: false, provider: 'Local SearXNG', active: local?.state === 'running' && settings.webAccess.webSearchEnabled && !settings.strictOffline, model: null, availableModels: [], validated: local?.state === 'running', strictOffline: settings.strictOffline, local, note: settings.strictOffline || !settings.webAccess.webSearchEnabled ? 'Internet Access is disabled.' : local?.message ?? 'Local search is unavailable.' }
+    }
     const provider = settings.webAccess.searchProvider === 'brave' ? 'Brave Search API' as const : 'OpenAI built-in web search' as const
     let hasKey = false, model: string | null = null, availableModels: string[] = [], validated = false, note = ''
     if (settings.webAccess.searchProvider === 'brave') {
@@ -663,6 +711,11 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     const parsed = input === undefined ? { success: true as const, data: {} } : z.object({ apiKey: apiKeySchema.optional(), model: z.string().min(1).max(200).optional() }).strict().safeParse(input)
     if (!parsed.success) return { ok: false, message: 'Enter a valid search credential or model selection.' }
     if (!webSearch) return { ok: false, message: 'Web search service is unavailable.' }
+    if (controller.settings.strictOffline || !controller.settings.webAccess.webSearchEnabled) return { ok: false, message: 'Internet Access is disabled.' }
+    if (controller.settings.webAccess.searchProvider === 'searxng') {
+      try { const results = await webSearch.search('SearXNG documentation', 3, controller.settings.webAccess.timeoutSeconds * 1000); return { ok: true, message: 'Local SearXNG search completed.', resultCount: results.length } }
+      catch (error) { return { ok: false, message: error instanceof ChatError ? error.userMessage : 'Local search failed.' } }
+    }
     if (controller.settings.webAccess.searchProvider === 'openai-built-in') {
       const status = await ai.getStatus()
       if (!status.status.hasKey) return { ok: false, message: 'Configure an OpenAI API key in Settings → AI. ChatGPT Subscription credentials cannot authorize OpenAI API web search.' }
@@ -676,6 +729,10 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       } catch (error) { return { ok: false, message: error instanceof ChatError ? error.userMessage : 'Could not securely read the OpenAI API configuration.' } }
     }
     return webSearch.test(parsed.data.apiKey)
+  })
+  aiHandle(IPC.webSearchRestart, async () => {
+    try { if (!webSearch) throw new Error(); await webSearch.restartLocal(); return { ok: true, message: 'Local SearXNG restarted.' } }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'Could not restart local search.' } }
   })
   aiHandle(IPC.webSearchSave, async (input) => {
     if (!webSearch) return { ok: false, message: 'Web search service is unavailable.' }
@@ -693,9 +750,9 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   })
   aiHandle(IPC.claudeStatus, () => claudeAPI?.getStatus() ?? Promise.reject(new ChatError('Claude API settings are unavailable.')))
   aiHandle(IPC.claudeTest, (input) => claudeAPI?.test(input) ?? Promise.reject(new ChatError('Claude API settings are unavailable.')))
-  aiHandle(IPC.claudeActivate, (input) => claudeAPI?.activate(input) ?? Promise.reject(new ChatError('Claude API settings are unavailable.')))
+  aiHandle(IPC.claudeActivate, (input) => accountChanged(claudeAPI?.activate(input) ?? Promise.reject(new ChatError('Claude API settings are unavailable.'))))
   aiHandle(IPC.claudeModel, (input) => claudeAPI?.selectModel(input) ?? Promise.reject(new ChatError('Claude API settings are unavailable.')))
-  aiHandle(IPC.claudeRemove, () => claudeAPI?.remove() ?? Promise.reject(new ChatError('Claude API settings are unavailable.')))
+  aiHandle(IPC.claudeRemove, () => accountChanged(claudeAPI?.remove() ?? Promise.reject(new ChatError('Claude API settings are unavailable.'))))
   aiHandle(IPC.cursorStatus, (input) => {
     const parsed = z.object({ refreshModels: z.boolean().optional(), cachedOnly: z.boolean().optional() }).strict().safeParse(input ?? {})
     if (!parsed.success) throw new ChatError('Invalid Cursor status request.')
@@ -704,11 +761,11 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   })
   aiHandle(IPC.cursorLogin, async () => {
     if (chat.hasActiveExecutions()) throw new ChatError('Finish or stop all running conversations before changing Cursor authentication.')
-    return cursorACP?.login() ?? Promise.reject(new ChatError('Cursor CLI integration is unavailable.'))
+    return accountChanged(cursorACP?.login() ?? Promise.reject(new ChatError('Cursor CLI integration is unavailable.')))
   })
   aiHandle(IPC.cursorLogout, async () => {
     if (chat.hasActiveExecutions()) throw new ChatError('Finish or stop all running conversations before changing Cursor authentication.')
-    return cursorACP?.logout() ?? Promise.reject(new ChatError('Cursor CLI integration is unavailable.'))
+    return accountChanged(cursorACP?.logout() ?? Promise.reject(new ChatError('Cursor CLI integration is unavailable.')))
   })
   aiHandle(IPC.chatGPTStatus, () => chatGPT!.status())
   aiHandle(IPC.chatGPTAccountAdd, () => chatGPT!.beginAddAccount())
@@ -720,14 +777,16 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       const status = await chatGPT!.confirmPendingAccount(value.pendingId, value.label)
       const active = status.accounts.find((account) => account.id === status.activeAccountId)
       if (!previous.activeAccountId && active?.model && chat.snapshot().phase === 'idle' && chat.current().config.model !== active.model) await chat.command({ action: 'configure-model', id: chat.current().id, model: active.model })
+      unifiedAccounts?.invalidate()
       return status
     })
   })
   aiHandle(IPC.chatGPTAccountCancel, (input) => chatGPT!.cancelPendingAccount(z.object({ pendingId: z.string().uuid() }).strict().parse(input).pendingId))
-  aiHandle(IPC.chatGPTAccountReconnect, (input) => chatGPT!.reconnectAccount(z.object({ accountId: z.string().uuid() }).strict().parse(input).accountId))
+  aiHandle(IPC.chatGPTAccountReconnect, (input) => accountChanged(chatGPT!.reconnectAccount(z.object({ accountId: z.string().uuid() }).strict().parse(input).accountId)))
   aiHandle(IPC.chatGPTAccountSelect, (input) => {
     if (chat.hasActiveExecutions()) throw new ChatError('Finish or stop all running conversations before changing the ChatGPT account. Each request remains bound to its original account.')
     return chatGPT!.selectAccount(z.object({ accountId: z.string().uuid() }).strict().parse(input).accountId).then(async (status) => {
+      unifiedAccounts?.invalidate()
       const active = status.accounts.find((account) => account.id === status.activeAccountId)
       if (active?.model && chat.current().config.model !== active.model) await chat.command({ action: 'configure-model', id: chat.current().id, model: active.model })
       return status
@@ -735,11 +794,11 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   })
   aiHandle(IPC.chatGPTAccountEnabled, (input) => {
     const value = z.object({ accountId: z.string().uuid(), enabled: z.boolean() }).strict().parse(input)
-    return chatGPT!.setAccountEnabled(value.accountId, value.enabled)
+    return accountChanged(chatGPT!.setAccountEnabled(value.accountId, value.enabled))
   })
   aiHandle(IPC.chatGPTAccountRename, (input) => {
     const value = z.object({ accountId: z.string().uuid(), label: z.string().min(1).max(80) }).strict().parse(input)
-    return chatGPT!.renameAccount(value.accountId, value.label)
+    return accountChanged(chatGPT!.renameAccount(value.accountId, value.label))
   })
   aiHandle(IPC.chatGPTAccountRemove, async (input) => {
     const accountId = z.object({ accountId: z.string().uuid() }).strict().parse(input).accountId
@@ -748,13 +807,13 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     if (account.active && chat.hasActiveExecutions()) throw new ChatError('Finish or stop all running conversations before removing the active ChatGPT account.')
     const confirmation = await dialog.showMessageBox(controller.windows.control, { type: 'warning', title: 'Remove ChatGPT account?', message: `Remove ${account.label}${account.email ? ` (${account.email})` : ''} from Athena?`, detail: 'Athena will delete its saved credentials and request token revocation when OpenAI is reachable. Conversations and project data will remain unchanged.', buttons: ['Cancel', 'Remove account'], defaultId: 0, cancelId: 0, noLink: true })
     if (confirmation.response !== 1) return chatGPT!.status()
-    return chatGPT!.removeAccount(accountId)
+    return accountChanged(chatGPT!.removeAccount(accountId))
   })
   aiHandle(IPC.chatGPTSignIn, () => chatGPT!.beginAddAccount())
-  aiHandle(IPC.chatGPTSignOut, () => chatGPT!.signOut())
+  aiHandle(IPC.chatGPTSignOut, () => accountChanged(chatGPT!.signOut()))
   aiHandle(IPC.chatGPTModels, (input) => {
     const value = z.object({ accountId: z.string().uuid().optional() }).strict().parse(input ?? {})
-    return chatGPT!.refreshModels(value.accountId)
+    return accountChanged(chatGPT!.refreshModels(value.accountId))
   })
   aiHandle(IPC.chatGPTModel, async (input) => {
     const value = z.object({ model: z.string().min(1).max(200), accountId: z.string().uuid().optional() }).strict().parse(input)
@@ -1061,6 +1120,19 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     } catch (error) { return { ok: false, snapshot: academy.snapshot(), message: error instanceof Error ? error.message : 'Academy operation failed.' } }
   })
   conversationHandle(IPC.chatGet, async () => {
+    const migrateLegacySelections = async () => {
+      if (!unifiedAccounts || ['local', 'unconfigured'].includes(controller.settings.aiMode)) return
+      const catalog = await unifiedAccounts.list()
+      for (const session of chat.snapshot().sessions ?? []) {
+        if (session.config.accountRoute || !session.config.model) continue
+        const matches = catalog.accounts.filter(account => account.route.provider === controller.settings.aiMode && account.state === 'connected' && account.models.some(model => model.id === session.config.model && model.available))
+        const account = controller.settings.aiMode === 'third-party'
+          ? matches.find(item => item.route.accountId === controller.settings.thirdPartyConnectionId)
+          : matches.length === 1 ? matches[0] : undefined
+        if (account) chat.command({ action: 'select-account-model', id: session.id, route: account.route, model: session.config.model })
+      }
+    }
+    if (chat.current?.()?.config?.accountRoute) { await migrateLegacySelections(); return chat.snapshot() }
     const mode = controller.settings.aiMode
     if (mode === 'local' || mode === 'unconfigured') return chat.snapshot()
     let model: string | null = null, models: string[] = [], modelCatalogAvailable = true
@@ -1077,6 +1149,27 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     else if (mode === 'copilot') { const status = (await copilot!.aiStatus()).status; model = status.model; models = status.models }
     else if (mode === 'claude-api') { const status = (await claudeAPI!.getStatus()).status; model = status.model; models = status.models }
     else if (mode === 'cursor') { const status = await cursorACP!.status(); cursorCatalog = status; model = defaultCursorModel(status); models = cursorSelectableModels(status.models, status.modelCatalogAvailable).map((entry) => entry.id); modelCatalogAvailable = status.modelCatalogAvailable }
+    else if (mode === 'antigravity') {
+      if (chat.snapshot().phase !== 'idle') return chat.snapshot()
+      if (!antigravityACP || !antigravityGeneralWorkspace) throw new ChatError('Antigravity ACP integration is unavailable.')
+      try {
+        const workspace = await antigravityGeneralWorkspace.authorize()
+        const cached = await antigravityACP.status()
+        const catalog = cached.modelCatalogAvailable
+          ? { status: cached, configOptions: [] }
+          : await antigravityACP.catalog(workspace.root)
+        const modelOption = catalog.configOptions.find((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).id === 'model') as Record<string, unknown> | undefined
+        const defaultModel = typeof modelOption?.currentValue === 'string' ? modelOption.currentValue : null
+        models = catalog.status.models.map(entry => entry.id)
+        model = defaultModel && models.includes(defaultModel) ? defaultModel : models[0] ?? null
+        modelCatalogAvailable = catalog.status.modelCatalogAvailable
+      } catch { modelCatalogAvailable = false }
+    }
+    else if (mode === 'third-party') {
+      const result = await thirdParty?.status(controller.settings.thirdPartyConnectionId)
+      model = result?.status.model ?? null
+      models = result?.status.models ?? []
+    }
     else if (mode === 'cloud') { const status = (await ai.getStatus()).status; model = status.model; models = status.models }
     const selected = chat.current().config.model
     if (mode === 'cursor' && chat.snapshot().phase !== 'idle') return chat.snapshot()
@@ -1091,9 +1184,13 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       } else if (model && models.includes(model)) chat.selectCursorModel(model, saved ? `Your previous Cursor model (${saved}) is no longer available. Athena selected ${model} for this conversation.` : undefined)
       else if (modelCatalogAvailable && saved && !available(saved)) chat.selectCursorModel(null, `Your previous Cursor model (${saved}) is no longer available. Choose a model from Cursor’s current catalog.`)
       else if (modelCatalogAvailable && (!selected || !available(selected))) chat.selectCursorModel(null)
-    } else if (model && selected && models.length && !models.includes(selected)) await chat.command({ action: 'configure-model', id: chat.current().id, model })
+    // An ACP catalog refresh can be incomplete. Keep an explicit Antigravity
+    // selection; the provider validates it against the live session before send.
+    } else if (mode === 'antigravity') chat.initializeModel(model)
+    else if (model && selected && models.length && !models.includes(selected)) await chat.command({ action: 'configure-model', id: chat.current().id, model })
     else if (mode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat.current().workspaces.length > 0 && !selected && codexDefault) await chat.command({ action: 'configure-model', id: chat.current().id, model: codexDefault })
     else chat.initializeModel(model)
+    await migrateLegacySelections()
     return chat.snapshot()
   }, true)
   aiHandle(IPC.chatSearch, (input) => chat.search(z.object({ query: z.string().max(200) }).strict().parse(input).query))
@@ -1114,6 +1211,22 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     if (request.action === 'revoke-global') await registry.revokeGlobals()
     return registry.list(commandChat.current())
   })
+  const gitOwners = new Set<number>()
+  conversationHandle(IPC.projectEditor, (input, event) => {
+    if (event.sender.id !== controller.windows.control.webContents.id) return { ok: false, message: 'Open the full project conversation to launch VS Code.' }
+    return context?.editor.run(input) ?? { ok: false, available: false, message: 'Project context is unavailable.' }
+  })
+  conversationHandle(IPC.projectGit, (input, event) => {
+    if (event.sender.id !== controller.windows.control.webContents.id) return { ok: false, message: 'Open the full conversation to manage project branches.' }
+    if (!context) return { ok: false, message: 'Project context is unavailable.' }
+    if (!gitOwners.has(event.sender.id)) {
+      const owner = String(event.sender.id)
+      gitOwners.add(event.sender.id)
+      event.sender.once('destroyed', () => { context?.git.releaseOwner(owner); gitOwners.delete(Number(owner)) })
+      event.sender.on('did-start-loading', () => context?.git.releaseOwner(owner))
+    }
+    return context.git.run(input, String(event.sender.id), value => { if (!event.sender.isDestroyed()) event.sender.send(IPC.projectGitChanged, value) })
+  }, true)
   conversationHandle(IPC.chatContext, (input, event) => {
     if (event.sender.id === controller.windows.panel.webContents.id && (!input || typeof input !== 'object' || !('action' in input)
       || !['connect', 'browse', 'attach-source', 'pick-files', 'remove', 'import-pasted', 'rename', 'update-text', 'preview', 'preview-artifact', 'artifact-url', 'download-artifact', 'open-artifact'].includes(String(input.action)))) throw new Error('This file operation requires the control center.')
@@ -1124,6 +1237,15 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     if (!parsed.success) return { ok: false, message: 'Invalid conversation operation.' }
     const command = parsed.data
     if ((event.sender.id === controller.windows.panel.webContents.id || event.sender.id === controller.windows.floating.webContents.id) && !['draft', 'agent-approval'].includes(command.action)) return { ok: false, message: 'Open the full conversation for session management.' }
+    if (command.action === 'select-account-model') {
+      const catalog = await unifiedAccounts?.list()
+      const account = catalog?.accounts.find(item => item.route.provider === command.route.provider && item.route.accountId === command.route.accountId)
+      if (!account) return { ok: false, message: 'This account is disconnected. Reconnect it in Settings → AI.' }
+      if (!account.enabled) return { ok: false, message: 'This account is disabled. Re-enable it in Settings → AI or choose another enabled model.' }
+      if (!['connected', 'limited'].includes(account.state)) return { ok: false, message: 'This account is disconnected. Reconnect it in Settings → AI.' }
+      if (!account.models.some(model => model.available && (model.id === command.model || Object.values(model.effortModelIds ?? {}).includes(command.model) || Object.values(model.fastModelIds ?? {}).some(pair => pair.enabled === command.model || pair.disabled === command.model)))) return { ok: false, message: 'This model is unavailable for the selected account. Refresh its model catalog.' }
+      return chat.command(command)
+    }
     if (command.action === 'configure' || command.action === 'configure-model') {
       requireOnlineProvider(controller.settings)
       const mode = controller.settings.aiMode
@@ -1131,11 +1253,16 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       let cursorCatalog: CursorStatus | undefined
       if (mode === 'subscription') { const value = await chatGPT!.status(); status = { status: { active: value.planEnabled, models: value.models.map((entry) => entry.slug) } } }
       else if (mode === 'copilot') status = await copilot!.aiStatus()
+      else if (mode === 'antigravity') { const value = await antigravityACP!.status(); status = { status: { active: value.authState === 'authenticated', models: value.models.map((entry) => entry.id) } } }
+      else if (mode === 'third-party') {
+        const value = await thirdParty?.status(controller.settings.thirdPartyConnectionId)
+        status = value ?? { status: { active: false, models: [] } }
+      }
     else if (mode === 'claude-api') { const value = await claudeAPI!.getStatus(); status = { status: { active: value.status.active, models: value.status.models } } }
       else if (mode === 'cursor') { const value = await cursorACP!.status(); cursorCatalog = value; status = { status: { active: value.authenticated, models: cursorSelectableModels(value.models, value.modelCatalogAvailable).map((entry) => entry.id) } } }
       else { const value = await ai.getStatus(); status = { status: { active: value.status.active, models: value.status.models } } }
       const model = command.action === 'configure' ? command.config.model : command.model
-      if (!status.status.active || !model || !(cursorCatalog ? cursorModelAvailable(cursorCatalog, model) : status.status.models.includes(model))) return { ok: false, message: mode === 'cursor' ? 'Choose a model from the authenticated Cursor CLI catalog, then retry.' : 'Select a model from your configured AI provider.' }
+      if (!status.status.active || !model || !(cursorCatalog ? cursorModelAvailable(cursorCatalog, model) : status.status.models.includes(model))) return { ok: false, message: mode === 'cursor' ? 'Choose a model from the authenticated Cursor CLI catalog, then retry.' : mode === 'antigravity' ? 'Choose a model advertised by the authenticated Antigravity ACP runtime, then retry.' : 'Select a model from your configured AI provider.' }
     }
     if (command.action === 'delete' && !command.confirmed) {
       const result = await dialog.showMessageBox(controller.windows.control, { type: 'question', title: 'Delete?', message: 'Remove this conversation from history?', detail: 'A recovery copy and its attachments remain in Athena’s private local conversation-archive folder.', buttons: ['Cancel', 'Delete'], defaultId: 0, cancelId: 0, noLink: true })

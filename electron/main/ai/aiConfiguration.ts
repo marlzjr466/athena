@@ -2,6 +2,9 @@ import { aiKeyInputSchema, aiModelInputSchema, emptyAIStatus, type AIResult, typ
 import type { AICredential, CredentialStore } from './credentialStore'
 import type { ConnectionTester } from './openAIConnection'
 import { ChatError, NOT_CONFIGURED } from './AIProvider'
+import { openAIAPIGptModels, isSelectableOpenAIAPIGptModel } from '../../../shared/modelCatalog'
+import { knownReasoningEfforts } from '../../../shared/modelCapabilities'
+import { apiUsageAccount } from './usageLedger'
 
 export class AIConfiguration {
   private credential: AICredential | null = null
@@ -10,8 +13,13 @@ export class AIConfiguration {
   private queue: Promise<unknown> = Promise.resolve()
   constructor(private vault: CredentialStore, private connectionTester: ConnectionTester, private changed: () => void = () => {}) {}
   private status(): AIStatus {
+    const models = openAIAPIGptModels(this.credential?.models ?? [])
     return { ...emptyAIStatus(), active: Boolean(this.credential?.verifiedAt), hasKey: Boolean(this.credential),
-      model: this.credential?.model ?? null, models: [...(this.credential?.models ?? [])],
+      model: this.credential?.model ?? null, models,
+      modelEfforts: Object.fromEntries(models.flatMap(model => {
+        const efforts = knownReasoningEfforts('cloud', model)
+        return efforts ? [[model, efforts]] : []
+      })),
       lastVerifiedAt: this.credential?.verifiedAt ?? null, connection: this.connection }
   }
   private result(ok: boolean, message: string): AIResult { return { ok, status: this.status(), message } }
@@ -28,6 +36,10 @@ export class AIConfiguration {
   getStatus(): Promise<AIResult> {
     return this.run(async () => { await this.load(); return this.result(true, '') })
   }
+  async usageAccountId(): Promise<string | null> {
+    await this.queue; await this.load()
+    return this.credential ? apiUsageAccount(this.credential.apiKey) : null
+  }
   // Main-process only. This method is deliberately absent from the preload/IPC API.
   async getActiveConfiguration(selectedModel: string | null): Promise<{ apiKey: string; model: string }> {
     await this.queue
@@ -36,7 +48,7 @@ export class AIConfiguration {
     if (!this.credential?.verifiedAt) throw new ChatError(NOT_CONFIGURED)
     const model = selectedModel
     if (!model) throw new ChatError('Select a text model in Settings → AI before chatting.')
-    if (!this.credential.models.includes(model)) throw new ChatError('This model is no longer in your account’s model catalog. Refresh models and choose another.')
+    if (!isSelectableOpenAIAPIGptModel(model) || !this.credential.models.includes(model)) throw new ChatError('This OpenAI API model is no longer selectable. Choose an available GPT-5.6 or newer model in Chat Conversation.')
     return { apiKey: this.credential.apiKey, model }
   }
   test(input?: unknown): Promise<AIResult> {
@@ -50,8 +62,10 @@ export class AIConfiguration {
       this.connection = result.ok ? 'successful' : result.kind
       if (input === undefined && this.credential) {
         if (result.ok) {
-          const next = { ...this.credential, models: result.models, verifiedAt: Date.now() }
-          if (next.model && !next.models.includes(next.model)) next.model = null
+          const next = { ...this.credential, models: openAIAPIGptModels(result.models), verifiedAt: Date.now() }
+          // Keep the saved ID for display and conversation history. It is no
+          // longer selectable, but changing credentials must not silently pick
+          // a different model for a saved or currently running conversation.
           await this.vault.write(next)
           if (next.model !== this.credential.model) this.changed()
           this.credential = next
@@ -73,9 +87,10 @@ export class AIConfiguration {
       const result = await this.connectionTester.test(parsed.data.apiKey)
       this.connection = result.ok ? 'successful' : result.kind
       if (!result.ok) return this.result(false, result.message)
+      const models = openAIAPIGptModels(result.models)
       const credential: AICredential = { version: 1, apiKey: parsed.data.apiKey,
-        model: this.credential?.model && result.models.includes(this.credential.model) ? this.credential.model : null,
-        models: result.models, verifiedAt: Date.now() }
+        model: this.credential?.model && models.includes(this.credential.model) ? this.credential.model : null,
+        models, verifiedAt: Date.now() }
       await this.vault.write(credential)
       this.credential = credential
       this.changed()
@@ -86,7 +101,7 @@ export class AIConfiguration {
     return this.run(async () => {
       await this.load()
       const parsed = aiModelInputSchema.safeParse(input)
-      if (!parsed.success || !this.credential?.verifiedAt || !this.credential.models.includes(parsed.data.model)) return this.result(false, 'Choose a model returned by your successful connection test.')
+      if (!parsed.success || !this.credential?.verifiedAt || !isSelectableOpenAIAPIGptModel(parsed.data.model) || !openAIAPIGptModels(this.credential.models).includes(parsed.data.model)) return this.result(false, 'Choose an available GPT-5.6 or newer model returned by your successful connection test.')
       const next = { ...this.credential, model: parsed.data.model }
       await this.vault.write(next)
       this.credential = next

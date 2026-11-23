@@ -1,8 +1,10 @@
 import { CopilotService } from './ai/copilotService'
 import { CopilotProvider } from './ai/CopilotProvider'
+import { AntigravityProvider } from './ai/AntigravityProvider'
+import { AntigravityACPService, AntigravityGeneralWorkspace } from './ai/antigravityACP'
 import { MeetingService } from './meetings/meetingService'
 import { OllamaProvider as MeetingOllamaProvider } from './ai/OllamaProvider'
-import { supportsImageInput } from '../../shared/modelCapabilities'
+import { knownReasoningEfforts, supportsImageInput } from '../../shared/modelCapabilities'
 import { app, dialog, Menu, nativeTheme, powerMonitor, screen, session, shell, type Tray } from 'electron'
 import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
@@ -16,12 +18,17 @@ import { AIConfiguration } from './ai/aiConfiguration'
 import { KeychainCredentialStore } from './ai/credentialStore'
 import { OpenAIConnection } from './ai/openAIConnection'
 import { OpenAIProvider } from './ai/OpenAIProvider'
+import { ThirdPartyAIProvider, ThirdPartyInferenceService } from './ai/thirdPartyInference'
+import { inferenceCatalogSelectable } from '../../shared/thirdPartyInference'
+import { UnifiedAccounts } from './ai/unifiedAccounts'
 import { ChatController } from './ai/chatController'
 import { IPC } from '../../shared/ipcChannels'
 import { PermissionRepository } from './permissions/permissionRepository'
 import { MacOSPermissionAdapter } from './permissions/macOSPermissionAdapter'
 import { PermissionService } from './permissions/permissionService'
 import { ConversationRepository } from './ai/conversationRepository'
+import { UsageLedger, apiUsageAccount } from './ai/usageLedger'
+import { ProviderUsageService } from './ai/providerUsageService'
 import { WorkspaceService } from './ai/workspaceService'
 import { ProjectIntelligence } from './ai/projectIntelligence'
 import { SlashCommandService } from './ai/slashCommandService'
@@ -64,8 +71,9 @@ import { CursorACPProvider, CursorACPService } from './ai/cursorACP'
 import { CodexAppServerProvider } from './ai/CodexAppServerProvider'
 import { CodexCLIService } from './ai/codexCLIService'
 import { CursorGeneralWorkspace } from './ai/cursorGeneralWorkspace'
-import { resolveCursorModel } from '../../shared/cursor'
+import { cursorModelAvailable, resolveCursorModel } from '../../shared/cursor'
 import { BraveSearchCredentialStore, WebSearchService } from './ai/webSearchService'
+import { SearxngRuntime } from './ai/searxngRuntime'
 import type { LocalModel } from '../../shared/localAI'
 import { LocalActivityBridge } from './ai/localActivityBridge'
 import { localChatProvider, localCompanionProvider, localCompanionSettings } from './ai/localCompanion'
@@ -93,6 +101,7 @@ if (!app.isPackaged) {
 const lock = app.requestSingleInstanceLock()
 let controller: AthenaController | undefined
 let chat: ChatController | undefined
+let disposeProjectGit = () => {}
 let companion: ChatController | undefined
 let athenaChat: ChatController | undefined
 let companionAgentTools: AgentTools | undefined
@@ -112,6 +121,7 @@ let desktopActions: DesktopTools | undefined
 let screenCapture: ScreenCaptureTools | undefined
 let taskNotifications: TaskNotifications | undefined
 let startup: StartupSplash | undefined
+let localSearch: SearxngRuntime | undefined
 if (!lock) app.quit()
 else {
   app.on('second-instance', () => controller?.windows.showControl())
@@ -130,9 +140,17 @@ else {
       { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
       { label: 'Window', submenu: [{ role: 'minimize' }, { label: 'Open Athena', click: () => controller?.command('open-control') }] },
     ]))
+    const usageLedger = new UsageLedger(app.getPath('userData'))
+    usageLedger.importHistory(app.getPath('userData'))
+    const providerUsage = new ProviderUsageService(usageLedger, app.getPath('userData'))
     let webSearch!: WebSearchService
+    let thirdPartyInference!: ThirdPartyInferenceService
     const ai = new AIConfiguration(new KeychainCredentialStore(), new OpenAIConnection(), () => { webSearch?.clearOpenAIValidation(); voice?.cancel('AI configuration changed. Please record again.'); chat?.stopAll('AI configuration changed. Send a new message or retry.') })
     webSearch = new WebSearchService(new BraveSearchCredentialStore())
+    thirdPartyInference = new ThirdPartyInferenceService(join(app.getPath('userData'),'third-party-inference'), () => {
+      voice?.cancel('Inference profiles changed. Please record again.')
+      chat?.stopAll('Inference profiles changed. Continue the preserved task using the current provider.')
+    })
     const resolveOpenAIWebSearch = async (requestedModel: string | null) => {
       const connection = await ai.getStatus()
       if (!connection.status.hasKey) return { model: null, validated: false, note: 'Configure an OpenAI API key in Settings → AI. ChatGPT Subscription authentication does not grant Responses API access.' }
@@ -162,6 +180,9 @@ else {
     const applications = new ApplicationDetectionController(new MacOSApplicationDetectionService(), () => permissions.isCapabilityAllowed('applicationDetection'))
     const copilot = new CopilotService(join(app.getPath('userData'), 'copilot'))
     app.on('before-quit', () => { void copilot.shutdown() })
+    const antigravityACP = new AntigravityACPService(app.getPath('userData'))
+    const antigravityGeneralWorkspace = new AntigravityGeneralWorkspace(app.getPath('userData'))
+    const unifiedAccounts = new UnifiedAccounts({ ai, chatGPT, cursor: cursorACP, copilot, claude: claudeAPI, antigravity: antigravityACP, thirdParty: thirdPartyInference }, () => controller?.settings.unifiedAccountEnabled ?? {})
     const filesAllowed = () => permissions.isCapabilityAllowed('personalFiles')
     const workspaces = new WorkspaceService(filesAllowed, new WorkspaceGrants(app.getPath('userData')), () => permissions.filesystemMode())
     const slashCommands = new SlashCommandService(workspaces, app.getPath('userData'), filesAllowed)
@@ -184,6 +205,7 @@ else {
     let athenaChatVisible = false
     let narrator: ActionNarrator | undefined
     chat = new ChatController({
+      contextDefaults: () => controller!.settings.aiContext,
       rememberedPermissions: permissions.remembered,
       origin: 'online-chat',
       maxConcurrent: () => controller?.settings.backgroundTasks.enabled ? controller.settings.backgroundTasks.maxConcurrent : 1,
@@ -192,7 +214,10 @@ else {
       executionEnded: event => taskNotifications?.completed(event),
       approvalChanged: event => taskNotifications?.approval(event),
       storeArtifact: input => artifacts.store(input.name, input.mimeType, input.bytes, { provider: input.provider }),
+      childModel: config => config.accountRoute && config.model ? unifiedAccounts.model(config.accountRoute, config.model) : undefined,
       accountIdentity: async () => {
+        const route = chat?.current().config.accountRoute
+        if (route) return `${route.provider}:${route.accountId}`
         if (controller?.settings.aiMode === 'copilot') return copilot.identity()
         if (controller?.settings.aiMode !== 'subscription') return null
         if (controller.settings.chatGPTCodingBackend === 'codex-cli' && chat?.current().workspaces.length) {
@@ -201,43 +226,68 @@ else {
         }
         return (await chatGPT.status()).activeAccountId
       },
+      usageProviderId: () => {
+        const mode = chat?.current().config.accountRoute?.provider ?? controller!.settings.aiMode
+        if (mode === 'cloud') return 'openai-api'
+        if (mode === 'subscription') return !chat?.current().config.accountRoute && controller!.settings.chatGPTCodingBackend === 'codex-cli' && chat!.current().workspaces.length ? 'codex-subscription' : 'chatgpt-subscription'
+        if (mode === 'claude-api') return 'claude-api'
+        if (mode === 'cursor') return 'cursor-subscription'
+        if (mode === 'copilot') return 'github-copilot-subscription'
+        if (mode === 'antigravity') return 'google-antigravity-subscription'
+        if (mode === 'third-party') return `third-party:${chat?.current().config.accountRoute?.accountId ?? controller!.settings.thirdPartyConnectionId ?? 'unselected'}`
+        return 'unknown'
+      },
       provider: async (config, child) => {
         const settings = controller!.settings
-        requireOnlineProvider(settings)
+        const route = config.accountRoute
+        const mode = route?.provider ?? settings.aiMode
+        if (route && !unifiedAccounts.isEnabled(route)) throw new ChatError('This account is disabled. Re-enable it in Settings → AI or choose another enabled model. The conversation history is preserved.')
+        if (route) {
+          const singleton: Partial<Record<typeof route.provider, string>> = { cursor: 'cursor', antigravity: 'antigravity', cloud: 'openai-api', 'claude-api': 'claude-api' }
+          if (singleton[route.provider] && singleton[route.provider] !== route.accountId) throw new ChatError('The selected account reference is invalid. Choose its model again from the connected account catalog.')
+        }
+        if (!route) requireOnlineProvider(settings)
         requireOnlineHistory(settings, chat!.current().messages)
-        if (child?.isolated && settings.aiMode === 'cursor') throw new ChatError('Cursor’s native agent does not expose Athena’s scoped child-tool interface. Independent sub-agents are unavailable with this provider.')
-        if (child?.isolated && settings.aiMode === 'subscription' && settings.chatGPTCodingBackend === 'codex-cli') throw new ChatError('Codex app-server currently does not expose Athena’s per-request sub-agent iteration and output-token controls. Sub-agents are unavailable with Codex CLI; the required cold-read gate remains incomplete.')
-        if (child?.isolated && !supportsProjectTools(config.model)) throw new ChatError('The requested sub-agent model has no verified application tool support. Select a compatible model in Settings → AI → Sub-agents.')
-        if (settings.aiMode === 'copilot') {
+        if (child?.isolated && mode === 'cursor') throw new ChatError('Cursor’s native agent does not expose Athena’s scoped child-tool interface. Independent sub-agents are unavailable with this provider.')
+        if (child?.isolated && !route && mode === 'subscription' && settings.chatGPTCodingBackend === 'codex-cli') throw new ChatError('Codex app-server currently does not expose Athena’s per-request sub-agent iteration and output-token controls. Sub-agents are unavailable with Codex CLI; the required cold-read gate remains incomplete.')
+        if (child?.isolated && mode !== 'third-party' && !supportsProjectTools(config.model)) throw new ChatError('The requested sub-agent model has no verified application tool support. Select a compatible model in Settings → AI → Sub-agents.')
+        if (mode === 'copilot') {
           if (child?.isolated) throw new ChatError('Copilot sub-agent budget enforcement is not yet supported. No child was launched.')
           const { account, models } = await copilot.active()
+          if (route && route.accountId !== account.id) throw new ChatError('The selected GitHub Copilot account changed. Reconnect it in Settings → AI.')
+          if (route && !models.some(item => item.id === config.model)) throw new ChatError('This model is no longer available in the selected GitHub Copilot account. Refresh its model catalog.')
           const model = config.model ?? models[0]?.id
           if (!model) throw new ChatError('Select an available Copilot model.')
           return new CopilotProvider(copilot, model, account.id)
         }
-        if (settings.aiMode === 'subscription') {
-          if (child?.coding && settings.chatGPTCodingBackend === 'codex-cli') {
+        if (mode === 'subscription') {
+          if (!route && child?.coding && settings.chatGPTCodingBackend === 'codex-cli') {
             const status = await codexCLI.status()
             if (!status.authenticated || !status.identity) throw new ChatError(`${status.message} Athena did not fall back to its ChatGPT app-sharing connection.`)
             if (!config.model || !status.models.some((entry) => entry.id === config.model)) throw new ChatError('The selected model is not in the current Codex CLI catalog. Refresh Settings → AI → ChatGPT Subscription, then choose an available model. No fallback was used.')
             return new CodexAppServerProvider(codexCLI, config.model, status.identity)
           }
-          const { accessToken, model, accountId, requestIdentity } = await chatGPT.activeModel(config.model)
-          return new OpenAIProvider(accessToken, model, undefined, settings.aiGeneration, true, (rejected) => chatGPT.accessTokenForRound(accountId, rejected), requestIdentity)
+          const { accessToken, model, accountId, requestIdentity, contextWindow } = await chatGPT.activeModel(config.model, route?.accountId)
+          return new OpenAIProvider(accessToken, model, undefined, settings.aiGeneration, true, (rejected) => chatGPT.accessTokenForRound(accountId, rejected), requestIdentity, usageLedger.forAccount('chatgpt-subscription', accountId), contextWindow)
         }
-        if (settings.aiMode === 'claude-api') {
-          if (child?.isolated && config.effort !== 'auto') throw new ChatError('Athena’s Claude adapter currently supports Auto effort only for sub-agents. Select Auto explicitly.')
+        if (mode === 'claude-api') {
           if (child?.isolated && config.contextSettings?.taskSpendLimitUsd != null) throw new ChatError('Athena cannot enforce a dollar cap with the current Claude adapter. This capped sub-agent was not launched.')
-          const { apiKey, model } = await claudeAPI.getActiveConfiguration(config.model)
+          if (route && !config.model) throw new ChatError('Select a Claude API model for this conversation.')
+          const { apiKey, model, capacity } = await claudeAPI.getActiveConfiguration(config.model)
+          if (route && model !== config.model) throw new ChatError('The selected Claude API model is unavailable. Refresh its model catalog and choose a model again.')
           if (child?.isolated && model !== config.model) throw new ChatError('The requested Claude sub-agent model is unavailable. No fallback model was used.')
-          return new ClaudeAPIProvider(apiKey, model)
+          const efforts = knownReasoningEfforts('claude-api', model)
+          if (config.effort !== 'auto' && !efforts?.includes(config.effort)) throw new ChatError('The selected Claude model does not advertise that reasoning effort. Choose a supported level or Auto.')
+          const reasoning = config.effort === 'auto' ? undefined : { output_config: { effort: config.effort } }
+          return new ClaudeAPIProvider(apiKey, model, undefined, { reasoning, ...capacity })
         }
-        if (settings.aiMode === 'cursor') {
+        if (mode === 'cursor') {
           const sessionId = chat!.current().id
           const workspace = chat!.current().workspaces[0]
           if (workspace && !workspaces.authorized(workspace.id)) throw new ChatError('The project attached to this conversation is unavailable or no longer authorized. Reconnect that folder before continuing; Athena will not switch to another project.')
           const cursorStatus = await cursorACP.status()
           if (!cursorStatus.authenticated && cursorStatus.authenticationStatus !== 'unknown') throw new ChatError('Cursor CLI reports that it is not signed in. Connect it in Settings → AI. Athena will not switch providers automatically.')
+          if (route && (!config.model || !cursorModelAvailable(cursorStatus, config.model))) throw new ChatError('The selected Cursor model is unavailable for this account. Refresh its model catalog in Settings → AI.')
           let root: string
           let assertWorkspace: () => Promise<void>
           if (workspace) {
@@ -264,22 +314,83 @@ else {
           const generatedOutputDir = await artifacts.prepareProviderOutput(root, 'images')
           return new CursorACPProvider(cursorACP, root, config.agentMode === 'read-only', cursorStatus.identity, model, assertWorkspace, undefined, generatedOutputDir)
         }
+        if (mode === 'antigravity') {
+          if (child?.isolated) throw new ChatError('Antigravity ACP does not expose Athena’s bounded sub-agent interface. No child task was started.')
+          if (route) {
+            const status = await antigravityACP.status()
+            if (status.authState !== 'authenticated' || !config.model || !status.models.some(model => model.id === config.model)) throw new ChatError('The selected Google Antigravity model is unavailable. Reconnect the account or refresh its model catalog.')
+          }
+          const sessionId = chat!.current().id
+          const workspace = chat!.current().workspaces[0]
+          let root: string
+          let assertWorkspace: () => Promise<void>
+          if (workspace) {
+            if (!workspaces.authorized(workspace.id)) throw new ChatError('The attached project is no longer authorized. Reconnect it before using Antigravity.')
+            root = await workspaces.authorizedRoot(workspace.id)
+            assertWorkspace = async () => {
+              const current = chat!.getSession(sessionId)
+              if (current?.workspaces[0]?.id !== workspace.id || !workspaces.authorized(workspace.id) || await workspaces.authorizedRoot(workspace.id) !== root) throw new ChatError('The project authorization changed. Antigravity stopped before accessing another folder.')
+            }
+          } else {
+            const managed = await antigravityGeneralWorkspace.authorize()
+            root = managed.root
+            assertWorkspace = async () => {
+              if (chat!.getSession(sessionId)?.workspaces.length !== 0) throw new ChatError('The conversation workspace changed. Antigravity stopped before accessing another folder.')
+              await managed.assertAccess()
+            }
+          }
+          return new AntigravityProvider(antigravityACP, root, config.model, assertWorkspace, Boolean(workspace), config.effort)
+        }
+        if(mode==='third-party') {
+          const disabledProfile = route ? (await thirdPartyInference.list()).find(profile => profile.id === route.accountId && !profile.enabled) : undefined
+          if (disabledProfile) throw new ChatError('This third-party inference account is disabled. Re-enable it in Settings → AI or choose another enabled model.')
+          const profile=await thirdPartyInference.active(route?.accountId ?? settings.thirdPartyConnectionId)
+          if(!profile) throw new ChatError('Select an enabled, tested third-party inference connection in Settings → AI.')
+          const model=config.model??profile.defaultModel
+          if(!model||!profile.models.some(item=>item.id===model&&item.enabled)) throw new ChatError('Select an enabled model for this third-party inference profile in Settings → AI, then choose it in the conversation.')
+          if(!inferenceCatalogSelectable(profile)) throw new ChatError('Test the selected third-party connection before sending a request.')
+          const modelCapabilities=thirdPartyInference.runtimeCapabilities(profile,model)
+          if(child?.isolated&&modelCapabilities.toolCalling!==true&&modelCapabilities.functionCalling!==true) throw new ChatError('Sub-agents require verified tool calling for this exact model and gateway. Use Test this model in Settings → AI first.')
+          return new ThirdPartyAIProvider(thirdPartyInference,profile,model)
+        }
         const apiStatus = await ai.getStatus()
+        if (route && (!config.model || !apiStatus.status.active || !apiStatus.status.models.includes(config.model))) throw new ChatError('The selected OpenAI API model is unavailable. Refresh its model catalog or reconnect the API account.')
         if (child?.isolated && (!config.model || !apiStatus.status.models.includes(config.model))) throw new ChatError('The requested OpenAI sub-agent model is unavailable in this account. No fallback model was used.')
         const selectedModel = config.model && apiStatus.status.models.includes(config.model) ? config.model : apiStatus.status.model
         const { apiKey, model } = await ai.getActiveConfiguration(selectedModel)
-        return new OpenAIProvider(apiKey, model, undefined, settings.aiGeneration)
+        return new OpenAIProvider(apiKey, model, undefined, settings.aiGeneration, false, undefined, {}, usageLedger.forAccount('openai-api', apiUsageAccount(apiKey)))
       },
       // API-key checkpoints may contain encrypted provider state. Never reuse
       // one with a distinct ChatGPT OAuth account, even for the same model ID.
-      useCheckpoint: () => controller?.settings.aiMode === 'cloud',
-      effectiveModel: () => controller?.settings.aiMode === 'cursor' ? chat?.current().config.model ?? 'cursor-managed' : controller?.settings.aiMode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat?.current().workspaces.length ? chat.current().config.model : null,
-      modelSupportsEffort: (model, effort) => controller?.settings.aiMode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat?.current().workspaces.length ? codexCLI.supportsEffortCached(model ?? '', effort) : undefined,
+      useCheckpoint: () => (chat?.current().config.accountRoute?.provider ?? controller?.settings.aiMode) === 'cloud',
+      effectiveModel: () => chat?.current().config.accountRoute ? chat.current().config.model : controller?.settings.aiMode === 'cursor' ? chat?.current().config.model ?? 'cursor-managed' : controller?.settings.aiMode === 'antigravity' ? chat?.current().config.model ?? null : controller?.settings.aiMode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat?.current().workspaces.length ? chat.current().config.model : controller?.settings.aiMode==='third-party'?chat?.current().config.model??null:null,
+      modelSupportsEffort: (model, effort, route) => {
+        if (route?.provider === 'cloud' || !route && controller?.settings.aiMode === 'cloud') {
+          if (effort === 'auto') return true
+          const advertised = route ? unifiedAccounts.model(route, model ?? '')?.efforts : undefined
+          return (advertised ?? knownReasoningEfforts('cloud', model))?.includes(effort) ?? false
+        }
+        if (route && ['third-party', 'cursor', 'copilot', 'claude-api', 'antigravity'].includes(route.provider)) {
+          const advertised = unifiedAccounts.model(route, model ?? '')?.efforts
+          // Auto means “let the provider decide” and sends no explicit effort
+          // value, so it remains valid even when the model explicitly reports
+          // no configurable effort levels.
+          if (effort === 'auto') return true
+          return advertised !== undefined ? advertised.includes(effort) : Boolean(knownReasoningEfforts(route.provider, model)?.includes(effort))
+        }
+        if ((route?.provider ?? controller?.settings.aiMode) === 'antigravity') return antigravityACP.supportsEffortCached(model ?? '', effort)
+        if (!route && controller?.settings.aiMode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat?.current().workspaces.length) return codexCLI.supportsEffortCached(model ?? '', effort)
+        const provider = route?.provider ?? (controller?.settings.aiMode === 'subscription' ? 'subscription' : controller?.settings.aiMode)
+        const trusted = knownReasoningEfforts(provider, model)
+        return trusted ? trusted.includes(effort) : undefined
+      },
       voiceTimeoutMs: () => (controller?.settings.voiceInteraction.aiResponseTimeoutSeconds ?? 120) * 1000,
       adaptiveVoiceReasoning: () => controller?.settings.voiceInteraction.adaptiveVoiceReasoning ?? true,
       prepare: (conversation, messages, signal, voiceOnly) => context.prepare(conversation, messages, signal, voiceOnly),
       resolveCommand: (conversation, command, text, signal) => slashCommands.resolve(conversation, command, text, signal),
       authorized: (id) => workspaces.authorized(id),
+      workspaceRoot: id => workspaces.authorizedRoot(id),
+      workspaceOnly: () => workspaces.filesystemMode() === 'project-only',
       phase: () => { /* Online requests do not own the companion's animation lane. */ },
       changed: (snapshot) => {
         voice?.reconcile()
@@ -288,6 +399,9 @@ else {
     }, new ConversationRepository(app.getPath('userData')))
     await workspaces.restore(chat.workspaceReferences())
     controller = new AthenaController(new SettingsRepository(app.getPath('userData')), startup)
+    localSearch = new SearxngRuntime(join(app.getPath('userData'), 'search'), app.isPackaged ? join(process.resourcesPath, 'search-runtime') : join(app.getAppPath().endsWith('out-dev') ? dirname(app.getAppPath()) : app.getAppPath(), 'build', 'search-runtime', `${process.platform}-${process.arch}`))
+    webSearch.configure(() => controller!.settings, localSearch)
+    void localSearch.initialize().then(() => webSearch.reconcile())
     // Hydrate the non-secret Cursor status hint once at application startup.
     // This discovers an existing official CLI login after an upgrade or before
     // the first Settings visit; subsequent page visits remain cache-only.
@@ -311,6 +425,7 @@ else {
       if (snapshot && snapshot.phase !== 'idle') { localActivity.phase(snapshot.phase, snapshot.ownership); localActivity.activity(snapshot) }
     }
     companion = new ChatController({
+      contextDefaults: () => controller!.settings.aiContext,
       rememberedPermissions: permissions.remembered,
       origin: 'athena-local',
       resource: 'local',
@@ -324,7 +439,9 @@ else {
       resolveVoiceCommand: (session, request, requestId, signal) => companionContext.resolveNativeVoiceCommand(session, request, requestId, signal, true),
       resolveCommand: (session, command, text, signal) => companionCommands.resolve(session, command, text, signal),
       authorized: id => companionWorkspaces.authorized(id),
-      phase: (phase, owner) => localActivity.phase(phase, owner),
+      workspaceRoot: id => companionWorkspaces.authorizedRoot(id),
+      workspaceOnly: () => companionWorkspaces.filesystemMode() === 'project-only',
+      phase: (phase, owner, source) => { if (source !== 'floating-voice') localActivity.phase(phase, owner) },
       approvalChanged: event => taskNotifications?.approval({ ...event, source: 'companion' }),
       beforeAction: event => event.ownership?.origin === 'athena-local' ? narrator?.beforeAction(event) ?? Promise.resolve(undefined) : Promise.resolve(undefined),
       taskEnded: (_sessionId, message) => localActivity.ended(message),
@@ -351,6 +468,7 @@ else {
     const athenaChatAttachments = new AttachmentService(athenaChatDirectory, filesAllowed, decodeAttachmentImage)
     const athenaChatCommands = new SlashCommandService(athenaChatWorkspaces, athenaChatDirectory, filesAllowed)
     athenaChat = new ChatController({
+      contextDefaults: () => controller!.settings.aiContext,
       rememberedPermissions: permissions.remembered,
       origin: 'athena-local',
       resource: 'local',
@@ -361,6 +479,8 @@ else {
       prepare: (session, messages, signal, voiceOnly) => athenaChatContext.prepare(session, messages, signal, voiceOnly),
       resolveCommand: (session, command, text, signal) => athenaChatCommands.resolve(session, command, text, signal),
       authorized: id => athenaChatWorkspaces.authorized(id),
+      workspaceRoot: id => athenaChatWorkspaces.authorizedRoot(id),
+      workspaceOnly: () => athenaChatWorkspaces.filesystemMode() === 'project-only',
       approvalChanged: event => taskNotifications?.approval({ ...event, source: 'local' }),
       phase: (phase, owner) => localActivity.phase(phase, owner),
       taskEnded: (_sessionId, message) => localActivity.ended(message),
@@ -462,6 +582,8 @@ else {
     })
     narrator = new ActionNarrator(() => controller!.settings, (request) => speech!.announce(request))
     controller.onSettingsChange = (previous, next) => {
+      if (previous.strictOffline !== next.strictOffline || JSON.stringify(previous.webAccess) !== JSON.stringify(next.webAccess)) webSearch.reconcile()
+      if (JSON.stringify(previous.unifiedAccountEnabled) !== JSON.stringify(next.unifiedAccountEnabled)) unifiedAccounts.invalidate()
       if (previous.aiMode !== next.aiMode) {
         voice?.cancel('AI configuration changed. Please record again.'); chat?.stopAll('AI configuration changed. Send a new message or retry.')
       }
@@ -486,7 +608,7 @@ else {
     context = new ChatContextService(chat, attachments, workspaces, {
       files: async () => {
         controller!.windows.dialogActive = true
-        try { return (await dialog.showOpenDialog(controller!.windows.panel.isVisible() ? controller!.windows.panel : controller!.windows.control, { title: 'Attach files to this conversation', message: 'Saved locally. Relevant contents are sent to the AI provider selected in Settings when you send a message.', properties: ['openFile', 'multiSelections'] })).filePaths }
+        try { return (await dialog.showOpenDialog(controller!.windows.panel.isVisible() ? controller!.windows.panel : controller!.windows.control, { title: 'Attach files to this conversation', message: 'Saved locally. Relevant contents are sent to the account selected for this conversation when you send a message.', properties: ['openFile', 'multiSelections'] })).filePaths }
         finally { controller!.windows.dialogActive = false }
       },
       folder: async () => {
@@ -501,7 +623,14 @@ else {
       },
       openFile: async (path) => { const error = await shell.openPath(path); if (error) throw new ChatError(error) },
     }, filesAllowed, agentTools = new AgentTools(workspaces, app.getPath('userData'), () => false, undefined, () => permissions.isCapabilityAllowed('browserAutomation')), applications, desktopActions, screenCapture,
-    undefined, webSearch, () => onlineContextSettings(controller!.settings), resolveOpenAIWebSearch, undefined, artifacts)
+    undefined, webSearch, () => onlineContextSettings(controller!.settings), resolveOpenAIWebSearch, undefined, artifacts, async (model, session) => {
+      const profile=await thirdPartyInference.active(session.config.accountRoute?.accountId ?? controller!.settings.thirdPartyConnectionId)
+      const selected=profile?.models.find(item=>item.id===model)
+      if(!profile)return undefined
+      if(!selected)return {contextWindow:undefined,imageInput:false,toolCalling:false}
+      const caps=thirdPartyInference.runtimeCapabilities(profile,model)
+      return {contextWindow:caps.contextWindow,imageInput:caps.imageInput===true,toolCalling:caps.toolCalling===true||caps.functionCalling===true}
+    })
     companionCapture = new ScreenCaptureTools(new MacOSScreenCapture(), () => permissions.getPermissionStatus('screenCapture').enabled, () => permissions.isCapabilityAllowed('screenCapture'), () => `local Ollama model ${controller!.settings.localAI.model ?? ''}`)
     const companionDialog = async <T,>(operation: () => Promise<T>): Promise<T> => {
       controller!.windows.dialogActive = true
@@ -535,6 +664,7 @@ else {
     }
     context.setProjectIntelligence(new ProjectIntelligence(workspaces, slashCommands, app.getPath('userData'), ollama), projectScope)
     companionContext.setProjectIntelligence(new ProjectIntelligence(companionWorkspaces, companionCommands, companionDirectory, ollama), projectScope)
+    disposeProjectGit = () => { context.dispose(); companionContext.dispose(); athenaChatContext.dispose() }
     athenaChatContext.setProjectIntelligence(new ProjectIntelligence(athenaChatWorkspaces, athenaChatCommands, athenaChatDirectory, ollama), projectScope)
     companionContext.setNativeActions((_session, userText, requestId, voiceOnly) => nativeActions.createTools({ localChat: companion!, userText, requestId, voiceOnly }))
     athenaChatContext.setNativeActions((_session, userText, requestId, voiceOnly) => nativeActions.createTools({ localChat: athenaChat!, userText, requestId, voiceOnly }))
@@ -553,9 +683,9 @@ else {
       provider: async p => {
         if (p.provider === 'local') { const model = (await ollama.status()).models.find(m => m.name === p.model); if (!model) throw new Error('Selected Ollama model is not installed. Install it in Local AI setup.'); return {provider:new MeetingOllamaProvider(ollama,p.model,controller!.settings.localAI,model),vision:model.capabilities.includes('vision')} }
         if (controller!.settings.strictOffline || !p.cloudConsent) throw new Error('Online meeting context is not authorized.')
-        if (p.provider === 'subscription') { const { accessToken, model, accountId, requestIdentity } = await chatGPT.activeModel(p.model); return {provider:new OpenAIProvider(accessToken,model,undefined,controller!.settings.aiGeneration,true,rejected => chatGPT.accessTokenForRound(accountId,rejected),requestIdentity),vision:supportsImageInput(model,'openai-responses')} }
-        if (p.provider === 'claude-api') { const { apiKey,model } = await claudeAPI.getActiveConfiguration(p.model); if(model !== p.model) throw new Error('Selected model unavailable; no fallback used'); return {provider:new ClaudeAPIProvider(apiKey,model),vision:supportsImageInput(model,'openai-responses')} }
-        const status = await ai.getStatus(); if(!status.status.models.includes(p.model)) throw new Error('Selected API model unavailable; no fallback used'); const {apiKey,model} = await ai.getActiveConfiguration(p.model); return {provider:new OpenAIProvider(apiKey,model,undefined,controller!.settings.aiGeneration),vision:supportsImageInput(model,'openai-responses')}
+        if (p.provider === 'subscription') { const { accessToken, model, accountId, requestIdentity, contextWindow } = await chatGPT.activeModel(p.model); return {provider:new OpenAIProvider(accessToken,model,undefined,controller!.settings.aiGeneration,true,rejected => chatGPT.accessTokenForRound(accountId,rejected),requestIdentity,usageLedger.forAccount('chatgpt-subscription',accountId),contextWindow),vision:supportsImageInput(model,'openai-responses')} }
+        if (p.provider === 'claude-api') { const { apiKey,model,capacity } = await claudeAPI.getActiveConfiguration(p.model); if(model !== p.model) throw new Error('Selected model unavailable; no fallback used'); return {provider:new ClaudeAPIProvider(apiKey,model,undefined,capacity),vision:supportsImageInput(model,'openai-responses')} }
+        const status = await ai.getStatus(); if(!status.status.models.includes(p.model)) throw new Error('Selected API model unavailable; no fallback used'); const {apiKey,model} = await ai.getActiveConfiguration(p.model); return {provider:new OpenAIProvider(apiKey,model,undefined,controller!.settings.aiGeneration,false,undefined,{},usageLedger.forAccount('openai-api',apiUsageAccount(apiKey))),vision:supportsImageInput(model,'openai-responses')}
       },
     })
     await meetings.initialize()
@@ -620,7 +750,7 @@ else {
         }
         return true
       },
-    }, academy, academyIntegrations, academyStudio, localTranscription, academyTraining, officialCSM, higgsTTS, copilot)
+    }, academy, academyIntegrations, academyStudio, localTranscription, academyTraining, officialCSM, higgsTTS, copilot, antigravityACP, antigravityGeneralWorkspace, thirdPartyInference, unifiedAccounts, providerUsage)
     controller.windows.panel.on('hide', () => voice?.cancel('Voice input cancelled because the floating panel was hidden.'))
     controller.windows.panel.webContents.on('render-process-gone', () => { voice?.cancel(); speech?.stop() })
     controller.windows.control.webContents.on('render-process-gone', () => { voice?.cancel(); if (athenaChatVisible) { athenaChatVisible = false; reconcileLocalActivity() } })
@@ -650,9 +780,10 @@ else {
     if (quittingAfterCleanup) return
     event.preventDefault()
     quittingAfterCleanup = true
+    disposeProjectGit()
     startup?.dispose()
     stopLlamaServer(); chat?.dispose(); companion?.dispose(); athenaChat?.dispose(); screenCapture?.dispose(); companionCapture?.dispose(); athenaChatCapture?.dispose(); desktopActions?.dispose(); speech?.dispose(); localVoice?.dispose(); handsFree?.dispose(); voice?.dispose(); controller?.dispose(); tray?.destroy()
-    void Promise.allSettled([meetings?.dispose(), agentTools?.dispose(), companionAgentTools?.dispose(), athenaChatAgentTools?.dispose()]).finally(() => app.quit())
+    void Promise.allSettled([localSearch?.dispose(), meetings?.dispose(), agentTools?.dispose(), companionAgentTools?.dispose(), athenaChatAgentTools?.dispose()]).finally(() => app.quit())
   })
 }
 }

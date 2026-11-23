@@ -20,7 +20,8 @@ export function GenerationSettings({ model }: { model: string | null }) {
     }}>
       <label>Output budget per request (tokens)<input name="output" aria-label="Output budget per request" type="number" min="1024" max={limits.output} step="1" placeholder="Automatic" defaultValue={settings.outputTokens ?? ''} disabled={!snapshot || saving} /></label>
       <p>Leave blank for Automatic: starts at {outputBudget(model ?? '', null).toLocaleString()} tokens and can expand during recovery. Includes reasoning and tool arguments. {limits.verified ? 'Model maximum' : 'Unverified model — conservative maximum'}: {limits.output.toLocaleString()} tokens. A smaller model clamps the saved budget to its limit.</p>
-      <label>Maximum output continuations<input name="continuations" aria-label="Maximum output continuations" type="number" min="0" max="8" step="1" defaultValue={settings.maxOutputContinuations} disabled={!snapshot || saving} /></label>
+      <label>Maximum output continuations<input name="continuations" aria-label="Maximum output continuations" type="number" min="0" max="32" step="1" defaultValue={settings.maxOutputContinuations} disabled={!snapshot || saving} /></label>
+      <p>This is the shared global default. Saved conversation limits take precedence. Compaction and successful tool rounds have separate budgets.</p>
       <p>Auto reasoning starts at Medium when supported and may use Low during recovery. Your explicit reasoning choice stays in effect. Set a per-task dollar cap below in Context &amp; task limits.</p>
       <button className="button secondary" disabled={!snapshot || saving} type="submit">{saving ? 'Saving…' : 'Save generation settings'}</button>
       {(notice || error) && <p role={error ? 'alert' : 'status'}>{error || notice}</p>}

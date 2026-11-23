@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, FolderOpen, LoaderCircle, MessageSquare, MoreHorizontal, Pencil, Plus, Search, ShieldAlert, Trash2 } from 'lucide-react'
 import type { ConversationSummary, WorkspaceReference } from '../../../shared/conversations'
 import { desktop } from '../../services/desktop'
 import { useAthenaChat } from '../../store/athenaChatStore'
 import { readProjectCollapseState, writeProjectCollapseState, type ProjectCollapseState } from '../chat/projectCollapse'
+import { AnchoredPopover } from '../chat/AnchoredPopover'
 
 function relativeTime(timestamp: number): string {
   const elapsed = Date.now() - timestamp
@@ -23,13 +24,16 @@ export function AthenaChatSidebar({ linked, onLink, onManageModels }: { linked: 
   const [title, setTitle] = useState('')
   const [searchError, setSearchError] = useState('')
   const popupRef = useRef<HTMLDivElement>(null)
+  const popupAnchorRef = useRef<HTMLButtonElement>(null)
+  const popupMenuRef = useRef<HTMLDivElement>(null)
   const projectPopupRef = useRef<HTMLDivElement>(null)
+  const closePopup = useCallback(() => setPopup(null), [])
   const [expandedProjects, setExpandedProjects] = useState<ProjectCollapseState>(() => readProjectCollapseState('local'))
   useEffect(() => {
     if (!popup && !projectPopup) return
     const outside = (event: PointerEvent) => {
       const target = event.target as Node
-      if (popup && !popupRef.current?.contains(target)) setPopup(null)
+      if (popup && !popupRef.current?.contains(target) && !popupMenuRef.current?.contains(target)) setPopup(null)
       if (projectPopup && !projectPopupRef.current?.contains(target)) setProjectPopup(null)
     }
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { setPopup(null); setProjectPopup(null) } }
@@ -71,11 +75,11 @@ export function AthenaChatSidebar({ linked, onLink, onManageModels }: { linked: 
   const sessionEntry = (session: ConversationSummary, nested = false) => <div key={session.id} data-conversation-id={session.id} className={`conversation-entry ${nested ? 'project-session' : ''} ${snapshot.sessionId === session.id ? 'selected' : ''}`}>
     <button type="button" className="conversation-select" aria-current={snapshot.sessionId === session.id ? 'page' : undefined} disabled={pending} title={session.executionStatus === 'waiting-approval' ? `${session.title} — Waiting for approval` : session.title} onClick={() => void command({ action: 'switch', id: session.id })}>{session.executionStatus === 'waiting-approval' ? <ShieldAlert className="conversation-approval-icon" size={13} aria-label="Waiting for approval" /> : session.executionStatus === 'running' ? <LoaderCircle className="conversation-running-icon" size={13} aria-label="Running" /> : snapshot.sessionId === session.id ? <span className="active-conversation-dot" aria-hidden="true" /> : <MessageSquare size={13} />}<span>{session.title}</span><small>{relativeTime(session.updatedAt)}</small></button>
     <div className="conversation-options" ref={popup?.id === session.id ? popupRef : undefined}>
-      <button type="button" className="chat-action" aria-label={`Options for ${session.title}`} aria-expanded={popup?.id === session.id} onClick={() => setPopup(popup?.id === session.id ? null : { id: session.id, mode: 'options' })}>•••</button>
-      {popup?.id === session.id && <div className="conversation-popover" role="dialog" aria-label={popup.mode === 'options' ? 'Conversation options' : popup.mode === 'rename' ? 'Rename conversation' : 'Delete'}>
-        {popup.mode === 'options' ? <><button type="button" className="chat-action" onClick={() => { setPopup({ id: session.id, mode: 'rename' }); setTitle(session.title) }}><Pencil size={13} /> Rename</button><button type="button" className="chat-action" disabled={pending} onClick={() => setPopup({ id: session.id, mode: 'delete' })}><Trash2 size={13} /> Delete</button></> : popup.mode === 'rename' ? <form onSubmit={event => { event.preventDefault(); void command({ action: 'rename', id: session.id, title }).then(ok => { if (ok) setPopup(null) }) }}><input autoFocus aria-label="Conversation title" maxLength={120} value={title} onChange={event => setTitle(event.target.value)} /><button className="chat-action" disabled={!title.trim() || pending}>Save</button><button type="button" className="chat-action" onClick={() => setPopup(null)}>Cancel</button></form> : <><strong>Delete this conversation?</strong><p>A recovery copy stays in Athena’s private local archive.</p><div><button type="button" className="chat-action" onClick={() => setPopup(null)}>Cancel</button><button type="button" className="chat-action" disabled={pending} onClick={() => void command({ action: 'delete', id: session.id, confirmed: true }).then(ok => { if (ok) setPopup(null) })}>Delete</button></div></>}
-      </div>}
+      <button ref={popup?.id === session.id ? popupAnchorRef : undefined} type="button" className="chat-action" aria-label={`Options for ${session.title}`} aria-expanded={popup?.id === session.id} aria-haspopup="dialog" onClick={() => setPopup(popup?.id === session.id ? null : { id: session.id, mode: 'options' })}>•••</button>
     </div>
+    {popup?.id === session.id && <AnchoredPopover anchorRef={popupAnchorRef} popoverRef={popupMenuRef} className="conversation-popover anchored-session-popover" label={popup.mode === 'options' ? 'Conversation options' : popup.mode === 'rename' ? 'Rename conversation' : 'Delete'} onClose={closePopup}>
+      {popup.mode === 'options' ? <><button type="button" className="chat-action" onClick={() => { setPopup({ id: session.id, mode: 'rename' }); setTitle(session.title) }}><Pencil size={13} /> Rename</button><button type="button" className="chat-action" disabled={pending} onClick={() => setPopup({ id: session.id, mode: 'delete' })}><Trash2 size={13} /> Delete</button></> : popup.mode === 'rename' ? <form onSubmit={event => { event.preventDefault(); void command({ action: 'rename', id: session.id, title }).then(ok => { if (ok) setPopup(null) }) }}><input autoFocus aria-label="Conversation title" maxLength={120} value={title} onChange={event => setTitle(event.target.value)} /><button className="chat-action" disabled={!title.trim() || pending}>Save</button><button type="button" className="chat-action" onClick={() => setPopup(null)}>Cancel</button></form> : <><strong>Delete this conversation?</strong><p>A recovery copy stays in Athena’s private local archive.</p><div><button type="button" className="chat-action" onClick={() => setPopup(null)}>Cancel</button><button type="button" className="chat-action" disabled={pending} onClick={() => void command({ action: 'delete', id: session.id, confirmed: true }).then(ok => { if (ok) setPopup(null) })}>Delete</button></div></>}
+    </AnchoredPopover>}
   </div>
   return <aside className="conversation-sidebar athena-chat-sidebar" aria-label="Athena Chat sessions">
     <button className="button secondary new-conversation" type="button" disabled={pending} onClick={() => void command({ action: 'create' })}><Plus size={16} /> New chat</button>

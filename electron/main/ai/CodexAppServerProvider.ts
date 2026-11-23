@@ -51,6 +51,7 @@ function finite(value: unknown): number { return typeof value === 'number' && Nu
  * permission, approval, activity, and change-preview services.
  */
 export class CodexAppServerProvider implements AIProvider {
+  readonly nativeAgent = true
   readonly modelId: string
   constructor(private readonly service: CodexCLIService, model: string, private readonly expectedIdentity?: string) { this.modelId = model }
   async testConnection(): Promise<boolean> {
@@ -121,6 +122,7 @@ export class CodexAppServerProvider implements AIProvider {
         dynamicTools,
       }) as { thread?: { id?: string }; model?: string }
       activeThread = String(thread.thread?.id ?? '')
+      if (activeThread) options.onNativeSession?.(activeThread)
       if (!activeThread || thread.model && thread.model !== this.modelId) throw new ChatError('Codex app-server did not accept the selected model. No alternate model was used.')
       const input = this.toUserInput(messages, options)
       options.beforeModelRequest?.(Buffer.byteLength(JSON.stringify(input) + developerInstructions + JSON.stringify(dynamicTools), 'utf8'), 0)

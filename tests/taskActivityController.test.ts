@@ -141,7 +141,7 @@ it('keeps direct floating voice errors out of the chat hologram task lane', () =
   expect(controller.snapshot().taskVisual?.mode).toBe('idle')
 })
 
-it('prioritizes local chat holograms over simultaneous floating voice events', () => {
+it('lets an active floating voice lease override chat visuals and restores chat afterward', () => {
   controller.updateSettings({ avatarVariant: 'vroid-athena' })
   controller.vroidActions.register([{ id: 'idle', duration: 5 }, { id: 'thinking', duration: 3 }])
   const ownership = { origin: 'athena-local' as const, sessionId: '00000000-0000-4000-8000-000000000003', correlationId: '00000000-0000-4000-8000-000000000004' }
@@ -151,10 +151,17 @@ it('prioritizes local chat holograms over simultaneous floating voice events', (
   vi.advanceTimersByTime(500)
   expect(controller.snapshot().taskVisual?.source).toBe('local-chat')
   expect(controller.snapshot().taskVisual?.mode).toBe('thinking')
-  expect(controller.snapshot().vroidActions?.voiceSession).toBeNull()
-  expect(controller.snapshot().vroidActions?.session?.source).toBe('task')
-  expect(controller.snapshot().floatingVoiceActive).toBe(false)
+  expect(controller.snapshot().vroidActions?.voiceSession?.phase).toBe('thinking')
+  expect(controller.snapshot().floatingVoiceActive).toBe(true)
   expect(controller.state).toBe('thinking')
+  controller.setHandsFreeState({ state: 'speaking', ownership })
+  expect(controller.snapshot().vroidActions?.voiceSession?.phase).toBe('talking')
+  controller.setHandsFreeState({ state: 'follow-up', ownership })
+  expect(controller.snapshot().vroidActions?.voiceSession?.phase).toBe('listening')
+  controller.setHandsFreeState({ state: 'paused', ownership })
+  expect(controller.snapshot().floatingVoiceActive).toBe(false)
+  expect(controller.snapshot().vroidActions?.voiceSession).toBeNull()
+  expect(controller.snapshot().taskVisual?.source).toBe('local-chat')
 })
 
 it('does not infer floating voice mode from ordinary local chat speech playback', () => {

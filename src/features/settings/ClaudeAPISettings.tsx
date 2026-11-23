@@ -2,8 +2,12 @@ import { useEffect, useState } from 'react'
 import { Section, SettingRow } from '../../components/ui/Controls'
 import { desktop } from '../../services/desktop'
 import { emptyAIStatus, type AIResult, type AIStatus } from '../../../shared/ai'
+import { useChat } from '../../store/chatStore'
+import { UsageDashboard } from './UsageDashboard'
+import { observedConversationUsage } from './observedUsage'
 
 export function ClaudeAPISettings() {
+  const chat = useChat()
   const [status, setStatus] = useState<AIStatus>({ ...emptyAIStatus(), provider: 'Claude API' })
   const [key, setKey] = useState('')
   const [replace, setReplace] = useState(false)
@@ -20,7 +24,9 @@ export function ClaudeAPISettings() {
   }
   const editing = !status.hasKey || replace
   const disabled = Boolean(busy)
-  return <Section title="Claude API" description="This provider uses an Anthropic API key and separate API billing. It does not use your Claude Pro or Max subscription allowance.">
+  const observed = observedConversationUsage(chat.snapshot.messages, ['claude-api'])
+  return <>
+  <Section title="Claude API" description="This provider uses an Anthropic API key and separate API billing. It does not use your Claude Pro or Max subscription allowance.">
     <p className="card-description claude-subscription-policy" role="note">Anthropic’s current Claude Agent SDK policy allows third-party apps to offer claude.ai login or subscription rate limits only with prior Anthropic approval. Athena has no approved subscription integration, so Claude subscription sign-in is unavailable here. Use the Anthropic API key below for separately billed API access.</p>
     <SettingRow title="Connection status" description={status.lastVerifiedAt ? `Last verified ${new Date(status.lastVerifiedAt).toLocaleString()}. API usage limits and billing are controlled by Anthropic.` : 'No API key is active. Athena will not fall back to another provider.'}>
       <span className={`ai-status ${status.active ? 'ai-active' : ''}`}>{status.active ? '● Active' : '○ Not configured'}</span>
@@ -30,4 +36,6 @@ export function ClaudeAPISettings() {
     <div className="ai-actions"><button className="button secondary" disabled={disabled || (editing && !key.trim())} onClick={() => void run('Testing…', () => desktop.testClaudeConnection(editing ? { apiKey: key } : undefined))}>Test Connection</button>{editing ? <button className="button primary" disabled={disabled || !key.trim()} onClick={() => void run('Verifying & activating…', () => desktop.activateClaudeAPI({ apiKey: key }), true)}>Save & Activate</button> : <button className="button secondary" disabled={disabled} onClick={() => { setReplace(true); setNotice('') }}>Replace API Key</button>}{replace && <button className="button secondary" disabled={disabled} onClick={() => { setReplace(false); setKey('') }}>Cancel replacement</button>}{status.hasKey && <button className="button secondary" disabled={disabled} onClick={() => void run('Removing…', () => desktop.removeClaudeAPIKey(), true)}>Remove API Key</button>}</div>
     <p className="ai-feedback" role={failed ? 'alert' : 'status'} aria-live="polite">{busy || notice}</p>
   </Section>
+  <UsageDashboard data={{ provider: 'Claude API', account: status.active ? 'Saved Anthropic API key · organization not identified' : 'Not configured', usageType: 'Locally observed API response usage', availability: !status.active ? 'authentication-required' : observed.metrics.length ? 'partial' : 'unavailable', source: 'Anthropic Messages API response usage metadata', refreshedAt: observed.updatedAt, metrics: observed.metrics, officialUrl: 'https://console.anthropic.com/usage', officialLabel: 'Open Anthropic Console Usage', explanation: 'These response totals cover this conversation only. Refresh Usage reloads the saved conversation snapshot; it does not query organization analytics. Organization Usage and Cost Analytics require an Admin API key or Enterprise Analytics permission; Athena has no such credential configured. Analytics data is delayed, not real-time. Interrupted requests without a usage receipt may still be billed.' }} onRefresh={chat.refresh} />
+  </>
 }

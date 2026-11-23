@@ -29,7 +29,7 @@ const call = async (tools: ProjectTools, signal: AbortSignal, name: string, args
 }
 const read = (options: StreamOptions, path = 'spec.md', end = 400, start = 1) => call(options.context!.projectTools!, options.signal!, 'read_file', { path, start_line: start, end_line: end })
 type Child = (options: StreamOptions, messages: ChatMessage[], config: ConversationConfig, attempt: number) => Promise<SubagentResult | string>
-async function fixture(parent: (tools: ProjectTools, signal: AbortSignal, chat: ChatController) => Promise<void>, options: { child?: Child; childProvider?: (config: ConversationConfig) => AIProvider; settings?: Partial<SubagentSettings>; gates?: SubagentRequirement[]; mode?: 'read-only' | 'advanced'; unavailable?: boolean; text?: string; projectRoot?: string } = {}) {
+async function fixture(parent: (tools: ProjectTools, signal: AbortSignal, chat: ChatController) => Promise<void>, options: { child?: Child; childProvider?: (config: ConversationConfig) => AIProvider; settings?: Partial<SubagentSettings>; gates?: SubagentRequirement[]; mode?: 'read-only' | 'advanced' | 'full-access'; unavailable?: boolean; text?: string; projectRoot?: string } = {}) {
   const directory = options.projectRoot ? undefined : await realpath(await mkdtemp(join(tmpdir(), 'athena-child-test-'))), root = options.projectRoot ?? join(directory!, 'project'), storage = join(directory ?? await realpath(await mkdtemp(join(tmpdir(), 'athena-child-storage-'))), 'storage')
   if (!options.projectRoot) { await mkdir(root); await writeFile(join(root, 'spec.md'), options.text ?? 'Acceptance criteria\nHandle empty and error states.\n'); await writeFile(join(root, 'unrelated.md'), 'Unrelated private parent notes') }
   const workspaces = new WorkspaceService(() => true), workspace = await workspaces.connect(root), agent = new AgentTools(workspaces, storage)
@@ -59,6 +59,7 @@ async function fixture(parent: (tools: ProjectTools, signal: AbortSignal, chat: 
       } }
     },
     authorized: (id) => workspaces.authorized(id),
+    workspaceOnly: () => true,
     prepare: async (session, _messages, signal) => {
       if (options.gates) chat.activeExecution()!.execution!.subagentRequirements = options.gates
       const base = agent.create(chat, session.id, workspace.id, workspace.name, options.mode ?? 'advanced', [], () => true)
@@ -68,7 +69,7 @@ async function fixture(parent: (tools: ProjectTools, signal: AbortSignal, chat: 
   }, repository)
   chat.addWorkspace(chat.current().id, workspace)
   chat.current().config.model = 'gpt-5'; chat.current().config.effort = 'high'
-  chat.command({ action: 'agent-mode', id: chat.current().id, mode: options.mode ?? 'advanced' })
+  chat.command({ action: 'agent-mode', id: chat.current().id, mode: options.mode ?? 'advanced', ...(options.mode === 'full-access' ? { confirmed: true as const } : {}) })
   chat.current().messages.push({ id: randomUUID(), role: 'user', content: 'PARENT_HISTORY_MUST_NOT_LEAK', createdAt: Date.now(), status: 'complete' })
   cleanups.push(async () => { chat.dispose(); await agent.dispose(); if (directory) await rm(directory, { recursive: true, force: true }); else await rm(storage, { recursive: true, force: true }) })
   chat.send({ text: 'Delegate review of the selected artifact.' })
@@ -170,7 +171,7 @@ describe('isolated child executions through the shared agent', () => {
       return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } })
     })
     const f = await fixture(async (tools, signal) => {
-      const child = await call(tools, signal, 'spawn_subagent', { ...assignment, ...(boundary === 'iterations' ? { maxIterations: 2 } : {}) })
+      const child = await call(tools, signal, 'spawn_subagent', { ...assignment, model: 'gpt-6-sol', ...(boundary === 'iterations' ? { maxIterations: 2 } : {}) })
       expect((await call(tools, signal, 'wait_subagents', { ids: [child.id] })).results[0].status).toBe('completed')
     }, { childProvider: config => new OpenAIProvider('sk-test-fixture', config.model!, request) })
     await f.idle()
@@ -218,7 +219,7 @@ describe('isolated child executions through the shared agent', () => {
       expect(child.budget).toMatchObject({ configured: 250000, requested: scenario.tokenBudget, effective: scenario.tokenBudget })
       expect((await call(tools, signal, 'wait_subagents', { ids: [child.id] })).results[0].status).toBe('completed')
       await call(tools, signal, 'reconcile_subagent', { id: child.id, accepted: true, summary: 'Compared independent file evidence with the fixture criteria.' })
-    }, { text: Array.from({ length: 7 }, (_, i) => `Criterion ${i + 1}`).join('\n'), gates: [{ id: 'review', required: true, mode: 'cold_read', role: 'Reviewer', expectedResultSchema: 'athena-review-v1' }], childProvider: config => new OpenAIProvider('sk-fixture-not-a-key', config.model!, request, undefined, true) })
+    }, { text: Array.from({ length: 7 }, (_, i) => `Criterion ${i + 1}`).join('\n'), gates: [{ id: 'review', required: true, mode: 'cold_read', role: 'Reviewer', expectedResultSchema: 'athena-review-v1' }], childProvider: config => new OpenAIProvider('sk-fixture-not-a-key', config.model!, request, undefined, true, undefined, {}, undefined, 1_050_000) })
     await f.idle()
     const child = f.runs()[0], expected = [...scenario.inputs, ...scenario.outputs].reduce<number>((sum, value) => sum + value, 0)
     expect(child).toMatchObject({ model: scenario.model, effort: scenario.effort, iterations: scenario.rounds + 1, toolCalls: scenario.rounds === 1 ? 3 : 7, reviewAccepted: true })
@@ -236,7 +237,7 @@ describe('isolated child executions through the shared agent', () => {
     request.mockResolvedValueOnce(sse({ type: 'response.completed', response: { output: [{ type: 'function_call', name: 'read_file', arguments: JSON.stringify({ path: 'spec.md', start_line: 1, end_line: 100 }), call_id: 'child_read_1', id: 'fc_child_read_1', status: 'completed' }] } }))
       .mockResolvedValueOnce(sse({ type: 'response.output_text.delta', delta: JSON.stringify(result()) }, { type: 'response.completed', response: { output: [] } }))
     const f = await fixture(async (tools, signal) => {
-      const child = await call(tools, signal, 'spawn_subagent', assignment)
+      const child = await call(tools, signal, 'spawn_subagent', { ...assignment, model: 'gpt-6-sol' })
       expect((await call(tools, signal, 'wait_subagents', { ids: [child.id] })).results[0].status).toBe('completed')
     }, { childProvider: (config) => new OpenAIProvider('sk-test-not-a-real-key', config.model!, request) })
     await f.idle()
@@ -331,6 +332,31 @@ describe('isolated child executions through the shared agent', () => {
     expect(f.chat.current().config.model).toBe('gpt-5'); expect(f.chat.current().config.effort).toBe('high')
   })
 
+  it('uses the saved unified account route and freezes settings while keeping the parent unchanged', async () => {
+    const selection = { provider: 'third-party' as const, accountId: 'explicit-gateway', model: 'same-model' }
+    const f = await fixture(async (tools, signal) => {
+      const worker = await call(tools, signal, 'spawn_subagent', assignment)
+      await call(tools, signal, 'wait_subagents', { ids: [worker.id] })
+    }, { settings: { coldReadSelection: selection, coldReadEffort: 'max', contextTokens: 512000 }, childProvider: config => ({
+      modelId: config.model!, contextLimits: { contextWindow: 1050000, source: 'reported' }, testConnection: async () => true,
+      async *streamMessage(messages, options = {}) {
+        expect(config.accountRoute).toEqual({ provider: 'third-party', accountId: 'explicit-gateway' })
+        expect(config.effort).toBe('max'); expect(options.requestContextBudget).toBe(512000)
+        expect(options.contextSettings!.automaticCompaction).toBe(true)
+        options.beforeModelRequest!(JSON.stringify(messages).length, 4096)
+        await read(options)
+        options.onModelResponse!({ inputTokens: 1000, outputTokens: 200, estimated: false })
+        yield { type: 'text', text: JSON.stringify(result()) }; yield { type: 'done' }
+      },
+    }) })
+    await f.idle()
+    expect(f.runs()[0]).toMatchObject({ accountRoute: { provider: 'third-party', accountId: 'explicit-gateway' }, settingsSnapshot: { contextTokens: 512000 }, budget: { effectiveContext: 512000, consumedTokens: 1200 } })
+    expect(f.chat.current().config.accountRoute).toBeUndefined()
+    expect(f.chat.current().config.model).toBe('gpt-5')
+    const persisted = JSON.parse(JSON.stringify(f.runs()[0]))
+    expect(persisted.settingsSnapshot.coldReadSelection).toEqual(selection)
+  })
+
   it('blocks path escapes, hidden credentials and undelegated mutation tools', async () => {
     const f = await fixture(async (tools, signal) => {
       expect((await call(tools, signal, 'spawn_subagent', { ...assignment, files: ['../outside.md'] })).error).toContain('project-relative')
@@ -338,7 +364,7 @@ describe('isolated child executions through the shared agent', () => {
       const child = await call(tools, signal, 'spawn_subagent', assignment)
       await call(tools, signal, 'wait_subagents', { ids: [child.id] })
     }, { child: async (options) => {
-      await expect(read(options, 'unrelated.md')).rejects.toThrow('explicit file scope')
+      expect(await read(options, 'unrelated.md')).toMatchObject({ ok: false, error: { code: 'subagent_scope_denied' } })
       await expect(call(options.context!.projectTools!, options.signal!, 'create_file', { path: 'created.md', content: 'bad' })).resolves.toMatchObject({ ok: false, error: { code: 'unknown_tool' } })
       await read(options); return result()
     } })
@@ -354,6 +380,22 @@ describe('isolated child executions through the shared agent', () => {
     const approval = f.chat.snapshot().messages.at(-1)!.execution!.approval!
     f.chat.command({ action: 'agent-approval', id: f.chat.current().id, approvalId: approval.id, allow: false })
     await f.idle(); expect(denied).toContain('declined'); expect(f.childCount).toBe(0)
+  })
+
+  it('automatically approves scoped write delegation and child file operations in Full Access', async () => {
+    const f = await fixture(async (tools, signal) => {
+      const child = await call(tools, signal, 'spawn_subagent', { ...assignment, mode: 'scoped', files: ['spec.md', 'child.md'], toolScopes: ['filesystem-read', 'filesystem-write'] })
+      expect(child.error).toBeUndefined()
+      expect((await call(tools, signal, 'wait_subagents', { ids: [child.id] })).results[0].status).toBe('completed')
+    }, { mode: 'full-access', child: async (options) => {
+      const created = await call(options.context!.projectTools!, options.signal!, 'create_file', { path: 'child.md', content: 'Child change' })
+      expect(created.result).toMatchObject({ ok: true })
+      return result()
+    } })
+    await f.idle()
+    expect(await readFile(join(f.root, 'child.md'), 'utf8')).toBe('Child change')
+    expect(f.chat.snapshot().messages.at(-1)?.execution?.approval).toBeUndefined()
+    expect(f.chat.snapshot().messages.at(-1)?.execution?.permissionDecisions?.map((entry) => entry.decision)).toEqual(['automatic', 'automatic'])
   })
 
   it('serializes a write-capable child with other workers and parent edits', async () => {
@@ -500,6 +542,25 @@ describe('isolated child executions through the shared agent', () => {
     }, { child: async (options, _messages, _config, count) => { if (count === 1) { await read(options); throw new ChatError('Temporary provider failure.') }; expect(options.context?.repositoryText).toContain('Acceptance criteria'); expect(options.context?.repositoryText).not.toContain('PARENT_HISTORY'); return result() } })
     await f.idle(); expect(f.runs().at(-1)?.attempts).toBe(2); expect(f.runs().at(-1)?.toolCalls).toBe(1)
     expect(f.runs().at(-1)?.iterations).toBe(2)
+  })
+  it('requires explicit parent read-scope expansion and preserves the denied observation', async () => {
+    const f = await fixture(async (tools, signal) => {
+      const child = await call(tools, signal, 'spawn_subagent', { ...assignment, mode: 'scoped', toolScopes: ['filesystem-read'] })
+      await call(tools, signal, 'wait_subagents', { ids: [child.id] })
+      expect((await call(tools, signal, 'resume_subagent', { id: child.id, additionalReadPaths: ['../outside.md'] })).error).toContain('project-relative')
+      expect((await call(tools, signal, 'resume_subagent', { id: child.id, additionalReadPaths: ['unrelated.md'] })).id).toBe(child.id)
+      await call(tools, signal, 'wait_subagents', { ids: [child.id] })
+      expect((await call(tools, signal, 'resume_subagent', { id: child.id, additionalReadPaths: ['another.md'] })).error).toContain('Scope cannot change')
+    }, { child: async (options, _messages, _config, count) => {
+      await read(options)
+      const evidence = await read(options, 'unrelated.md')
+      if (count === 1) { expect(evidence.error.code).toBe('subagent_scope_denied'); return { ...result(), status: 'blocked', assessment: 'INCOMPLETE', blockers: ['Need unrelated.md'] } }
+      expect(evidence.content).toContain('Unrelated private parent notes')
+      return result()
+    } })
+    await f.idle()
+    expect(f.runs().at(-1)?.request.files).toEqual(['spec.md', 'unrelated.md'])
+    expect(f.runs().at(-1)?.status).toBe('completed')
   })
 
   it('rejects stale reviews after a version-checked parent edit', async () => {

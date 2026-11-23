@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ProjectTools } from './AIProvider'
 import { ChatError } from './AIProvider'
+import { classifyOperation } from './operationRisk'
 import type { ApplicationDetectionController } from '../applicationDetection/applicationDetectionController'
 
 const empty = z.object({}).strict()
@@ -17,6 +18,7 @@ export function createApplicationTools(controller: ApplicationDetectionControlle
       return { name, description, parameters }
     }),
     assertAccess,
+    operationRisk: (name, input) => definitions.find(tool => tool.name === name)?.schema.safeParse(input).success ? 'read-only' : 'unknown',
     parallelSafe: () => true,
     async execute(name, input, signal) {
       assertAccess()
@@ -41,19 +43,28 @@ export function createApplicationTools(controller: ApplicationDetectionControlle
   }
 }
 
+const combinedPolicies = new WeakMap<ProjectTools, string[]>()
+function policies(tools: ProjectTools) {
+  const prior = combinedPolicies.get(tools)
+  return prior && prior.join('\n') === tools.policy ? prior : tools.policy ? [tools.policy] : []
+}
+
 export function combineTools(base: ProjectTools | undefined, application: ProjectTools | undefined): ProjectTools | undefined {
   if (!base) return application
   if (!application) return base
   const appNames = new Set(application.definitions.map((entry) => entry.name))
-  return {
+  const blocks = [...new Set([...policies(base), ...policies(application)])]
+  const result: ProjectTools = {
     ...base,
-    policy: [base.policy, application.policy].filter(Boolean).join('\n') || undefined,
+    policy: blocks.join('\n') || undefined,
     maxRounds: Math.max(base.maxRounds ?? 0, application.maxRounds ?? 0) || undefined,
     maxCalls: Math.max(base.maxCalls ?? 0, application.maxCalls ?? 0) || undefined,
     timeoutMs: Math.max(base.timeoutMs ?? 0, application.timeoutMs ?? 0) || undefined,
     maxArgumentBytes: Math.max(base.maxArgumentBytes ?? 0, application.maxArgumentBytes ?? 0) || undefined,
-    definitions: [...base.definitions, ...application.definitions],
+    definitions: [...base.definitions.filter(tool => !appNames.has(tool.name)), ...application.definitions],
     assertAccess: () => { base.assertAccess(); application.assertAccess() },
+    operationRisk: (name, input) => classifyOperation(appNames.has(name) ? application : base, name, input),
+    readOnly: (name) => appNames.has(name) ? application.readOnly?.(name) ?? false : base.readOnly?.(name) ?? false,
     parallelSafe: (name) => appNames.has(name) ? application.parallelSafe?.(name) ?? false : base.parallelSafe?.(name) ?? false,
     execute: (name, input, signal) => appNames.has(name) ? application.execute(name, input, signal) : base.execute(name, input, signal),
     formatOutput: (result) => base.formatOutput?.(result) ?? application.formatOutput?.(result),
@@ -64,4 +75,6 @@ export function combineTools(base: ProjectTools | undefined, application: Projec
     validateCompletion: async () => { await base.validateCompletion?.(); await application.validateCompletion?.() },
     additionalCostUsd: () => (base.additionalCostUsd?.() ?? 0) + (application.additionalCostUsd?.() ?? 0),
   }
+  combinedPolicies.set(result, blocks)
+  return result
 }

@@ -15,10 +15,13 @@ describe('provider-neutral child final assessment', () => {
   it.each(['openai', 'subscription', 'claude', 'ollama'] as const)('%s returns every batch result and disables tools for final assessment', async kind => {
     const run = subagentRunSchema.parse({ id: randomUUID(), parentExecutionId: randomUUID(), conversationId: randomUUID(), taskId: randomUUID(), projectId: 'fixture', request: { taskKey: 'review', role: 'Reviewer', task: 'Read fixture', criteria: 'Review', files: ['spec.md'], maxToolCalls: 1 }, status: 'running', model: null, effort: 'auto', accountId: null, startedAt: 1, attempts: 1, iterations: 0, toolCalls: 0, inputTokens: 0, outputTokens: 0, estimatedCostUsd: null })
     const budget = new SubagentExecutionBudget(run, { ...subagentDefaults(), maxIterations: 2 }), bodies: Array<Record<string, any>> = []
-    const request = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+    const request = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+      // Ollama may also query model metadata for token accounting. Count only
+      // generation requests when asserting the child assessment rounds.
+      if (kind === 'ollama' && !String(url).includes('/api/chat')) return new Response('{}')
       const first = bodies.length === 0; bodies.push(JSON.parse(init!.body as string))
       if (kind === 'ollama') return new Response(JSON.stringify({ message: first ? { tool_calls: Array.from({ length: 3 }, () => ({ function: { name: 'read_file', arguments: { path: 'spec.md' } } })) } : { content: 'Final assessment' }, done: true, prompt_eval_count: 500, eval_count: 100 }) + '\n')
-      if (kind === 'claude') return sse(first ? [...Array.from({ length: 3 }, (_, index) => [{ type: 'content_block_start', index, content_block: { type: 'tool_use', id: `c${index}`, name: 'read_file', input: { path: 'spec.md' } } }, { type: 'content_block_stop', index }]).flat(), { type: 'message_delta', delta: { stop_reason: 'tool_use' } }] : [{ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Final assessment' } }, { type: 'message_delta', delta: { stop_reason: 'end_turn' } }])
+      if (kind === 'claude') return sse([...(first ? [...Array.from({ length: 3 }, (_, index) => [{ type: 'content_block_start', index, content_block: { type: 'tool_use', id: `c${index}`, name: 'read_file', input: { path: 'spec.md' } } }, { type: 'content_block_stop', index }]).flat(), { type: 'message_delta', delta: { stop_reason: 'tool_use' } }] : [{ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Final assessment' } }, { type: 'message_delta', delta: { stop_reason: 'end_turn' } }]), { type: 'message_stop' }])
       return sse([...(first ? [] : [{ type: 'response.output_text.delta', delta: 'Final assessment' }]), { type: 'response.completed', response: { output: first ? Array.from({ length: 3 }, (_, i) => ({ type: 'function_call', call_id: `c${i}`, name: 'read_file', arguments: '{"path":"spec.md"}', status: 'completed' })) : [], usage: { input_tokens: 500, output_tokens: 100, total_tokens: 600 } } }])
     })
     const model = { name: 'qwen2.5-coder:14b', size: 0, capabilities: ['completion', 'tools'], contextLength: 32768 }
@@ -26,10 +29,15 @@ describe('provider-neutral child final assessment', () => {
     const execute = vi.fn(async () => JSON.stringify({ path: 'spec.md', version: 'v1', content: 'Fixture', start: 1, end: 1, totalLines: 1 }))
     const tools: ProjectTools = { maxCalls: 1, maxRounds: 2, executionBudget: budget, assertAccess: vi.fn(), definitions: [{ name: 'read_file', description: 'Read', parameters: { type: 'object', properties: { path: { type: 'string' } } } }], parallelSafe: () => true, execute }
     const chunks = []
-    for await (const chunk of provider.streamMessage([{ id: randomUUID(), role: 'user', content: 'Review fixture', status: 'complete', createdAt: 1 }], { context: { attachments: [], repositoryText: '', sources: [], projectTools: tools }, beforeModelRequest: () => { run.iterations++; budget.sync() } })) chunks.push(chunk)
+    for await (const chunk of provider.streamMessage([{ id: randomUUID(), role: 'user', content: 'Review fixture', status: 'complete', createdAt: 1 }], { context: { attachments: [], repositoryText: '', sources: [], projectTools: tools }, requestContextBudget: 24000, generationSettings: { outputTokens: 4096, maxOutputContinuations: 0 }, beforeModelRequest: (_bytes, output, metadata) => {
+      expect(metadata).toBeDefined(); expect(metadata!.inputTokens + output).toBeLessThanOrEqual(24000)
+      expect(output).toBeLessThanOrEqual(4096); run.iterations++; budget.sync()
+    } })) chunks.push(chunk)
     expect(chunks.at(-1)).toEqual({ type: 'done' }); expect(execute).toHaveBeenCalledTimes(1)
     expect(run).toMatchObject({ iterations: 2, toolCalls: 1 })
     expect(bodies).toHaveLength(2)
+    if (kind === 'claude') expect(bodies[0].max_tokens).toBe(4096)
+    if (kind === 'openai') expect(bodies[0].max_output_tokens).toBe(4096)
     expect(JSON.stringify(bodies[1]).match(/tool_budget_deferred/g)).toHaveLength(2)
     if (kind === 'ollama') expect(bodies[1].tools).toBeUndefined()
     else expect(bodies[1].tool_choice).toEqual(kind === 'claude' ? { type: 'none' } : 'none')

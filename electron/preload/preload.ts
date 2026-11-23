@@ -78,7 +78,18 @@ const api: AthenaAPI = {
   getApplications: () => ipcRenderer.invoke(IPC.applicationDetection),
   getChat: () => ipcRenderer.invoke(IPC.chatGet),
   chatSession: (input) => ipcRenderer.invoke(IPC.chatSession, input),
+  getProviderUsage: (query) => ipcRenderer.invoke(IPC.providerUsage, { action: 'snapshot', query }),
+  configureOpenAIUsage: (input) => ipcRenderer.invoke(IPC.providerUsage, { action: 'configure-admin', ...input }),
+  removeOpenAIUsage: () => ipcRenderer.invoke(IPC.providerUsage, { action: 'remove-admin' }),
+  getUnifiedAccounts: (input) => ipcRenderer.invoke(IPC.unifiedAccounts, input),
   chatContext: (input) => ipcRenderer.invoke(IPC.chatContext, input),
+  projectGit: input => ipcRenderer.invoke(IPC.projectGit, input),
+  projectEditor: input => ipcRenderer.invoke(IPC.projectEditor, input),
+  onProjectGit: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, value: import('../../shared/projectGit').ProjectGitEvent) => callback(value)
+    ipcRenderer.on(IPC.projectGitChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.projectGitChanged, listener)
+  },
   searchChats: (input) => ipcRenderer.invoke(IPC.chatSearch, input),
   sendChat: (input) => ipcRenderer.invoke(IPC.chatSend, input),
   getSlashCommands: (input) => ipcRenderer.invoke(IPC.chatSlashCommands, input),
@@ -106,12 +117,15 @@ const api: AthenaAPI = {
     return () => ipcRenderer.removeListener(IPC.athenaChatChanged, listener)
   },
   copilot: input => ipcRenderer.invoke(IPC.copilot, input),
+  inferenceConnections: input => ipcRenderer.invoke(IPC.inferenceConnections, input),
   getAIStatus: () => ipcRenderer.invoke(IPC.aiStatus),
+  getOpenAIAccountStatus: () => ipcRenderer.invoke(IPC.openAIAccountStatus),
   testAIConnection: (input) => ipcRenderer.invoke(IPC.aiTest, input),
   activateAI: (input) => ipcRenderer.invoke(IPC.aiActivate, input),
   selectAIModel: (input) => ipcRenderer.invoke(IPC.aiModel, input),
   removeAIKey: () => ipcRenderer.invoke(IPC.aiRemove),
   getWebSearchStatus: () => ipcRenderer.invoke(IPC.webSearchStatus),
+  restartWebSearch: () => ipcRenderer.invoke(IPC.webSearchRestart),
   testWebSearch: (input) => ipcRenderer.invoke(IPC.webSearchTest, input),
   saveWebSearchKey: (input) => ipcRenderer.invoke(IPC.webSearchSave, input),
   removeWebSearchKey: () => ipcRenderer.invoke(IPC.webSearchRemove),
@@ -124,6 +138,7 @@ const api: AthenaAPI = {
   getCursorStatus: (input) => ipcRenderer.invoke(IPC.cursorStatus, input),
   signInCursor: () => ipcRenderer.invoke(IPC.cursorLogin),
   signOutCursor: () => ipcRenderer.invoke(IPC.cursorLogout),
+  antigravity: (input) => ipcRenderer.invoke(IPC.antigravityCommand, input),
   getChatGPTStatus: () => ipcRenderer.invoke(IPC.chatGPTStatus),
   getCodexCLIStatus: (input) => ipcRenderer.invoke(IPC.codexCLIStatus, input),
   addChatGPTAccount: () => ipcRenderer.invoke(IPC.chatGPTAccountAdd),

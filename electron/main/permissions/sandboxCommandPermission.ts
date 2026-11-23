@@ -29,7 +29,7 @@ export function executableFingerprint(executable: string): string {
 }
 /** Constructed by trusted sandbox adapters, never parsed from a model tool argument. */
 export function sandboxCommandScope(root: string, request: CommandRequest, executable: string, tool: string): RememberedScope | undefined {
-  if (request.network || request.loopback || request.install || request.gitWrite || request.localServer || request.port !== undefined || request.approvedReadPaths?.length || (request.filesystemMode ?? 'project-only') !== 'project-only') return undefined
+  if (request.network || request.loopback || request.install || request.gitWrite || request.localServer || request.port !== undefined || request.approvedReadPaths?.length || request.approvedWritePaths?.length || request.projectWrite || (request.filesystemMode ?? 'project-only') !== 'project-only') return undefined
   if (!checkCommandArgs(request.executable, request.args)) return undefined
   try {
     const project = realpathSync(root), resolvedExecutable = realpathSync(executable)
@@ -38,4 +38,11 @@ export function sandboxCommandScope(root: string, request: CommandRequest, execu
       sandbox: 'project-offline-no-source-or-dependency-writes-v1' })
     return { operation: 'sandbox_check_command', project, resources: [project], command }
   } catch { return undefined }
+}
+
+/** Shared command intent. Existing validation commands retain their read-only
+ * source policy unless the caller explicitly requests writable artifacts. */
+export function commandNeedsProjectWrites(executable: string, args: string[], requested?: boolean): boolean {
+  return requested ?? (!['echo', 'curl', 'git'].includes(executable) && !checkCommandArgs(executable, args)
+    && !(['npm', 'pnpm', 'yarn', 'node'].includes(executable) && args.length === 1 && ['--version', '-v', '--help'].includes(args[0])))
 }

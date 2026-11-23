@@ -4,7 +4,7 @@ import { emptyChatGPTStatus } from '../shared/chatgpt'
 import { emptyChatSnapshot } from '../shared/chat'
 import { useChat } from '../src/store/chatStore'
 
-const api = vi.hoisted(() => ({ getChatGPTStatus: vi.fn(), getCodexCLIStatus: vi.fn(), chatSession: vi.fn(), selectChatGPTAccount: vi.fn(), openChatGPTUsage: vi.fn() }))
+const api = vi.hoisted(() => ({ getChatGPTStatus: vi.fn(), getCodexCLIStatus: vi.fn(), chatSession: vi.fn(), selectChatGPTAccount: vi.fn(), openChatGPTUsage: vi.fn(), refreshChatGPTModels: vi.fn() }))
 vi.mock('../src/services/desktop', () => ({ desktop: api }))
 
 import { ChatGPTSettings } from '../src/features/settings/ChatGPTSettings'
@@ -42,8 +42,7 @@ describe('ChatGPT subscription settings', () => {
   it('identifies the request account and distinguishes the conversation model from the account default', async () => {
     render(<ChatGPTSettings />)
     expect(await screen.findByText(/Request account reference: 22222222/)).toHaveTextContent('Conversation model: gpt-5.6-luna; account default: account-model-with-unrecognized-capability-name')
-    fireEvent.click(screen.getByRole('button', { name: 'Open ChatGPT Usage' }))
-    expect(api.openChatGPTUsage).toHaveBeenCalledOnce()
+    expect(screen.getByRole('link', { name: 'Open ChatGPT Usage' })).toHaveAttribute('href', 'https://chatgpt.com/settings/usage')
     expect(api.selectChatGPTAccount).not.toHaveBeenCalled()
   })
   it('offers the same reasoning choices as the active conversation model', async () => {
@@ -65,6 +64,24 @@ describe('ChatGPT subscription settings', () => {
     expect(label.tagName).toBe('TEXTAREA')
     expect(label).toHaveValue(longLabel)
     await waitFor(() => expect(api.getChatGPTStatus).toHaveBeenCalled())
+  })
+
+  it('shows persisted reconnect state after a rejected refresh without retrying OAuth', async () => {
+    const connected = await api.getChatGPTStatus()
+    api.getChatGPTStatus.mockResolvedValueOnce(connected).mockResolvedValue({
+      ...connected, connected: false,
+      accounts: connected.accounts.map((account: { id: string }) => ({ ...account, connected: false })),
+    })
+    api.refreshChatGPTModels.mockRejectedValue(new Error('ChatGPT authorization expired (HTTP 400 (invalid_grant)). Reconnect the same account.'))
+    const onAccountsChanged = vi.fn()
+    render(<ChatGPTSettings onAccountsChanged={onAccountsChanged} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Refresh models' }))
+    expect(await screen.findByText(/ChatGPT authorization expired/)).toHaveTextContent('invalid_grant')
+    await waitFor(() => expect(screen.getAllByText('○ Reconnect required')).toHaveLength(2))
+    expect(screen.queryByText('● Active account')).not.toBeInTheDocument()
+    expect(api.refreshChatGPTModels).toHaveBeenCalledTimes(1)
+    expect(onAccountsChanged).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled()
   })
 
 })

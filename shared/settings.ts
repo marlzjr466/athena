@@ -11,6 +11,7 @@ import { voiceInteractionSettingsSchema, voiceInteractionDefaults } from './hand
 import { webAccessDefaults, webAccessSettingsSchema } from './webAccess'
 import { subagentDefaults, subagentSettingsSchema } from './subagents'
 import { automationPermissionDefaults, automationPermissionsSchema } from './automation'
+import { contextDefaults, contextSettingsSchema } from './context'
 
 export const SIZE = { min: 80, max: 400, default: 180 } as const
 export const DEFAULT_WANDER_INTERVAL_SECONDS = 30
@@ -23,12 +24,18 @@ export const pointSchema = z.object({ x: z.number().finite(), y: z.number().fini
 export const settingsSchema = z.object({
   version: z.literal(1).default(1),
   aiGeneration: generationSettingsSchema.default(generationDefaults),
+  aiContext: contextSettingsSchema.default(contextDefaults),
   subagents: subagentSettingsSchema.default(subagentDefaults),
   backgroundTasks: z.object({ enabled: z.boolean().default(true), maxConcurrent: z.number().int().min(1).max(6).default(3), notifyComplete: z.boolean().default(true), notifyFailed: z.boolean().default(true), badge: z.boolean().default(true), nativeNotifications: z.boolean().default(true) }).default({ enabled: true, maxConcurrent: 3, notifyComplete: true, notifyFailed: true, badge: true, nativeNotifications: true }),
   notificationPreferences: z.object({ approvals: z.boolean().default(true), approvalBadges: z.boolean().default(true), sound: z.boolean().default(false), preview: z.boolean().default(true), suppressDuringDnd: z.boolean().default(true) }).default({ approvals: true, approvalBadges: true, sound: false, preview: true, suppressDuringDnd: true }),
   // Online conversation selection only. 'local' is read solely for migration
   // and internal local tool context; it is never an online provider choice.
-  aiMode: z.enum(['cloud', 'local', 'unconfigured', 'subscription', 'claude-api', 'cursor', 'copilot']).default('cloud'),
+  aiMode: z.enum(['cloud', 'local', 'unconfigured', 'subscription', 'claude-api', 'cursor', 'copilot', 'antigravity', 'third-party']).default('cloud'),
+  thirdPartyConnectionId: z.string().uuid().nullable().default(null),
+  // Per-connected-account model visibility and routing preference. Missing
+  // entries intentionally mean enabled so existing installations migrate
+  // without changing their current behavior.
+  unifiedAccountEnabled: z.record(z.string(), z.boolean()).default({}),
   // Migration marker: unknown legacy history must not be silently sent online.
   reviewLegacyLocalHistory: z.boolean().default(false),
   // Explicitly opts project conversations into the installed Codex CLI harness.
@@ -116,6 +123,7 @@ export function restoreSettings(input: unknown): Settings {
     const parsed = settingsSchema.shape[key].safeParse(raw[key])
     if (parsed.success) Object.assign(restored, { [key]: parsed.data })
   }
+  if (!raw.aiContext && raw.aiGeneration) restored.aiContext = { ...restored.aiContext, maxContinuations: restored.aiGeneration.maxOutputContinuations }
   // Profiles created before local inference presets existed have the raw
   // inference controls but no preset marker. Preserve those user choices as
   // an independent Custom preset instead of presenting them as Balanced.
@@ -171,7 +179,11 @@ export function restoreSettings(input: unknown): Settings {
 
 export function mergeSettings(current: Settings, input: unknown): Settings {
   const patch = settingsPatchSchema.parse(input)
-  const next = { ...current, ...patch }
+  const next = { ...current, ...patch,
+    ...(patch.unifiedAccountEnabled ? { unifiedAccountEnabled: { ...current.unifiedAccountEnabled, ...patch.unifiedAccountEnabled } } : {}),
+  }
+  if (patch.aiGeneration && !patch.aiContext) next.aiContext = { ...current.aiContext, maxContinuations: patch.aiGeneration.maxOutputContinuations }
+  if (patch.aiContext) next.aiGeneration = { ...next.aiGeneration, maxOutputContinuations: patch.aiContext.maxContinuations }
   if (next.aiMode === 'local') { next.aiMode = 'unconfigured'; next.reviewLegacyLocalHistory = true }
   // Retain the legacy field for compatibility, but do not allow it to disable
   // the always-on microphone noise suppression pipeline.

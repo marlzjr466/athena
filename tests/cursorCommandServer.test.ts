@@ -44,6 +44,11 @@ describe('Cursor command MCP transport', () => {
     expect(server.ownsPermission({ kind: 'execute', title: `${server.name}: run_command` })).toBe(false)
     expect(server.ownsPermission({ kind: 'other', title: 'other_server: run_command' })).toBe(false)
   })
+  it('passes explicit workspace write intent to the fixed-workspace approval bridge', async () => {
+    const { rpc, bridge } = await fixture()
+    await rpc(1, 'tools/call', { name: 'run_command', arguments: { command: 'npm', args: ['run', 'typecheck'], workspace_write: true } })
+    expect(bridge.create).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/test/project', workspace_write: true }), expect.any(String))
+  })
   it('reports declined approval without native shell fallback', async () => {
     const { bridge, rpc } = await fixture()
     vi.mocked(bridge.create).mockRejectedValue(new ChatError('Command permission was declined.'))

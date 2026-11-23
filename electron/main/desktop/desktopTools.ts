@@ -143,7 +143,7 @@ export class DesktopTools {
           const rememberScope: RememberedScope | undefined = tool.name === 'open_application' || tool.name === 'focus_application'
             ? { operation: tool.name, project: 'desktop', resources: [applicationActionSchema.parse(input).app] }
             : tool.name === 'open_url' ? { operation: 'open_url', project: 'desktop', resources: [urlActionSchema.parse(input).url] } : undefined
-          const approved = await chat.approve({ title: 'Allow desktop action?', description: tool.preview(input), rememberScope }, signal)
+          const approved = await chat.approve({ title: 'Allow desktop action?', description: tool.preview(input), rememberScope, fullAccessEligible: false }, signal)
           if (!approved) return JSON.stringify(result = signal.aborted ? { ok: false, status: 'cancelled', message: 'Desktop action cancelled before execution.' } : denied('The desktop action was declined. Do not retry without a new user request.'))
         }
         const blocked = gate(signal)

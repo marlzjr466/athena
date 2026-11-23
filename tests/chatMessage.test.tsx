@@ -50,7 +50,7 @@ describe('conversation message presentation', () => {
     expect(screen.getByLabelText('Preparing response')).toBeVisible()
     expect(screen.queryByRole('button')).toBeNull()
   })
-  it('places duration after source evidence, keeps source evidence, hides usage panels, and puts time beside AI actions', () => {
+  it('places duration before the footer, omits source evidence and usage panels, and puts time beside AI actions', () => {
     const execution: NonNullable<Message['execution']> = {
       startedAt: 1_000, updatedAt: 9_000, finishedAt: 9_000, status: 'complete', activities: [],
       contextUsage: {
@@ -66,11 +66,9 @@ describe('conversation message presentation', () => {
     }
     const { container } = render(<ChatMessage message={aiMessage} canRetry={false} retryDisabled={false} onRetry={() => {}} />)
     const article = screen.getByRole('article', { name: 'Athena message' })
-    expect(screen.getByText('Source Evidence · 1 files')).toBeVisible()
-    expect(article.querySelector('.chat-sources code')?.textContent).toBe('Project/src/main.ts:3–8')
-    const sources = article.querySelector('.chat-sources')!
+    expect(screen.queryByText('Source Evidence · 1 files')).toBeNull()
+    expect(article.querySelector('.chat-sources')).toBeNull()
     const duration = article.querySelector('.agent-duration')!
-    expect(sources.compareDocumentPosition(duration) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(duration.compareDocumentPosition(article.querySelector('footer')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByText(/Latest response usage/i)).toBeNull()
     expect(screen.queryByText(/Context:/i)).toBeNull()
@@ -79,17 +77,16 @@ describe('conversation message presentation', () => {
     expect(within(footer).getByRole('button', { name: 'Copy message' })).toBeVisible()
     expect(container.querySelectorAll('time')).toHaveLength(1)
   })
-  it('shows a saved assistant warning in the conversation after source evidence', () => {
+  it('shows a saved assistant warning without rendering source evidence', () => {
     const aiMessage: Message = {
       ...message, role: 'assistant', status: 'error', content: 'The task could not finish.',
       error: 'Review completed operations before resuming.',
       sources: [{ workspace: 'Project', path: 'src/main.ts', start: 3, end: 8 }],
     }
     const { container } = render(<ChatMessage message={aiMessage} canRetry retryDisabled={false} onRetry={() => {}} />)
-    const sources = container.querySelector('.chat-sources')!
     const warning = screen.getByRole('alert')
     expect(warning).toHaveTextContent(aiMessage.error!)
-    expect(sources.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(container.querySelector('.chat-sources')).toBeNull()
   })
   it('shows themed tooltips on pointer hover and keyboard focus, and omits user timestamps', async () => {
     render(<ChatMessage message={message} canRetry={false} retryDisabled={false} onRetry={() => {}} onEdit={vi.fn(async () => true)} />)

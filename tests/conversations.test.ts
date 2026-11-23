@@ -8,12 +8,75 @@ import { ConversationRepository } from '../electron/main/ai/conversationReposito
 import { recentContext } from '../electron/main/ai/contextBudget'
 import { modelCapabilities } from '../shared/conversations'
 import { timelineBlocks } from '../src/features/chat/agentTimelinePresentation'
-import type { AIProvider } from '../electron/main/ai/AIProvider'
+import { ChatError, type AIProvider } from '../electron/main/ai/AIProvider'
 vi.mock('../electron/main/logger', () => ({ log: vi.fn() }))
 const stream: AIProvider = { testConnection: async () => true, streamMessage: async function* () { yield { type: 'text', text: 'Answer' }; yield { type: 'done' } } }
 const hooks = () => ({ provider: vi.fn(async () => stream), changed: vi.fn(), phase: vi.fn() })
 const idle = (chat: ChatController) => vi.waitFor(() => expect(chat.snapshot().phase).toBe('idle'))
 describe('persistent conversation sessions', () => {
+  it('restores a resumable task that stopped before its first tool without deleting the failed turn', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'athena-paused-task-'))
+    const provider: AIProvider = { testConnection: async () => true, streamMessage: async function* () { throw new ChatError('Context capacity must be configured.'); yield { type: 'done' } } }
+    const chat = new ChatController({ ...hooks(), provider: async () => provider }, new ConversationRepository(directory))
+    const id = chat.current().id
+    chat.send({ text: '/platform-dev MBM-11825', sessionId: id }); await idle(chat)
+    const failedId = chat.snapshot().messages.at(-1)!.id
+    expect(chat.snapshot().messages.at(-1)?.execution?.taskCheckpoint).toMatchObject({ resumable: true, originalRequest: '/platform-dev MBM-11825' })
+    chat.dispose()
+    const resumed = new ChatController(hooks(), new ConversationRepository(directory))
+    expect(resumed.retry().ok).toBe(true); await idle(resumed)
+    expect(resumed.current().id).toBe(id)
+    expect(resumed.current().messages.some(message => message.id === failedId)).toBe(true)
+    expect(resumed.current().messages.filter(message => message.role === 'user')).toHaveLength(1)
+    expect(resumed.current().messages.at(-1)?.execution?.taskCheckpoint?.recoveryAttempts).toBe(1)
+    resumed.dispose()
+  })
+  it('persists provider-scoped usage receipts and account attribution after restoration', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'athena-usage-history-'))
+    const provider: AIProvider = { testConnection: async () => true, streamMessage: async function* (_messages, options) {
+      options?.onModelResponse?.({ inputTokens: 120, cachedInputTokens: 30, outputTokens: 24, reasoningTokens: 4, estimated: false })
+      yield { type: 'done' }
+    } }
+    const chat = new ChatController({ ...hooks(), provider: async () => provider, usageProviderId: () => 'openai-api', accountIdentity: async () => 'api-key:workspace-a' }, new ConversationRepository(directory))
+    const sessionId = chat.snapshot().sessionId!
+    chat.send({ text: 'Record response usage', sessionId }); await idle(chat)
+    const saved = chat.snapshot().messages.at(-1)!
+    expect(saved.execution).toMatchObject({ providerId: 'openai-api', accountId: 'api-key:workspace-a', providerUsage: { inputTokens: 120, cachedInputTokens: 30, outputTokens: 24, reasoningTokens: 4, requestCount: 1, estimated: false } })
+    chat.dispose()
+    const restored = new ChatController(hooks(), new ConversationRepository(directory))
+    expect(restored.snapshot().messages.at(-1)?.execution?.providerUsage).toMatchObject({ inputTokens: 120, cachedInputTokens: 30, requestCount: 1 })
+    expect(restored.snapshot().messages.at(-1)?.execution?.providerId).toBe('openai-api')
+    restored.dispose()
+  })
+
+  it('keeps a progressing Cursor-style turn alive beyond 30 minutes', async () => {
+    vi.useFakeTimers()
+    try {
+      let progress: (() => void) | undefined
+      let finish!: () => void
+      const gate = new Promise<void>((resolve) => { finish = resolve })
+      const provider: AIProvider = { executionTimeoutPolicy: 'activity', testConnection: async () => true,
+        async *streamMessage(_messages, options) {
+          progress = options?.onMeaningfulProgress
+          yield { type: 'activity', id: 'tool-1', tool: 'read_file', label: 'Reading', status: 'running' }
+          await gate
+          yield { type: 'activity', id: 'tool-1', tool: 'read_file', label: 'Reading', status: 'complete' }
+          yield { type: 'text', text: 'Finished after 31 minutes.' }
+          yield { type: 'done' }
+        },
+      }
+      const chat = new ChatController({ provider: async () => provider, changed: vi.fn(), phase: vi.fn() })
+      chat.send({ text: 'Long task' })
+      for (let i = 0; i < 30 && !progress; i++) await Promise.resolve()
+      expect(progress).toBeTypeOf('function')
+      for (let i = 0; i < 31; i++) { vi.advanceTimersByTime(60_000); progress!(); await Promise.resolve() }
+      expect(chat.snapshot().messages.at(-1)?.status).toBe('streaming')
+      finish()
+      for (let i = 0; i < 30 && chat.snapshot().messages.at(-1)?.status === 'streaming'; i++) await Promise.resolve()
+      expect(chat.snapshot().messages.at(-1)?.status).toBe('complete')
+      chat.dispose()
+    } finally { vi.useRealTimers() }
+  })
   it('keeps every saved session when a Copilot account id is not a UUID', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'athena-copilot-history-'))
     const storage = new ConversationRepository(directory)
@@ -52,6 +115,23 @@ describe('persistent conversation sessions', () => {
     expect(restored.snapshot().sessionId).toBe(second)
     expect(readdirSync(join(directory, 'conversation-archive'))).toHaveLength(1)
     restored.dispose()
+  })
+  it('restores a provider-neutral choice interaction with its original conversation and message ids', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'athena-choice-restoration-'))
+    const provider: AIProvider = { testConnection: async () => true, streamMessage: async function* () {
+      yield { type: 'text', text: 'Which status should I follow?\n\nChoose one:\n- Treat `events.yaml` as current\n- Treat `workflow.yaml` as current' }
+      yield { type: 'done' }
+    } }
+    const storage = new ConversationRepository(directory)
+    const chat = new ChatController({ ...hooks(), provider: vi.fn(async () => provider) }, storage)
+    const conversationId = chat.snapshot().sessionId!
+    chat.send({ text: 'Please confirm the ticket status' }); await idle(chat)
+    const response = chat.snapshot().messages.at(-1)!
+    expect(response.interaction?.options).toEqual(['Treat events.yaml as current', 'Treat workflow.yaml as current'])
+    chat.dispose()
+    const restored = new ConversationRepository(directory).load()
+    const saved = restored.sessions.find(session => session.id === conversationId)?.messages.at(-1)
+    expect(saved?.interaction).toMatchObject({ conversationId, messageId: response.id, status: 'pending' })
   })
   it('keeps a stream running and saves its late output after switching sessions', async () => {
     let resume!: () => void

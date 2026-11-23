@@ -1,0 +1,12 @@
+{
+  "revision": "searxng-c6ee3e9fd-python3.12.16-v1",
+  "searxngCommit": "c6ee3e9fd0235004a694e63720efc869bb1e3594",
+  "sourceSha256": "2b53c65c9337cbc2902bb359c4d27f2a2badb5974aeac72eef77d9ccad9606b3",
+  "pythonRelease": "20261110",
+  "pythonVersion": "3.12.16",
+  "targets": {
+    "darwin-arm64": { "triple": "aarch64-apple-darwin", "sha256": "2f11b8aa3726bdbd87dd9eb76568412faddf4f47e26913fa45d6a2e424972acd" },
+    "darwin-x64": { "triple": "x86_64-apple-darwin", "sha256": "b78a4c479f1964ec484880bee567568266f68da102269fb93a05fe8716b45f91" },
+    "win32-x64": { "triple": "x86_64-pc-windows-msvc", "sha256": "355ee61b8207b91574491b1c6dc9b0ebb4408fc56bfafe498f3ef439314b52dc" }
+  }
+}

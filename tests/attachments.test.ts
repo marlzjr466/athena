@@ -8,6 +8,7 @@ import { AttachmentService } from '../electron/main/ai/attachmentService'
 import { WorkspaceService } from '../electron/main/ai/workspaceService'
 import { ChatContextService, relevantText } from '../electron/main/ai/chatContextService'
 import { ChatController } from '../electron/main/ai/chatController'
+import { defaultSettings } from '../shared/settings'
 vi.mock('../electron/main/logger', () => ({ log: vi.fn() }))
 const encoder = new TextEncoder()
 const hooks = () => ({ provider: async () => ({ testConnection: async () => true, streamMessage: async function* () { yield { type: 'done' as const } } }), changed: vi.fn(), phase: vi.fn() })
@@ -17,7 +18,7 @@ describe('local attachments and session authorization', () => {
     const service = new AttachmentService(directory, () => false, () => { throw new Error() })
     const chat = new ChatController(hooks()), sessionId = chat.snapshot().sessionId!
     const context = new ChatContextService(chat, service, new WorkspaceService(() => false), { files: async () => [], folder: async () => undefined }, () => false)
-    const text = 'const answer = 42;\n'.repeat(900)
+    const text = 'const answer = 42;\n'.repeat(1600)
     const imported = await context.run({ action: 'import-pasted', sessionId, name: 'Pasted code.ts', text })
     expect(imported).toEqual({ ok: true })
     const attachment = chat.snapshot().attachments![0]
@@ -25,6 +26,7 @@ describe('local attachments and session authorization', () => {
     expect((await context.run({ action: 'preview', sessionId, id: attachment.id })).text).toBe(text)
     const prepared = await context.prepare(chat.current(), [{ id: randomUUID(), role: 'user', content: 'Review this', status: 'complete', createdAt: 1, attachments: [attachment] }], new AbortController().signal)
     expect(prepared.attachments[0].data).toContain('const answer = 42;')
+    expect(prepared.notice).toContain('excerpted')
     chat.dispose()
   })
   it('persists source/CSV and extracted documents with UUID storage', async () => {
@@ -38,6 +40,34 @@ describe('local attachments and session authorization', () => {
       await expect(service.preview(randomUUID(), file)).rejects.toThrow()
     }
     expect(parser).toHaveBeenCalledTimes(2)
+  })
+  it('passes a complete 41-section review document through Antigravity preparation', async () => {
+    const service = new AttachmentService(await mkdtemp(join(tmpdir(), 'athena-review-')), () => true, () => { throw new Error() })
+    const chat = new ChatController(hooks()), session = chat.current()
+    session.config.model = 'gemini-4-argon'
+    const context = new ChatContextService(chat, service, new WorkspaceService(() => true), { files: async () => [], folder: async () => undefined }, () => true,
+      undefined, undefined, undefined, undefined, undefined, undefined, () => ({ ...defaultSettings, aiMode: 'antigravity' }))
+    const full = Array.from({ length: 41 }, (_, index) => `SECTION ${index + 1}: ${'Review this detail. '.repeat(39)}`).join('\n')
+    const attachment = await service.import(session.id, 'review.txt', encoder.encode(full))
+    const messages = [{ id: randomUUID(), role: 'user' as const, content: 'Please review the attached content.', status: 'complete' as const, createdAt: 1, attachments: [attachment] }]
+    const prepared = await context.prepare(session, messages, new AbortController().signal)
+    expect(prepared.attachments[0].data).toBe(full)
+    expect(prepared.notice).not.toContain('excerpted')
+    chat.dispose()
+  })
+  it('preserves a 131,193-byte pasted attachment for Antigravity instead of rejecting it at 120,000 bytes', async () => {
+    const service = new AttachmentService(await mkdtemp(join(tmpdir(), 'athena-large-paste-')), () => false, () => { throw new Error() })
+    const chat = new ChatController(hooks()), session = chat.current()
+    session.config.model = 'gemini-4-argon'
+    const context = new ChatContextService(chat, service, new WorkspaceService(() => false), { files: async () => [], folder: async () => undefined }, () => false,
+      undefined, undefined, undefined, undefined, undefined, undefined, () => ({ ...defaultSettings, aiMode: 'antigravity' }))
+    const full = 'L'.repeat(131_193)
+    const attachment = await service.importPastedText(session.id, 'Pasted code.log', full)
+    const messages = [{ id: randomUUID(), role: 'user' as const, content: 'This is the response', status: 'complete' as const, createdAt: 1, attachments: [attachment] }]
+    const prepared = await context.prepare(session, messages, new AbortController().signal)
+    expect(prepared.attachments[0].data).toBe(full)
+    expect(prepared.notice).not.toContain('excerpted')
+    chat.dispose()
   })
   it('validates types, sizes, credential names, binary and malformed UTF-8', async () => {
     const service = new AttachmentService(await mkdtemp(join(tmpdir(), 'athena-file-validation-')), () => true, () => { throw new Error() }), id = randomUUID()
@@ -86,7 +116,7 @@ describe('local attachments and session authorization', () => {
     const chat = new ChatController(hooks()), id = chat.snapshot().sessionId!, session = chat.current()
     const context = new ChatContextService(chat, service, new WorkspaceService(() => true), { files: async () => [], folder: async () => undefined }, () => true)
     const file = await service.import(id, 'notes.txt', encoder.encode('Remember: the project is Athena.'))
-    const messages = [{ id: randomUUID(), role: 'user' as const, content: 'Read this', status: 'complete' as const, createdAt: 1, attachments: [file] }, { id: randomUUID(), role: 'user' as const, content: 'What project?', status: 'complete' as const, createdAt: 2 }]
+    const messages = [{ id: randomUUID(), role: 'user' as const, content: 'Read this', status: 'complete' as const, createdAt: 1, attachments: [file] }, { id: randomUUID(), role: 'user' as const, content: 'What does the attached file say about the project?', status: 'complete' as const, createdAt: 2 }]
     expect((await context.prepare(session, messages, new AbortController().signal)).attachments[0].data).toContain('Athena')
     const image = await service.import(id, 'test.png', Buffer.from([137,80,78,71,13,10,26,10]))
     messages[0].attachments = [image]

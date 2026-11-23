@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { chatInputSchema, emptyChatSnapshot, MAX_RESPONSE_LENGTH, stripTrailingSourcesSection, type ChatMessage, type ChatPhase, type ChatResult, type ChatSnapshot } from '../../../shared/chat'
 import { modelCapabilities, sessionCommandSchema, type Attachment, type ConversationConfig, type WorkspaceReference } from '../../../shared/conversations'
 import { newConversation, type Conversation, type ConversationLibrary, type ConversationStorage } from './conversationRepository'
-import { recentContext } from './contextBudget'
+import { fitConversationHistory, recentContext } from './contextBudget'
 import type { DeterministicActionResult, PreparedContext } from './AIProvider'
 import { ChatError, type AIProvider } from './AIProvider'
 import { log } from '../logger'
@@ -13,31 +13,50 @@ import type { ResponseInput } from 'openai/resources/responses/responses'
 import type { ActionSpeechEvent } from '../voice/actionNarrator'
 import { handsFreeReplySchema, type LocalInferenceTrace } from '../../../shared/handsFree'
 import type { SlashCommandMeta } from '../../../shared/slashCommands'
-import { contextDefaults } from '../../../shared/context'
+import { contextDefaults, contextModelKey, type ContextSettings } from '../../../shared/context'
 import { voiceReasoningEffort } from '../../../shared/voiceResponse'
 import type { SubagentRun } from '../../../shared/subagents'
 import { workflowSubagentRequirements } from './subagentWorkflow'
 import type { AIOwnership, ConversationOrigin } from '../../../shared/aiOwnership'
 import type { AutomationProgress } from '../../../shared/automation'
 import { localInferenceSlots } from './localInferenceSlots'
+import { choiceInteractionSchema, parseChoiceInteraction } from '../../../shared/chatInteraction'
+import { ContinuationController } from './continuationController'
+import { classifyOperation } from './operationRisk'
+import { StreamFault } from './streamRecovery'
+import type { StreamFailureKind } from '../../../shared/streamDiagnostics'
+
+function thirdPartyEffortKey(config: ConversationConfig): string | null {
+  return config.accountRoute?.provider === 'third-party' && config.model ? `${config.accountRoute.accountId}:${config.model}` : null
+}
+
+function rememberThirdPartyEffort(config: ConversationConfig): void {
+  const key = thirdPartyEffortKey(config)
+  if (key) config.thirdPartyEfforts = { ...config.thirdPartyEfforts, [key]: config.effort }
+}
 
 function contextFingerprint(session: Conversation, messages: ChatMessage[]): string {
-  return createHash('sha256').update(JSON.stringify({ model: session.config.model, effort: session.config.effort, mode: session.config.agentMode, workspaces: session.workspaces, messages: messages.map(({ id, content, attachments }) => ({ id, content, attachments })) })).digest('hex')
+  return createHash('sha256').update(JSON.stringify({ model: session.config.model, accountRoute: session.config.accountRoute, effort: session.config.effort, mode: session.config.agentMode, workspaces: session.workspaces, messages: messages.map(({ id, content, attachments }) => ({ id, content, attachments })) })).digest('hex')
 }
 
 interface ChatHooks {
+  contextDefaults?(): ContextSettings
   rememberedPermissions?: RememberedPermissions
   origin?: ConversationOrigin
   provider(config: ConversationConfig, options?: { isolated: boolean; coding: boolean }): Promise<AIProvider>
+  usageProviderId?(provider: AIProvider): string
+  childModel?(config: ConversationConfig): import('../../../shared/unifiedAccounts').AccountModel | undefined
   accountIdentity?(): Promise<string | null>
   useCheckpoint?(): boolean
   effectiveModel?(): string | null
-  modelSupportsEffort?(model: string | null, effort: ConversationConfig['effort']): boolean | undefined
+  modelSupportsEffort?(model: string | null, effort: ConversationConfig['effort'], route?: ConversationConfig['accountRoute']): boolean | undefined
   prepare?(session: Conversation, messages: ChatMessage[], signal: AbortSignal, voiceOnly?: boolean): Promise<PreparedContext>
   resolveVoiceCommand?(session: Conversation, request: string, requestId: string, signal: AbortSignal): Promise<DeterministicActionResult>
   authorized?(id: string): boolean
+  workspaceRoot?(id: string): Promise<string>
+  workspaceOnly?(): boolean
   changed(snapshot: ChatSnapshot): void
-  phase(phase: ChatPhase, ownership?: AIOwnership): void
+  phase(phase: ChatPhase, ownership?: AIOwnership, source?: 'floating-voice'): void
   beforeAction?(event: ActionSpeechEvent): Promise<string | undefined>
   taskEnded?(sessionId: string, message: ChatMessage): void
   voiceTimeoutMs?(): number
@@ -51,8 +70,9 @@ interface ChatHooks {
   unreadChanged?(count: number): void
   storeArtifact?(input: { name: string; mimeType: string; bytes: Uint8Array; provider?: string }): Promise<import('../../../shared/chat').GeneratedArtifact>
 }
-interface Generation { id: string; abort: AbortController; timeout?: ReturnType<typeof setTimeout>; queued: boolean; controllerReserved?: boolean; releaseResource?: () => void; startedAt: number }
+interface Generation { id: string; abort: AbortController; timeout?: ReturnType<typeof setTimeout>; queued: boolean; controllerReserved?: boolean; releaseResource?: () => void; startedAt: number; activityTimeout?: boolean; resumeTimeout?: () => void }
 export class ChatController {
+  private contextPolicy(session = this.current()): ContextSettings { return { ...contextDefaults(), ...this.hooks.contextDefaults?.(), ...session.config.contextSettings } }
   private readonly executionScope = new AsyncLocalStorage<string>()
   private readonly states = new Map<string, ChatSnapshot>()
   private readonly generations = new Map<string, Generation>()
@@ -86,11 +106,21 @@ export class ChatController {
   private saveTimer?: ReturnType<typeof setTimeout>
   private storageFailed = false
   private childCancellations = new Map<string, { sessionId: string; cancel(): void }>()
+  private permissionVersions = new Map<string, number>()
+  childModel(config: ConversationConfig) { return this.hooks.childModel?.(config) }
   async childProvider(config: ConversationConfig, accountId: string | null): Promise<AIProvider> {
+    if (this.hooks.resource === 'local' && config.accountRoute) throw new ChatError('This local conversation cannot launch an online account through its local runtime. Choose Inherit parent model for local workers, or start the worker from an online conversation.')
     if ((await this.hooks.accountIdentity?.() ?? null) !== accountId) throw new ChatError('The selected account changed. Continue with the original account before launching a sub-agent.')
     return this.hooks.provider(config, { isolated: true, coding: true })
   }
   activeExecution(): ChatMessage | undefined { return this.state.messages.find((entry) => entry.id === this.generation?.id) }
+  recordSearchAttempts(attempts: import('../../../shared/searchOutcome').SearchAttempt[]): void {
+    const checkpoint = this.activeExecution()?.execution?.taskCheckpoint
+    if (!checkpoint) return
+    checkpoint.searchAttempts = attempts.slice(-24)
+    checkpoint.updatedAt = Date.now()
+    this.save()
+  }
   subagentRecords(sessionId: string): Array<{ activityId: string; run: SubagentRun }> {
     return this.getSession(sessionId)?.messages.flatMap((message) => message.execution?.activities.flatMap((activity) => activity.subagent ? [{ activityId: activity.id, run: activity.subagent }] : []) ?? []) ?? []
   }
@@ -153,7 +183,10 @@ export class ChatController {
       } catch { /* Older activity records may not have structured Git output. */ }
     }
     checkpoint.requiredApprovalId = execution.approval?.id
-    checkpoint.continuationAttempts = execution.recovery?.attempts ?? 0
+    checkpoint.continuationAttempts = Math.max(checkpoint.control?.continuations ?? 0, execution.recovery?.reason === 'max_output_tokens' ? execution.recovery.attempts : 0)
+    checkpoint.provider = execution.providerId
+    checkpoint.model = execution.modelId ?? checkpoint.model
+    checkpoint.resumable = this.contextPolicy(session).safeTaskRecovery && (reply.status !== 'complete' || checkpoint.control?.status === 'blocked') && checkpoint.pendingActions.length > 0
     checkpoint.workspaceIds = session.workspaces.map((workspace) => workspace.id)
   }
   private timeline(reply: ChatMessage, kind: 'started' | 'text' | 'activity' | 'status', text?: string, activityId?: string): void {
@@ -203,9 +236,24 @@ export class ChatController {
     const session = this.current()
     const execution = session.messages.find((entry) => entry.id === this.generation?.id)?.execution
     if (!execution || signal.aborted || this.approval) return Promise.resolve(false)
+    const workspace = session.workspaces[0]
+    const record = (decision: 'automatic' | 'manual' | 'rejected') => {
+      if ((execution.permissionDecisions?.length ?? 0) < 1000) {
+        (execution.permissionDecisions ??= []).push({ id: randomUUID(), title: request.title.slice(0, 300), decision, at: Date.now(), ...(workspace ? { workspaceId: workspace.id } : {}) })
+        execution.updatedAt = Date.now()
+        this.publish(); this.save()
+      }
+    }
     const rememberScope = this.hooks.rememberedPermissions?.eligible(request.rememberScope)
-    if (rememberScope && this.hooks.rememberedPermissions?.allows(rememberScope, { sessionId: session.id, origin: this.hooks.origin, taskId: this.generation?.id })) return Promise.resolve(true)
+    if (rememberScope && this.hooks.rememberedPermissions?.allows(rememberScope, { sessionId: session.id, origin: this.hooks.origin, taskId: this.generation?.id })) { record('automatic'); return Promise.resolve(true) }
+    if (request.fullAccessEligible !== false && workspace && session.config.agentMode === 'full-access' && session.config.fullAccessWorkspaceId === workspace.id && this.hooks.authorized?.(workspace.id) === true && this.hooks.workspaceOnly?.() === true) {
+      log('permission.automatic_approval', { sessionId: session.id, workspaceId: workspace.id, operation: request.title, mode: 'full-access' })
+      record('automatic')
+      return Promise.resolve(true)
+    }
     const id = randomUUID(); execution.approval = { ...request, rememberScope, id }; execution.updatedAt = Date.now()
+    const generation = this.generation
+    if (generation?.activityTimeout) clearTimeout(generation.timeout)
     this.hooks.approvalChanged?.({ sessionId: session.id, title: session.title, approvalId: id, action: 'required', summary: request.title, projectId: session.workspaces[0]?.id, projectName: session.workspaces[0]?.name, taskId: this.generation?.id })
     return new Promise((resolve) => {
       let settled = false
@@ -218,7 +266,7 @@ export class ChatController {
           this.hooks.rememberedPermissions.grant(rememberScope)
         }
         settled = true
-        signal.removeEventListener('abort', cancelled); if (this.approval?.id === id) this.approval = undefined; execution.approval = undefined; this.hooks.approvalChanged?.({ sessionId: session.id, title: session.title, approvalId: id, action: 'resolved' }); this.publish(); resolve(allow) }
+        signal.removeEventListener('abort', cancelled); if (this.approval?.id === id) this.approval = undefined; execution.approval = undefined; this.hooks.approvalChanged?.({ sessionId: session.id, title: session.title, approvalId: id, action: 'resolved' }); generation?.resumeTimeout?.(); if (!signal.aborted) record(allow ? 'manual' : 'rejected'); this.publish(); resolve(allow) }
       const cancelled = () => finish(false)
       this.approval = { id, resolve: finish }; signal.addEventListener('abort', cancelled, { once: true }); this.publish()
     })
@@ -240,6 +288,24 @@ export class ChatController {
   current(): Conversation { return this.library.sessions.find((session) => session.id === this.scopedId)! }
   selectedSessionId(): string { return this.library.activeId }
   hasActiveExecutions(): boolean { return this.generations.size > 0 }
+  workspaceExecuting(workspaceId: string): boolean {
+    return this.library.sessions.some(session => session.workspaces.some(workspace => workspace.id === workspaceId)
+      && (this.generations.has(session.id) || [...this.childCancellations.values()].some(child => child.sessionId === session.id)))
+  }
+  invalidateWorkspaceContext(workspaceId: string): void {
+    for (const session of this.library.sessions) if (session.workspaces.some(workspace => workspace.id === workspaceId)) session.contextCheckpoint = undefined
+    this.save()
+  }
+  interruptWorkspace(workspaceId: string, message: string): void {
+    this.drainingPaused = true
+    try {
+      for (const session of this.library.sessions) if (session.workspaces.some(workspace => workspace.id === workspaceId)) {
+        for (const child of this.childCancellations.values()) if (child.sessionId === session.id) child.cancel()
+        this.stopSession(session.id, message, true)
+      }
+      this.invalidateWorkspaceContext(workspaceId)
+    } finally { this.drainingPaused = false; this.drain() }
+  }
   getSession(id: string): Conversation | undefined { return this.library.sessions.find((session) => session.id === id) }
   pendingApprovals(): Array<{ sessionId: string; title: string; approvalId: string; summary: string; projectId?: string; projectName?: string; taskId?: string }> {
     return this.library.sessions.flatMap(session => session.messages.flatMap(message => { const approval = message.execution?.approval; return approval && this.approvals.get(session.id)?.id === approval.id ? [{ sessionId: session.id, title: session.title, approvalId: approval.id, summary: approval.title, projectId: session.workspaces[0]?.id, projectName: session.workspaces[0]?.name, taskId: message.id }] : [] }))
@@ -301,7 +367,7 @@ export class ChatController {
     this.voiceAbort = abort
     const ownership: AIOwnership = { origin: this.hooks.origin ?? 'online-chat', sessionId: session.id, correlationId: user.id }
     this.voiceOwnership = ownership
-    this.hooks.phase('thinking', ownership)
+    this.hooks.phase('thinking', ownership, 'floating-voice')
     let timedOut = false
     let releaseLocalInference: (() => void) | undefined
     const timeoutMs = Math.max(30_000, Math.min(600_000, this.hooks.voiceTimeoutMs?.() ?? 120_000))
@@ -355,7 +421,7 @@ export class ChatController {
       const effort = voiceReasoningEffort(parsed.data.text, provider.modelId ?? session.config.model ?? this.hooks.effectiveModel?.() ?? null, session.config.effort, this.hooks.adaptiveVoiceReasoning?.() ?? true)
       let text = '', complete = false
       progress?.({ type: 'model-start' })
-      for await (const chunk of provider.streamMessage(messages, { signal: abort.signal, effort, context, contextSettings: session.config.contextSettings, voiceOnly: true,
+      for await (const chunk of provider.streamMessage(messages, { signal: abort.signal, effort, context, contextSettings: this.contextPolicy(session), voiceOnly: true,
         diagnosticDirect, traceId, onLocalInferenceTrace: event => {
           log('ai.local_inference_trace', { traceId, mode: diagnosticDirect ? 'direct' : 'normal', ...event })
           progress?.({ type: 'trace', trace: event })
@@ -388,7 +454,7 @@ export class ChatController {
       releaseLocalInference?.(); releaseLocalInference = undefined
       if (this.voiceAbort === abort) {
         this.voiceAbort = undefined
-        this.hooks.phase('idle', ownership)
+        this.hooks.phase('idle', ownership, 'floating-voice')
         this.voiceOwnership = undefined
       }
     }
@@ -396,18 +462,18 @@ export class ChatController {
   cancelHandsFreeReply(): void {
     this.voiceAbort?.abort()
     this.voiceAbort = undefined
-    if (this.voiceOwnership) this.hooks.phase('idle', this.voiceOwnership)
+    if (this.voiceOwnership) this.hooks.phase('idle', this.voiceOwnership, 'floating-voice')
     this.voiceOwnership = undefined
   }
   clearHandsFreeContext(): void { this.cancelHandsFreeReply(); this.voiceMessages = [] }
-  private save(): void {
+  private save(): boolean {
     clearTimeout(this.saveTimer); this.saveTimer = undefined
-    if (this.storageFailed) return
+    if (this.storageFailed) return false
     for (const session of this.library.sessions) for (const reply of session.messages) if (reply.execution?.status === 'working') this.checkpointTask(reply, session)
-    try { this.storage?.save(this.library) }
-    catch { this.state.error = 'Could not save conversation history. Check disk space and folder permissions; keep Athena open and retry.' }
+    try { this.storage?.save(this.library); return true }
+    catch { this.state.error = 'Could not save conversation history. Check disk space and folder permissions; keep Athena open and retry.'; return false }
   }
-  sessionChanged(): void { this.current().updatedAt = Date.now(); this.publish() }
+  sessionChanged(): void { const session = this.current(); if (session.config.agentMode === 'full-access' && session.config.fullAccessWorkspaceId !== session.workspaces[0]?.id) session.config.agentMode = 'ask'; session.updatedAt = Date.now(); this.publish() }
   addAttachments(id: string, attachments: Attachment[]): void {
     const session = this.getSession(id)
     if (!session || (id === this.library.activeId && this.generation)) throw new ChatError('Wait for the response before attaching files.')
@@ -418,7 +484,7 @@ export class ChatController {
     const session = this.getSession(id)
     if (!session) throw new ChatError('Conversation is no longer available.')
     for (const conversation of this.library.sessions) conversation.workspaces = conversation.workspaces.map((entry) => entry.id === workspace.id ? { ...workspace } : entry)
-    if (!session.workspaces.some((entry) => entry.id === workspace.id)) { if (session.workspaces.length >= 8) throw new ChatError('Connect up to 8 projects per conversation.'); session.workspaces.push(workspace) }
+    if (!session.workspaces.some((entry) => entry.id === workspace.id)) { if (session.workspaces.length >= 8) throw new ChatError('Connect up to 8 projects per conversation.'); if (!session.workspaces.length && session.config.agentMode === 'full-access') session.config.agentMode = 'ask'; session.workspaces.push(workspace) }
     this.publish()
   }
   consolidateWorkspace(workspace: WorkspaceReference, legacyIds: string[]): void {
@@ -503,16 +569,32 @@ export class ChatController {
         catch { return { ok: false, message: 'Permission could not be saved or its scope changed. No operation was approved. Retry, deny, or use Allow once.' } }
       }
       if (command.action === 'agent-mode') {
-        if (this.generation) this.stop('Project permissions changed. The current request was stopped; completed operations remain recorded.')
+        const workspace = session.workspaces[0]
+        if (command.mode === 'full-access') {
+          if (!workspace || this.hooks.authorized?.(workspace.id) !== true) return { ok: false, message: 'Connect and authorize a project before enabling Full Access.' }
+          if (this.hooks.workspaceOnly?.() !== true) return { ok: false, message: 'Full Access requires Project Only filesystem scope so automatic approvals cannot reach outside this workspace.' }
+          if (session.config.fullAccessWorkspaceId !== workspace.id && command.confirmed !== true) return { ok: false, message: 'Confirm the Full Access warning for this conversation and project before enabling it.' }
+        }
+        if (session.config.agentMode === command.mode) return { ok: true }
+        const wasRunning = this.generations.has(session.id)
+        if (wasRunning) this.stopSession(session.id, `Project permission mode changed from ${session.config.agentMode ?? 'ask'} to ${command.mode}. The active request was stopped to prevent it from continuing with stale permissions; completed operations remain recorded.`)
+        this.permissionVersions.set(session.id, (this.permissionVersions.get(session.id) ?? 0) + 1)
+        log('ai.permission_mode_changed', { sessionId: session.id, previousMode: session.config.agentMode ?? 'ask', nextMode: command.mode, permissionStateVersion: this.permissionVersions.get(session.id)!, cancelledActiveRequest: wasRunning })
         session.config.agentMode = command.mode
-        if (command.mode === 'advanced') session.config.contextSettings = { ...(session.config.contextSettings ?? contextDefaults()), allowProjectCommands: true }
+        if (command.mode === 'full-access') session.config.fullAccessWorkspaceId = workspace!.id
+        if (command.mode === 'advanced' || command.mode === 'full-access') session.config.contextSettings = { ...this.contextPolicy(session), allowProjectCommands: true, ...(command.mode === 'full-access' ? { allowProjectDeletion: true } : {}) }
         session.contextCheckpoint = undefined
       }
       if (command.action === 'project-permissions') {
+        if (command.mode === 'full-access') return { ok: false, message: 'Enable Full Access from the composer and confirm its warning.' }
         if (!session.workspaces.length) return { ok: false, message: 'Connect a project before changing project permissions.' }
-        if (this.generation) this.stop('Project permissions changed. Current execution stopped; completed operations remain recorded.')
+        if (session.config.agentMode === command.mode && session.config.contextSettings?.allowProjectDeletion === command.allowDeletion && session.config.contextSettings?.allowProjectCommands === command.allowCommands) return { ok: true }
+        const wasRunning = this.generations.has(session.id)
+        if (wasRunning) this.stopSession(session.id, 'Project permissions were changed. The active request was stopped to prevent it from continuing with stale permissions; completed operations remain recorded.')
+        this.permissionVersions.set(session.id, (this.permissionVersions.get(session.id) ?? 0) + 1)
+        log('ai.project_permissions_changed', { sessionId: session.id, nextMode: command.mode, permissionStateVersion: this.permissionVersions.get(session.id)!, cancelledActiveRequest: wasRunning })
         session.config.agentMode = command.mode
-        session.config.contextSettings = { ...(session.config.contextSettings ?? contextDefaults()), allowProjectDeletion: command.allowDeletion, allowProjectCommands: command.allowCommands }
+        session.config.contextSettings = { ...this.contextPolicy(session), allowProjectDeletion: command.allowDeletion, allowProjectCommands: command.allowCommands }
         session.contextCheckpoint = undefined
       }
       if (command.action === 'configure-context') {
@@ -535,17 +617,37 @@ export class ChatController {
       }
       if (command.action === 'configure') {
         if (this.generation && session.id === this.library.activeId) return { ok: false, message: 'Stop the response before switching models.' }
-        session.config = { ...command.config, effort: (this.hooks.modelSupportsEffort?.(command.config.model, command.config.effort) ?? modelCapabilities(command.config.model).efforts.includes(command.config.effort)) ? command.config.effort : 'auto' }
+        if (command.config.agentMode === 'full-access' && (session.config.agentMode !== 'full-access' || session.config.fullAccessWorkspaceId !== session.workspaces[0]?.id)) return { ok: false, message: 'Enable Full Access from the composer and confirm its warning.' }
+        rememberThirdPartyEffort(session.config)
+        session.config = { ...command.config, thirdPartyEfforts: { ...session.config.thirdPartyEfforts, ...command.config.thirdPartyEfforts }, fullAccessWorkspaceId: session.config.fullAccessWorkspaceId, effort: (this.hooks.modelSupportsEffort?.(command.config.model, command.config.effort, command.config.accountRoute) ?? modelCapabilities(command.config.model).efforts.includes(command.config.effort)) ? command.config.effort : 'auto' }
       }
       if (command.action === 'configure-model') {
         if (this.generation && session.id === this.library.activeId) return { ok: false, message: 'Stop the response before switching models.' }
+        rememberThirdPartyEffort(session.config)
         session.config.model = command.model
-        if (!(this.hooks.modelSupportsEffort?.(command.model, session.config.effort) ?? modelCapabilities(command.model).efforts.includes(session.config.effort))) session.config.effort = 'auto'
+        const saved = thirdPartyEffortKey(session.config)
+        if (saved) session.config.effort = session.config.thirdPartyEfforts?.[saved] ?? 'auto'
+        if (!(this.hooks.modelSupportsEffort?.(command.model, session.config.effort, session.config.accountRoute) ?? modelCapabilities(command.model).efforts.includes(session.config.effort))) session.config.effort = 'auto'
+      }
+      if (command.action === 'select-account-model') {
+        if (this.generations.has(session.id)) return { ok: false, message: 'Stop this conversation before switching its account or model.' }
+        const leavingThirdParty = session.config.accountRoute?.provider === 'third-party'
+        rememberThirdPartyEffort(session.config)
+        session.config.accountRoute = command.route
+        session.config.model = command.model
+        delete session.config.cursorPendingModel
+        session.config.cursorModel = command.route.provider === 'cursor' ? command.model : null
+        const saved = thirdPartyEffortKey(session.config)
+        if (saved) session.config.effort = session.config.thirdPartyEfforts?.[saved] ?? 'auto'
+        else if (leavingThirdParty) session.config.effort = 'auto'
+        if (!(this.hooks.modelSupportsEffort?.(command.model, session.config.effort, session.config.accountRoute) ?? modelCapabilities(command.model).efforts.includes(session.config.effort))) session.config.effort = 'auto'
+        session.contextCheckpoint = undefined
       }
       if (command.action === 'configure-effort') {
         if (this.generation && session.id === this.library.activeId) return { ok: false, message: 'Stop the response before changing reasoning effort.' }
-        if (!(this.hooks.modelSupportsEffort?.(session.config.model, command.effort) ?? modelCapabilities(session.config.model).efforts.includes(command.effort))) return { ok: false, message: 'The selected model does not support that reasoning effort.' }
+        if (!(this.hooks.modelSupportsEffort?.(session.config.model, command.effort, session.config.accountRoute) ?? modelCapabilities(session.config.model).efforts.includes(command.effort))) return { ok: false, message: 'The selected model does not support that reasoning effort.' }
         session.config.effort = command.effort
+        rememberThirdPartyEffort(session.config)
       }
       if (command.action === 'draft') session.draft = command.text
       if (command.action === 'more' && session.id === this.library.activeId) this.pageSize += 60
@@ -607,7 +709,12 @@ export class ChatController {
     const session = this.current()
     this.voiceSearchPreview = undefined
     if (!session.messages.length && session.title === 'New conversation') session.title = parsed.data.text.replace(/\s+/g, ' ').slice(0, 72)
-    this.state.messages.push({ id: randomUUID(), role: 'user', content: parsed.data.text, status: 'complete', createdAt: Date.now(), attachments: session.attachments.splice(0), requestId: parsed.data.requestId, command: resolvedCommand })
+    const userMessage: ChatMessage = { id: randomUUID(), role: 'user', content: parsed.data.text, status: 'complete', createdAt: Date.now(), attachments: session.attachments.splice(0), requestId: parsed.data.requestId, command: resolvedCommand }
+    const prior = session.messages.at(-1)
+    if (prior?.role === 'assistant' && prior.interaction && prior.interaction.status !== 'answered') {
+      prior.interaction = { ...prior.interaction, status: 'answered', answerMessageId: userMessage.id, answer: userMessage.content }
+    }
+    this.state.messages.push(userMessage)
     session.draft = ''; session.updatedAt = Date.now()
     this.start()
     return { ok: true }
@@ -616,9 +723,11 @@ export class ChatController {
     if (this.disposed || this.generation) return { ok: false, message: 'Stop the current response before retrying.' }
     const last = this.state.messages.at(-1)
     if (!last || last.role !== 'assistant') return { ok: false, message: 'There is no response to retry.' }
-    this.current().contextCheckpoint = undefined
-    if (!last.execution?.activities.length) this.state.messages.pop()
-    this.start(Boolean(last.execution?.activities.length))
+    const resumable = last.execution?.taskCheckpoint?.resumable === true
+    if (resumable && !this.contextPolicy().safeTaskRecovery) return { ok: false, message: 'Safe task recovery is disabled for this conversation.' }
+    if (!resumable) this.current().contextCheckpoint = undefined
+    if (!last.execution?.activities.length && !resumable) this.state.messages.pop()
+    this.start(resumable || Boolean(last.execution?.activities.length))
     return { ok: true }
   }
   private start(resuming = false): void {
@@ -628,6 +737,8 @@ export class ChatController {
     if (request?.command) this.timeline(reply, 'started', `${resuming ? 'Continuing' : 'Starting'} ${request.command.name}.`)
     else if (!resuming && this.current().workspaces.length && this.state.messages.filter((entry) => entry.role === 'user').length === 1) this.timeline(reply, 'started', 'I’ll inspect the authorized project and its current state before making changes.')
     reply.execution.taskCheckpoint = { taskId: reply.id, model: this.hooks.effectiveModel?.() ?? this.current().config.model ?? '', originalRequest: [...this.state.messages].reverse().find((entry) => entry.role === 'user')?.content ?? '', workspaceIds: this.current().workspaces.map((entry) => entry.id), instructionMessageIds: this.state.messages.filter((entry) => entry.role === 'user').map((entry) => entry.id), completedOperationIds: [], modifiedFiles: [], verificationOperationIds: [], verificationGates: { productionBuild: 'not-run', developmentServer: 'not-run', browserVerification: 'not-run' }, pendingActions: ['Complete the user request and applicable verification.'], updatedAt: reply.createdAt, continuationAttempts: 0 }
+    Object.assign(reply.execution.taskCheckpoint, { conversationId: this.current().id, effort: this.current().config.effort, permissionMode: this.current().config.agentMode, accountRoute: JSON.stringify(this.current().config.accountRoute ?? null) })
+    if (!this.contextPolicy().taskCheckpoints) reply.execution.taskCheckpoint = undefined
     const context = recentContext(this.state.messages, Infinity)
     const messages = context.messages
     this.state.contextNotice = undefined
@@ -657,7 +768,9 @@ export class ChatController {
         catch (error) { if (this.generation === generation) this.stop(error instanceof ChatError ? error.userMessage : 'Local inference could not start.', true); return }
         if (this.generation !== generation || generation.abort.signal.aborted) { generation.releaseResource?.(); generation.releaseResource = undefined; return }
         generation.queued = false
-        generation.timeout = setTimeout(() => this.stopSession(sessionId, 'The configured task deadline was reached. Review Activity for actual changes before continuing.', true), this.current().workspaces.length ? (this.current().config.contextSettings ?? contextDefaults()).maxExecutionMinutes * 60_000 : 120_000)
+        // Bound credential/runtime initialization independently of inference.
+        // Once the provider is ready, the configured task deadline takes over.
+        generation.timeout = setTimeout(() => this.stopSession(sessionId, 'Provider initialization timed out. Completed work is preserved; check the selected account and runtime before resuming.', true, 'request_initialization_timeout'), Math.max(120_000, this.contextPolicy().responseConnectionSeconds * 1000))
         this.phase('thinking'); this.publish(true)
         void this.generate(generation, reply, messages, resuming)
       }
@@ -670,22 +783,43 @@ export class ChatController {
   private drain(): void { while (!this.drainingPaused && this.running < this.maxConcurrent() && this.queue.length) this.queue.shift()?.start() }
   updateConcurrency(): void { this.drain() }
   private async generate(generation: Generation, reply: ChatMessage, messages: ChatMessage[], resuming = false): Promise<void> {
+    let cursorNativeChanges = false
     try {
       const session = this.current()
       const accountId = await this.hooks.accountIdentity?.() ?? null
       if (this.generation !== generation) return
+      let migrationAuthorized = false
       if (resuming) {
-        const previous = [...messages].reverse().find((entry) => entry.role === 'assistant' && entry.execution?.activities.length)
-        if (previous?.execution?.accountId && previous.execution.accountId !== accountId) throw new ChatError('Reconnect and select the same ChatGPT account used for this unfinished task before continuing. Completed project changes are preserved.', 'auth-reconnect')
+        const previous = resumeEvidence(messages)
+        const task = previous?.execution?.taskCheckpoint
+        const accountChanged = Boolean(task?.accountRoute && task.accountRoute !== JSON.stringify(session.config.accountRoute ?? null) || previous?.execution?.accountId && previous.execution.accountId !== accountId)
+        if (accountChanged) {
+          migrationAuthorized = await this.approve({ title: 'Resume with the selected account', description: 'Send this task’s saved conversation, attachments, project context and verified results to the currently selected account/provider? Its own billing or subscription allowance applies. Credentials and native sessions will not be transferred.', fullAccessEligible: false }, generation.abort.signal)
+          if (!migrationAuthorized) throw new ChatError('Task transfer was declined. Select the same ChatGPT account or explicitly approve the destination account before resuming. Completed work is preserved.')
+        }
         const priorWorkspaces = previous?.execution?.taskCheckpoint?.workspaceIds
         if (priorWorkspaces && (priorWorkspaces.length !== session.workspaces.length || priorWorkspaces.some((id) => !session.workspaces.some((workspace) => workspace.id === id)))) throw new ChatError('The authorized project changed since this task paused. Reconnect the original project before continuing; completed changes remain preserved.')
       }
       if (accountId && reply.execution) reply.execution.accountId = accountId
+      const providerStarted = performance.now()
+      const provider = await this.hooks.provider({ ...session.config, contextSettings: this.contextPolicy(session) }, { isolated: false, coding: session.workspaces.length > 0 })
+      if (generation.abort.signal.aborted || this.generation !== generation) return
+      clearTimeout(generation.timeout)
+      generation.timeout = setTimeout(() => this.stopSession(session.id, 'The configured task deadline was reached. Review Activity for actual changes before continuing.', true, 'task_deadline'), this.contextPolicy(session).maxExecutionMinutes * 60_000)
       const completeMessages = messages
-      const saved = session.contextCheckpoint
+      const priorIdentity = resuming ? resumeEvidence(messages)?.execution?.taskCheckpoint : undefined
+      const identityChanged = Boolean(priorIdentity && (priorIdentity.model !== (provider.modelId ?? session.config.model) || priorIdentity.accountRoute !== JSON.stringify(session.config.accountRoute ?? null) || priorIdentity.provider !== (this.hooks.usageProviderId?.(provider) ?? 'unknown')))
+      const saved = identityChanged ? undefined : session.contextCheckpoint
       const index = saved ? messages.findIndex((entry) => entry.id === saved.coveredThrough) : -1
       const workspaceAllowed = !session.workspaces.length || session.workspaces.every((workspace) => this.hooks.authorized?.(workspace.id))
-      const checkpoint = this.hooks.useCheckpoint?.() !== false && saved && workspaceAllowed && index >= 0 && saved.fingerprint === contextFingerprint(session, messages.slice(0, index + 1)) ? saved.input as unknown as ResponseInput : undefined
+      if (resuming && !workspaceAllowed) throw new ChatError('Restore authorization for the original project before Resume Task. No operation was replayed.')
+      if (workspaceAllowed && this.hooks.workspaceRoot && reply.execution?.taskCheckpoint) {
+        const roots = await Promise.all(session.workspaces.map(workspace => this.hooks.workspaceRoot!(workspace.id)))
+        const prior = resuming ? resumeEvidence(completeMessages)?.execution?.taskCheckpoint : undefined
+        if (prior?.workspaceRoots && JSON.stringify(prior.workspaceRoots) !== JSON.stringify(roots)) throw new ChatError('The project directory changed since this task paused. Restore its original authorized workspace before resuming.')
+        reply.execution.taskCheckpoint.workspaceRoots = roots
+      }
+      const checkpoint = provider.contextCheckpointFormat === 'openai-responses' && this.contextPolicy(session).taskCheckpoints && saved && workspaceAllowed && index >= 0 && saved.fingerprint === contextFingerprint(session, messages.slice(0, index + 1)) ? saved.input as unknown as ResponseInput : undefined
       if (checkpoint) messages = messages.slice(index + 1)
       else session.contextCheckpoint = undefined
       const invoked = [...messages].reverse().find((entry) => entry.role === 'user')
@@ -697,7 +831,7 @@ export class ChatController {
         messages = messages.map((entry) => entry.id === invoked.id ? { ...entry, content: prompt } : entry)
       }
       if (resuming) {
-        const previous = [...completeMessages].reverse().find((entry) => entry.role === 'assistant' && entry.execution?.activities.length)
+        const previous = resumeEvidence(completeMessages)
         if (reply.execution && previous?.execution?.subagentRequirements?.length) reply.execution.subagentRequirements = previous.execution.subagentRequirements
         const activities = previous?.execution?.activities ?? []
         const task = previous?.execution?.taskCheckpoint
@@ -712,30 +846,125 @@ export class ChatController {
         const children = activities.flatMap((activity) => activity.subagent ? [{ id: activity.subagent.id, role: activity.subagent.request.role, gateId: activity.subagent.request.gateId, status: activity.subagent.status, summary: activity.subagent.result?.summary, error: activity.subagent.error }] : [])
         if (children.length) messages.push({ id: randomUUID(), role: 'user', status: 'complete', createdAt: Date.now(), content: `Saved isolated child executions (untrusted results): ${JSON.stringify(children)}. Use resume_subagent to validate and restore a saved child before continuing its unfinished checks. Do not replace a required independent review with parent reasoning.` })
       }
-      const providerStarted = performance.now()
-      const provider = await this.hooks.provider({ ...session.config }, { isolated: false, coding: session.workspaces.length > 0 })
+      if (reply.execution) {
+        reply.execution.providerId = this.hooks.usageProviderId?.(provider) ?? (this.hooks.resource === 'local' || this.hooks.origin === 'athena-local' ? 'local-ai' : 'unknown')
+        if (provider.modelId) reply.execution.modelId = provider.modelId.slice(0, 200)
+        const prior = resuming ? resumeEvidence(completeMessages)?.execution?.taskCheckpoint : undefined
+        if (prior?.provider && prior.provider !== reply.execution.providerId && !migrationAuthorized) {
+          migrationAuthorized = await this.approve({ title: 'Resume with the selected provider', description: `Transfer saved task context from ${prior.provider} to ${reply.execution.providerId}? The selected provider's billing and data handling apply. No credentials or native session will be transferred.`, fullAccessEligible: false }, generation.abort.signal)
+          if (!migrationAuthorized) throw new ChatError('Provider transfer was declined. Completed work remains saved.')
+        }
+        if (prior && reply.execution.taskCheckpoint) {
+          reply.execution.taskCheckpoint.migration = { fromTaskId: prior.taskId, fromProvider: prior.provider, fromModel: prior.model, authorized: true }
+          log('ai.task_migration', { taskId: reply.id, fromTaskId: prior.taskId, fromProvider: prior.provider ?? 'unknown', fromModel: prior.model, provider: reply.execution.providerId ?? 'unknown', model: provider.modelId ?? session.config.model ?? 'default', accountTransfer: migrationAuthorized })
+        }
+      }
+      const historyFit = provider.promptHistoryLimitBytes && this.contextPolicy(session).automaticCompaction ? fitConversationHistory(messages, provider.promptHistoryLimitBytes) : undefined
+      const historyLimitBytes = provider.promptHistoryLimitBytes ?? 0
+      if (historyFit?.compacted) {
+        messages = historyFit.messages
+        const optimizedNotice = 'Conversation context optimized. Older turns were summarized for this provider; the full conversation and attachments remain saved.'
+        if (reply.execution) reply.execution.budgetNotice = optimizedNotice
+        log('ai.context_compacted', { provider: provider.constructor.name, model: provider.modelId ?? session.config.model ?? 'unknown', conversationId: session.id, executionId: reply.id,
+          estimatedPromptTokens: Math.ceil(historyFit.finalBytes / 3), serializedPayloadBytes: historyFit.finalBytes, historyBytes: historyFit.originalBytes,
+          projectContextBytes: 0, attachmentCount: 0, attachmentBytes: 0, compactionStatus: 'history-summary', estimatedContextRemaining: Math.max(0, historyLimitBytes - historyFit.finalBytes), safetyMarginBytes: Math.max(0, historyLimitBytes - historyFit.finalBytes) })
+      }
+      const activityTimeout = provider.executionTimeoutPolicy === 'activity'
+      cursorNativeChanges = activityTimeout
+      generation.activityTimeout = activityTimeout
+      const policy = this.contextPolicy(session)
+      const taskInactivityMs = policy.acpInactivityMinutes * 60_000
+      // Native ACP tools use their own window, independent of prompt response
+      // timing and of the non-ACP overall task deadline.
+      const toolInactivityMs = policy.acpToolInactivityMinutes * 60_000
+      const refreshTaskDeadline = () => {
+        if (!activityTimeout || this.generation !== generation || reply.execution?.approval) return
+        clearTimeout(generation.timeout)
+        const runningTool = reply.execution?.streamPhase === 'running-tools'
+        generation.timeout = setTimeout(() => this.stopSession(session.id, runningTool
+          ? 'A provider tool did not complete within its execution window. Review Activity and the current project state before continuing.'
+          : 'The provider made no meaningful progress within the configured inactivity window. Review Activity and the current project state before continuing.', true), runningTool ? toolInactivityMs : taskInactivityMs)
+      }
+      generation.resumeTimeout = refreshTaskDeadline
+      refreshTaskDeadline()
       if (this.hooks.resource === 'local') log('ai.local_chat_pipeline', { traceId: reply.id, stage: 'provider-initialization-complete', durationMs: Math.round(performance.now() - providerStarted), model: provider.modelId ?? session.config.model ?? 'selected-local-model' })
       if (reply.execution?.taskCheckpoint && provider.modelId) reply.execution.taskCheckpoint.model = provider.modelId
       if (this.generation !== generation) return
       const contextStarted = performance.now()
-      const context = await this.hooks.prepare?.(session, messages, generation.abort.signal)
+      const context = await this.hooks.prepare?.({ ...session, config: { ...session.config, contextSettings: policy } }, messages, generation.abort.signal)
       if (this.hooks.resource === 'local') log('ai.local_chat_pipeline', { traceId: reply.id, stage: 'context-preparation-complete', durationMs: Math.round(performance.now() - contextStarted), tools: context?.projectTools?.definitions.length ?? 0, repositoryCharacters: context?.repositoryText.length ?? 0 })
+      if (provider.constructor.name === 'AntigravityProvider') log('ai.antigravity_execution', { executionId: reply.id, model: provider.modelId ?? 'unselected', stage: 'context-prepared', durationMs: Math.round(performance.now() - contextStarted), attachmentCount: context?.attachments.length ?? 0, repositoryBytes: Buffer.byteLength(context?.repositoryText ?? '', 'utf8') })
+      const preparedHistoryBytes = Buffer.byteLength(JSON.stringify(messages.map(({ role, content, attachments }) => ({ role, content, attachments }))), 'utf8')
+      const preparedProjectBytes = Buffer.byteLength(context?.repositoryText ?? '', 'utf8')
+      const preparedAttachmentBytes = (context?.attachments ?? []).reduce((sum, attachment) => sum + Buffer.byteLength(attachment.data, 'utf8'), 0)
+      const preparedBytes = preparedHistoryBytes + preparedProjectBytes + preparedAttachmentBytes
+      log('ai.context_prepared', { provider: provider.constructor.name, model: provider.modelId ?? session.config.model ?? 'unknown', conversationId: session.id, executionId: reply.id,
+        estimatedPromptTokens: Math.ceil(preparedBytes / 3), serializedPayloadBytes: preparedBytes, historyBytes: preparedHistoryBytes,
+        projectContextBytes: preparedProjectBytes, attachmentCount: context?.attachments.length ?? 0, attachmentBytes: preparedAttachmentBytes,
+        compactionStatus: historyFit?.compacted ? 'structured-history-summary' : provider.promptHistoryLimitBytes ? 'within-history-budget' : 'provider-managed',
+        estimatedContextRemaining: provider.promptHistoryLimitBytes ? Math.max(0, provider.promptHistoryLimitBytes - preparedHistoryBytes) : -1,
+        safetyMarginBytes: provider.promptHistoryLimitBytes ? Math.max(0, provider.promptHistoryLimitBytes - preparedHistoryBytes) : -1 })
+      if (resuming && session.workspaces.length && !context?.projectTools?.definitions.length && !provider.nativeAgent) throw new ChatError('The selected model has no verified project tool support. Choose an agent-capable model to resume this coding task. Completed work is preserved.')
       if (resuming) context?.projectTools?.continuation?.()
       if (context?.sources) reply.sources = context.sources
       if (context?.notice) this.state.contextNotice = [this.state.contextNotice, context.notice].filter(Boolean).join(' ')
       if (this.generation !== generation) return
       let complete = false
-      for await (const chunk of provider.streamMessage(messages, { signal: generation.abort.signal, effort: session.config.effort, context, contextSettings: session.config.contextSettings, checkpoint, storeArtifact: this.hooks.storeArtifact,
+      const previousTask = resuming ? resumeEvidence(completeMessages)?.execution?.taskCheckpoint : undefined
+      if (reply.execution?.taskCheckpoint && previousTask) {
+        reply.execution.taskCheckpoint.parentTaskId = previousTask.taskId
+        reply.execution.taskCheckpoint.recoveryAttempts = (previousTask.recoveryAttempts ?? 0) + 1
+      }
+      const continuation = new ContinuationController(policy, state => {
+        if (this.generation !== generation || !reply.execution?.taskCheckpoint) return
+        const previous = reply.execution.taskCheckpoint.control
+        const durable = !previous || previous.continuations !== state.continuations || previous.compactions !== state.compactions || previous.transportRecoveries !== state.transportRecoveries || JSON.stringify(previous.operations) !== JSON.stringify(state.operations)
+        reply.execution.taskCheckpoint.control = state
+        this.checkpointTask(reply, session)
+        if (durable && !this.save()) throw new ChatError('The task checkpoint could not be saved. Execution stopped before the next operation to avoid losing recovery records. Check disk space and folder permissions; completed work is preserved.')
+      }, previousTask?.control, { taskId: reply.id, conversationId: session.id, provider: reply.execution?.providerId ?? 'unknown', model: provider.modelId ?? session.config.model ?? 'default', effort: session.config.effort, mode: session.config.agentMode ?? 'ask' })
+      if (reply.execution?.taskCheckpoint) reply.execution.taskCheckpoint.control = structuredClone(continuation.state)
+      // Track the existing executor at its shared boundary. This also covers
+      // native SDK/app-server adapters that do not use ToolCallSession.
+      if (context?.projectTools) {
+        const tools = context.projectTools
+        context.projectTools = { ...tools, executionTrackedByHost: true, execute: async (name, input, signal) => {
+          signal.throwIfAborted(); tools.assertAccess()
+          const risk = classifyOperation(tools, name, input), readOnly = risk === 'read-only'
+          if (continuation.isReplay(name, input)) log('ai.operation_replay', { executionId: reply.id, tool: name, risk, confirmationRequired: !readOnly })
+          if (!readOnly && continuation.isReplay(name, input)) {
+            const allowed = await this.approve({ title: 'Confirm repeat of a saved operation', description: `This ${name} operation was already attempted in the interrupted task. Its effects may already exist. Inspect current Activity and project state before allowing it again.`, fullAccessEligible: false }, signal)
+            if (!allowed) return JSON.stringify({ ok: false, error: { code: 'uncertain_replay', message: 'The repeat was denied. Do not retry or use another tool to repeat this operation.' } })
+          }
+          signal.throwIfAborted(); tools.assertAccess()
+          const key = continuation.operationStarted(name, input, risk)
+          let output: string
+          try { output = await tools.execute(name, input, signal) }
+          catch (error) { continuation.operationFinished(key, JSON.stringify({ ok: false, error: 'Operation did not return a verified result. Inspect current state before repeating.' })); throw error }
+          continuation.operationFinished(key, output)
+          return output
+        } }
+      }
+      for await (const chunk of provider.streamMessage(messages, { signal: generation.abort.signal, effort: session.config.effort, context, contextSettings: policy, checkpoint, storeArtifact: this.hooks.storeArtifact,
+        continuation,
+        reliabilityIdentity: { provider: session.config.accountRoute?.provider ?? this.hooks.usageProviderId?.(provider) ?? 'api', model: provider.modelId ?? session.config.model ?? 'configured-model' },
+        runtimeCapacity: provider.contextLimits,
+        modelContextWindow: policy.modelContextWindows[contextModelKey(provider.modelId ?? session.config.model ?? '', session.config.accountRoute)],
+        onNativeSession: id => { if (reply.execution?.taskCheckpoint && this.generation === generation) { reply.execution.taskCheckpoint.nativeSessionId = id.slice(0, 256); this.save() } },
+        activeRequest: [...messages].reverse().find(message => message.role === 'user')?.content,
+        onMeaningfulProgress: refreshTaskDeadline,
         traceId: reply.id,
         onLocalInferenceTrace: event => log('ai.local_inference_trace', { traceId: reply.id, fromInputMs: Math.round(performance.now() - generation.startedAt), ...event }),
         executionId: reply.id,
+        conversationId: session.id,
         diagnosticCounts: () => ({
           completedTools: reply.execution?.activities.filter((activity) => activity.status === 'complete').length ?? 0,
           fileChanges: new Set(reply.execution?.activities.flatMap((activity) => activity.changes?.filter((change) => change.status === 'applied').map((change) => change.path) ?? []) ?? []).size,
         }),
         onStreamPhase: (phase) => {
           if (this.generation !== generation || !reply.execution) return
-          reply.execution.streamPhase = phase; reply.execution.updatedAt = Date.now(); this.publish()
+          if (reply.execution.streamPhase !== phase) { reply.execution.streamPhase = phase; reply.execution.updatedAt = Date.now(); refreshTaskDeadline(); this.publish() }
+          if (reply.execution.taskCheckpoint?.control) reply.execution.taskCheckpoint.control.status = phase === 'waiting-approval' ? 'waiting-permission' : phase === 'running-tools' ? 'waiting-tool' : 'running'
         },
         onStreamDiagnostic: (diagnostic) => {
           if (this.generation !== generation || !reply.execution) return
@@ -743,6 +972,7 @@ export class ChatController {
           reply.execution.updatedAt = Date.now(); this.save(); this.publish()
         },
         permissionMode: session.config.agentMode ?? 'ask',
+        permissionStateVersion: this.permissionVersions.get(session.id) ?? 0,
         onBudget: (notice) => {
           if (this.generation !== generation || !reply.execution || reply.execution.budgetNotice === notice) return
           reply.execution.budgetNotice = notice; this.publish()
@@ -752,10 +982,48 @@ export class ChatController {
           reply.execution.budgetSummary = summary
           reply.execution.updatedAt = Date.now(); this.save(); this.publish()
         },
-        requestApproval: (title, description, signal, changes, rememberScope) => this.approve({ title, description, changes, rememberScope }, signal),
+        requestApproval: async (title, description, signal, changes, rememberScope, fullAccessEligible, operation) => {
+          const input = { title, description }
+          const risk = operation?.risk ?? 'unknown'
+          const replay = risk !== 'read-only' && resuming && continuation.isReplay('native_permission', input)
+          const allowed = await this.approve({ title: replay ? `Confirm repeat: ${title}` : title, description: replay ? `This native operation was already authorized during the saved task and may have taken effect. Inspect current state before repeating it.\n\n${description}` : description, changes, rememberScope: replay ? undefined : rememberScope, fullAccessEligible: replay ? false : fullAccessEligible }, signal)
+          if (allowed) continuation.operationStarted('native_permission', input, risk)
+          return allowed
+        },
+        onPromptBudget: budget => {
+          if (this.generation !== generation || !reply.execution) return
+          reply.execution.promptBudget = { ...budget, routeKey: contextModelKey(provider.modelId ?? session.config.model ?? '', session.config.accountRoute) }
+          this.publish()
+        },
         onUsage: (usage) => {
           if (this.generation !== generation || !reply.execution) return
           reply.execution.contextUsage = usage; reply.execution.updatedAt = Date.now(); this.publish()
+        },
+        onModelResponse: (usage) => {
+          if (this.generation !== generation || !reply.execution) return
+          const previous = reply.execution.providerUsage
+          reply.execution.providerUsage = {
+            inputTokens: (previous?.inputTokens ?? 0) + usage.inputTokens,
+            cachedInputTokens: (previous?.cachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
+            cacheCreationInputTokens: (previous?.cacheCreationInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0),
+            outputTokens: (previous?.outputTokens ?? 0) + usage.outputTokens,
+            reasoningTokens: (previous?.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
+            requestCount: (previous?.requestCount ?? 0) + 1,
+            incompleteRequests: previous?.incompleteRequests,
+            estimated: Boolean(previous?.estimated || usage.estimated), updatedAt: Date.now(),
+          }
+          reply.execution.updatedAt = Date.now(); this.publish()
+        },
+        onModelRequestUnresolved: () => {
+          if (this.generation !== generation || !reply.execution) return
+          const previous = reply.execution.providerUsage
+          reply.execution.providerUsage = {
+            inputTokens: previous?.inputTokens ?? 0, cachedInputTokens: previous?.cachedInputTokens ?? 0,
+            cacheCreationInputTokens: previous?.cacheCreationInputTokens ?? 0, outputTokens: previous?.outputTokens ?? 0,
+            reasoningTokens: previous?.reasoningTokens ?? 0, requestCount: previous?.requestCount ?? 0,
+            incompleteRequests: (previous?.incompleteRequests ?? 0) + 1, estimated: true, updatedAt: Date.now(),
+          }
+          reply.execution.updatedAt = Date.now(); this.publish()
         },
         onRecovery: (recovery) => {
           if (this.generation !== generation || !reply.execution) return
@@ -765,25 +1033,41 @@ export class ChatController {
           reply.execution.updatedAt = Date.now(); this.phase('thinking'); this.save(); this.publish()
         },
         onCheckpoint: (input) => {
-          if (this.generation !== generation || !completeMessages.length) return
+          if (this.generation !== generation || !completeMessages.length || !policy.taskCheckpoints) return
           session.contextCheckpoint = { fingerprint: contextFingerprint(session, completeMessages), coveredThrough: completeMessages.at(-1)!.id, savedAt: Date.now(), input: input as unknown as Array<Record<string, unknown>> }
           this.save()
         },
       })) {
         if (this.generation !== generation) return
         if (chunk.type === 'done') { complete = true; break }
+        if (chunk.type === 'interaction') {
+          const parsed = choiceInteractionSchema.safeParse(chunk.interaction)
+          if (parsed.success && parsed.data.conversationId === session.id && parsed.data.messageId === reply.id) {
+            reply.interaction = parsed.data
+            if (reply.execution) reply.execution.updatedAt = Date.now()
+            this.publish()
+          }
+          continue
+        }
         if (chunk.type === 'activity') {
           const existing = reply.execution?.activities.find((activity) => activity.id === chunk.id)
           if (!existing && reply.execution && reply.execution.activities.length < 500) {
-            reply.execution.activities.push({ id: chunk.id, tool: chunk.tool, label: chunk.label, status: chunk.status, startedAt: Date.now(), ...(chunk.status !== 'running' ? { finishedAt: Date.now() } : {}) })
+            reply.execution.activities.push({ id: chunk.id, tool: chunk.tool, label: chunk.label, status: chunk.status, startedAt: Date.now(), ...(chunk.status !== 'running' ? { finishedAt: Date.now() } : {}), ...(chunk.changes?.length ? { changes: chunk.changes } : {}) })
             this.timeline(reply, 'activity', undefined, chunk.id)
           } else if (existing) {
             existing.tool = chunk.tool
             existing.label = chunk.label
             existing.status = chunk.status
             if (chunk.status !== 'running') existing.finishedAt ??= Date.now()
+            if (chunk.changes?.length) {
+              const changes = new Map((existing.changes ?? []).map((change) => [change.id, change]))
+              for (const change of chunk.changes) changes.set(change.id, change)
+              existing.changes = [...changes.values()]
+            }
           }
           if (reply.execution) reply.execution.updatedAt = Date.now()
+          if (activityTimeout && chunk.status !== 'running') { this.checkpointTask(reply, session); this.save() }
+          if (activityTimeout && chunk.status !== 'running') refreshTaskDeadline()
           if (chunk.status === 'running' && this.state.phase !== 'thinking') this.phase('thinking')
           if (!this.publishTimer) this.publishTimer = setTimeout(() => this.publish(), 80)
           continue
@@ -806,6 +1090,7 @@ export class ChatController {
       await context?.projectTools?.validateCompletion?.()
       if (this.generation !== generation) return
       reply.content = stripTrailingSourcesSection(reply.content)
+      reply.interaction ??= parseChoiceInteraction(reply.content, { conversationId: session.id, messageId: reply.id })?.interaction
       const timeline = reply.execution?.timeline
       if (timeline?.length) {
         let trailingTextStart = timeline.length
@@ -819,13 +1104,25 @@ export class ChatController {
       }
       reply.status = 'complete'
       if (reply.execution) reply.execution.streamPhase = undefined
-      if (reply.execution?.taskCheckpoint) reply.execution.taskCheckpoint.pendingActions = []
+      if (reply.execution?.taskCheckpoint) {
+        // A normal provider turn end is not proof that a development objective
+        // was verified. Preserve unresolved operations and interactive pauses.
+        const latestByTool = new Map(reply.execution.activities.map(activity => [activity.tool, activity]))
+        const failed = [...latestByTool.values()].some(activity => (activity.status === 'error' || activity.status === 'cancelled') && activity.summary !== 'This operation already succeeded in this request; do not duplicate it.')
+        if (!failed && !reply.interaction) reply.execution.taskCheckpoint.pendingActions = []
+        if (reply.execution.taskCheckpoint.control) reply.execution.taskCheckpoint.control.status = reply.interaction ? 'waiting-user' : failed ? 'blocked' : 'responded'
+      }
       log('ai.request_completed')
+      log('ai.task_outcome', { provider: reply.execution?.providerId ?? 'unknown', model: reply.execution?.modelId ?? session.config.model ?? 'default', effort: session.config.effort, taskId: reply.id, conversationId: session.id, durationMs: Date.now() - reply.createdAt, status: reply.execution?.taskCheckpoint?.control?.status ?? 'responded', continuations: continuation.state.continuations, compactions: continuation.state.compactions, toolCalls: reply.execution?.activities.length ?? continuation.state.toolCalls })
     } catch (error) {
       if (this.generation !== generation) return
       reply.status = 'error'
       if (reply.execution) reply.execution.streamPhase = 'paused'
       reply.error = error instanceof ChatError ? error.userMessage : 'Athena could not complete the request. Please retry.'
+      if (reply.execution?.taskCheckpoint?.control) {
+        reply.execution.taskCheckpoint.control.status = 'resumable'
+        reply.execution.taskCheckpoint.control.stopReason ??= 'provider-or-tool-interrupted'
+      }
       if (error instanceof ChatError && error.code === 'auth-reconnect' && reply.execution) {
         reply.execution.status = 'waiting-auth'
         if (reply.execution.taskCheckpoint) reply.execution.taskCheckpoint.pendingActions = ['Reconnect the same ChatGPT account, inspect current project state, then continue unfinished work without repeating completed changes.']
@@ -834,7 +1131,9 @@ export class ChatController {
       if (reply.execution?.activities.length) {
         const finished = reply.execution.activities.filter((activity) => activity.status === 'complete').length
         const modified = new Set(reply.execution.activities.flatMap((activity) => activity.changes?.filter((change) => change.status === 'applied').map((change) => change.path) ?? [])).size
-        reply.error += ` ${finished} completed operations; ${modified} recorded file change${modified === 1 ? '' : 's'}. See Activity for results and remaining verification before resuming.`
+        reply.error += modified || !cursorNativeChanges
+          ? ` ${finished} completed operations; ${modified} recorded file change${modified === 1 ? '' : 's'}. See Activity for results and remaining verification before resuming.`
+          : ` ${finished} completed operations. Athena has no verified file-change count for this turn; inspect the project before resuming.`
       }
       this.state.error = reply.error
       log('ai.request_failed')
@@ -862,11 +1161,11 @@ export class ChatController {
       }
     }
   }
-  stop(message?: string, failed = false): ChatResult {
+  stop(message?: string, failed = false, reason?: StreamFailureKind): ChatResult {
     const generation = this.generation
     if (!generation) return { ok: true }
     this.generation = undefined
-    generation.abort.abort(); clearTimeout(generation.timeout)
+    generation.abort.abort(reason ? new StreamFault(reason, message ?? 'Execution stopped.') : undefined); clearTimeout(generation.timeout)
     generation.releaseResource?.(); generation.releaseResource = undefined
     if (generation.queued) {
       const index = this.queue.findIndex(entry => entry.id === this.current().id)
@@ -886,6 +1185,7 @@ export class ChatController {
           : 'Cancelled. Pending operations were stopped. No completed file changes are recorded in Activity.'
         reply.content = [reply.content.trimEnd(), summary].filter(Boolean).join('\n\n')
       }
+      if (reply.execution.taskCheckpoint?.control) { reply.execution.taskCheckpoint.control.status = failed ? 'resumable' : 'cancelled'; reply.execution.taskCheckpoint.control.stopReason = reason ?? (failed ? 'execution-deadline-or-permission-change' : 'user-cancelled') }
       this.checkpointTask(reply, this.current())
       if (reply.execution.recovery) reply.execution.recovery.continuing = false
       reply.execution.finishedAt = Date.now(); reply.execution.status = failed ? 'error' : 'cancelled'; reply.execution.streamPhase = 'paused'; reply.execution.approval = undefined
@@ -899,7 +1199,7 @@ export class ChatController {
     log('ai.request_stopped')
     return { ok: true }
   }
-  stopSession(id: string, message?: string, failed = false): ChatResult { return this.executionScope.run(id, () => this.stop(message, failed)) }
+  stopSession(id: string, message?: string, failed = false, reason?: StreamFailureKind): ChatResult { return this.executionScope.run(id, () => this.stop(message, failed, reason)) }
   stopAll(message?: string): void {
     this.drainingPaused = true
     try { for (const id of [...this.generations.keys()]) this.stopSession(id, message) }
@@ -921,4 +1221,9 @@ export class ChatController {
     this.save()
     this.state.messages = []
   }
+}
+
+function resumeEvidence(messages: ChatMessage[]): ChatMessage | undefined {
+  const candidates = [...messages].reverse().filter(message => message.role === 'assistant' && message.execution?.taskCheckpoint)
+  return candidates.find(message => message.execution?.taskCheckpoint?.control || message.execution?.activities.length) ?? candidates[0]
 }

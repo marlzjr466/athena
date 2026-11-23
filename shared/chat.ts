@@ -4,6 +4,8 @@ import type { Attachment, ConversationConfig, ConversationSummary, SourceReferen
 import type { SlashCommandMeta } from './slashCommands'
 import type { AIOwnership } from './aiOwnership'
 import type { AutomationProgress } from './automation'
+import type { ChoiceInteraction } from './chatInteraction'
+import type { ChangePreview } from './agent'
 
 export const MAX_MESSAGE_LENGTH = 12_000
 export const MAX_RESPONSE_LENGTH = 48_000
@@ -28,6 +30,7 @@ export interface ChatMessage {
   error?: string
   attachments?: Attachment[]
   artifacts?: GeneratedArtifact[]
+  interaction?: ChoiceInteraction
   sources?: SourceReference[]
   requestId?: string
   execution?: AgentExecution
@@ -53,7 +56,8 @@ export interface ChatSnapshot { ownership?: AIOwnership; revision: number; messa
 export interface ChatResult { ok: boolean; message?: string }
 export type AIChunk =
   | { type: 'text'; text: string }
-  | { type: 'activity'; id: string; tool: string; label: string; status: 'running' | 'complete' | 'error' | 'cancelled' }
+  | { type: 'activity'; id: string; tool: string; label: string; status: 'running' | 'complete' | 'error' | 'cancelled'; changes?: ChangePreview[] }
+  | { type: 'interaction'; interaction: ChoiceInteraction }
   | { type: 'artifact'; artifact: GeneratedArtifact }
   | { type: 'done' }
 export const emptyChatSnapshot = (): ChatSnapshot => ({ revision: 0, messages: [], phase: 'idle', error: null })

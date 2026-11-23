@@ -1,0 +1,8 @@
+Athena local search includes SearXNG, licensed under AGPL-3.0-or-later.
+The complete corresponding source and license are included in source/. The
+supported version_frozen.py archive metadata is supplied alongside upstream source.
+Upstream: https://github.com/searxng/searxng
+The Python runtime is from https://github.com/astral-sh/python-build-standalone.
+Its licenses and dependency licenses are included with the runtime.
+Waitress is licensed under ZPL-2.1; see its installed dist-info license.
+Athena's launcher is a separate local process integration; no SearXNG source is modified.

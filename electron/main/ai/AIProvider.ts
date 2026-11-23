@@ -6,12 +6,14 @@ import type { GenerationSettings, RecoveryState } from '../../../shared/generati
 import type { WebCitation } from '../../../shared/webAccess'
 import type { AgentEfficiencySummary } from './agentEfficiency'
 import type { StreamDiagnostic, StreamPhase } from '../../../shared/streamDiagnostics'
-import type { ChangePreview } from '../../../shared/agent'
+import type { AgentMode, ChangePreview } from '../../../shared/agent'
 import type { LocalInferenceTrace } from '../../../shared/handsFree'
+import type { ContinuationController } from './continuationController'
 
 export interface PreparedAttachment { id: string; name: string; kind: 'image' | 'pdf' | 'text'; data: string }
 export interface ProjectToolDefinition { name: string; description: string; parameters: Record<string, unknown> }
 export interface ProjectTools {
+  executionTrackedByHost?: boolean
   policy?: string
   maxRounds?: number
   maxCalls?: number
@@ -19,6 +21,10 @@ export interface ProjectTools {
   maxArgumentBytes?: number
   invalidate?(): void
   continuation?(): void
+  /** Read-only operations may be revalidated on recovery even if they execute serially. */
+  readOnly?(name: string): boolean
+  /** Trusted executor classification after validating the actual arguments. Does not grant permission. */
+  operationRisk?(name: string, input: unknown): import('../../../shared/generation').OperationRisk
   parallelSafe?(name: string): boolean
   /** Opt-in isolated child lifecycle. The final assessment uses an existing
    * model-request slot, never an extra allowance or another tool executor. */
@@ -39,22 +45,36 @@ export interface ProjectTools {
   additionalCostUsd?(): number
 }
 export interface DeterministicActionResult { handled: boolean; action?: string; text?: string }
-export interface PreparedContext { attachments: PreparedAttachment[]; repositoryText: string; sources: SourceReference[]; notice?: string; projectTools?: ProjectTools; resolveDeterministicAction?: (request: string, signal: AbortSignal) => Promise<DeterministicActionResult>; projectName?: string; authorizedProject?: boolean; realtimeInstructions?: string; webSources?: WebCitation[] }
+export interface PreparedContext { projectInstructions?: string; attachments: PreparedAttachment[]; repositoryText: string; sources: SourceReference[]; notice?: string; projectTools?: ProjectTools; resolveDeterministicAction?: (request: string, signal: AbortSignal) => Promise<DeterministicActionResult>; projectName?: string; authorizedProject?: boolean; realtimeInstructions?: string; webSources?: WebCitation[] }
 
 export interface ModelRequestBudget { inputTokens: number; inputEstimated: boolean; contextWindow: number; maxOutputTokens: number; limitsVerified: boolean; outputLimitEnforced: boolean }
 /** One response, not cumulative task totals. Reasoning is a subset of outputTokens. */
-export interface ModelResponseUsage { inputTokens: number; outputTokens: number; reasoningTokens?: number; estimated: boolean }
+export interface ModelResponseUsage { inputTokens: number; cachedInputTokens?: number; cacheCreationInputTokens?: number; outputTokens: number; reasoningTokens?: number; estimated: boolean }
 
 export interface StreamOptions {
+  reliabilityIdentity?: { provider: string; model: string }
+  onNativeSession?(id: string): void
+  continuation?: ContinuationController
+  onPromptBudget?(budget: import('../../../shared/context').PromptBudget): void
+  runtimeCapacity?: import('../../../shared/subagentContext').ModelContextLimits
+  modelContextWindow?: number
+  /** Delegated input + output allocation, after safety margin; never a model capacity claim. */
+  requestContextBudget?: number
+  /** Provider activity that represents useful work, never a transport heartbeat. */
+  onMeaningfulProgress?(): void
   executionId?: string
+  conversationId?: string
   diagnosticCounts?(): { completedTools: number; fileChanges: number }
   onStreamPhase?(phase: StreamPhase): void
   onStreamDiagnostic?(diagnostic: StreamDiagnostic): void
   beforeModelRequest?(contextBytes: number, outputTokens: number, budget?: ModelRequestBudget): void
   onModelResponse?(usage: ModelResponseUsage): void
+  /** The request may have reached the provider but no final usage receipt was returned. */
+  onModelRequestUnresolved?(): void
   signal?: AbortSignal; effort?: ReasoningEffort; context?: PreparedContext
-  permissionMode?: 'read-only' | 'ask' | 'workspace-auto' | 'advanced'
-  requestApproval?(title: string, description: string, signal: AbortSignal, changes?: ChangePreview[], rememberScope?: import('../../../shared/permissions').RememberedScope): Promise<boolean>
+  permissionMode?: AgentMode
+  permissionStateVersion?: number
+  requestApproval?(title: string, description: string, signal: AbortSignal, changes?: ChangePreview[], rememberScope?: import('../../../shared/permissions').RememberedScope, fullAccessEligible?: boolean, operation?: { risk: import('../../../shared/generation').OperationRisk }): Promise<boolean>
   voiceOnly?: boolean
   /** Current explicit request, retained verbatim through context summarization. */
   activeRequest?: string
@@ -77,6 +97,13 @@ export interface StreamOptions {
 }
 
 export interface AIProvider {
+  readonly contextLimits?: import('../../../shared/subagentContext').ModelContextLimits
+  readonly nativeAgent?: boolean
+  readonly contextCheckpointFormat?: 'openai-responses'
+  /** Cursor ACP turns use the configured task duration as an inactivity window. */
+  readonly executionTimeoutPolicy?: 'activity'
+  /** Maximum provider-bound conversation history, excluding system/project context and attachments. */
+  readonly promptHistoryLimitBytes?: number
   /** Resolved model for this request; never changes the selected provider. */
   readonly modelId?: string
   testConnection(): Promise<boolean>

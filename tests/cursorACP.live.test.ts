@@ -22,6 +22,7 @@ describe.skipIf(process.env.ATHENA_CURSOR_ACTIVITY_LIVE_TEST !== '1')('Cursor AC
       const provider = new CursorACPProvider(service, workspace, true, status.identity, model!.id)
       const chunks: AIChunk[] = []
       for await (const chunk of provider.streamMessage([{ id: 'safe-read', role: 'user', status: 'complete', createdAt: Date.now(), content: 'Use your file-reading tool to read public-fixture.txt and report only the marker. Do not edit files.' }], { permissionMode: 'read-only' })) chunks.push(chunk)
+      console.info('[Cursor read fixture diagnostic]', JSON.stringify({ model: model!.id, events: chunks.map(chunk => chunk.type), tools: chunks.filter(chunk => chunk.type === 'activity').map(chunk => ({ tool: chunk.tool, status: chunk.status })), returnedMarker: chunks.some(chunk => chunk.type === 'text' && chunk.text.includes('BLUE')) }))
       expect(chunks.some((chunk) => chunk.type === 'activity' && chunk.tool === 'read_file')).toBe(true)
       expect(chunks.some((chunk) => chunk.type === 'text' && chunk.text.includes('BLUE'))).toBe(true)
     } finally {

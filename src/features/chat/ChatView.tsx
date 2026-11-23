@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ArrowDown, ArrowUp, Code2, FolderOpen, Lightbulb, PanelRight, Paperclip, RefreshCw, Sparkles, Square, VolumeX } from 'lucide-react'
 import { connectChat, useChat } from '../../store/chatStore'
 import { useAthena } from '../../store/athenaStore'
@@ -6,30 +6,38 @@ import { desktop, isDesktop } from '../../services/desktop'
 import { MAX_MESSAGE_LENGTH } from '../../../shared/chat'
 import { voiceControlIntent } from '../../../shared/voiceIntent'
 import { emptyAIStatus } from '../../../shared/ai'
+import type { UnifiedAccountCatalog } from '../../../shared/unifiedAccounts'
 import { ChatMessage } from './ChatMessage'
 import { clipboardHtmlToMarkdown } from './richPaste'
 import { ConversationSidebar } from './ConversationSidebar'
 import { ConversationControls } from './ConversationControls'
 import { AttachmentCards } from './AttachmentCards'
 import { WorkspacePanel } from './WorkspacePanel'
+import { GitBranchSelector } from './GitBranchSelector'
+import { OpenInVSCode } from './OpenInVSCode'
 import { HeldPermissionPrompt } from '../../components/PermissionPrompt'
+import { conversationScrollKey } from './conversationScrollKey'
 import { PushToTalk } from '../voice/PushToTalk'
 import { useSpeechOutput } from '../voice/useSpeechOutput'
 import { LONG_TEXT_PASTE_THRESHOLD, MAX_ATTACHMENT_BYTES, MAX_DRAFT_LENGTH, type Attachment, type ContextCommand } from '../../../shared/conversations'
 import { inferPastedTextName } from '../../../shared/textAttachments'
+import { isAvailableOpenAIAPIGptModel } from '../../../shared/modelCatalog'
 import { BUILTIN_SLASH_COMMANDS, commandAtStart, filterSlashCommands, resolveSlashCommand, slashQuery, type SlashCommandCatalog, type SlashCommandDefinition } from '../../../shared/slashCommands'
 import '../../styles/chat.css'
 import '../../styles/conversations.css'
 
 export function ChatView() {
-  const { snapshot, pending, send, stop, retry, command } = useChat()
+  const { snapshot, pending, issue, send, stop, retry, command } = useChat()
   const [input, setInput] = useState('')
   const [config, setConfig] = useState(emptyAIStatus)
+  const [catalog, setCatalog] = useState<UnifiedAccountCatalog>({ accounts: [], refreshedAt: 0 })
   const [loading, setLoading] = useState(true)
   const [configurationError, setConfigurationError] = useState('')
   const [online, setOnline] = useState(navigator.onLine)
+  const [activityWorkspaceRoot, setActivityWorkspaceRoot] = useState<string | undefined>()
   const [sidebar, setSidebar] = useState(true), [projectBrowser, setProjectBrowser] = useState(false)
   const [contextIssue, setContextIssue] = useState(''), [uploading, setUploading] = useState(false)
+  const [editorIssue, setEditorIssue] = useState<{ sessionId: string; workspaceId: string; message: string }>()
   const [draggingFiles, setDraggingFiles] = useState(false)
   const [voiceActive, setVoiceActive] = useState(false)
   const [slashCatalog, setSlashCatalog] = useState<SlashCommandCatalog>({ commands: BUILTIN_SLASH_COMMANDS, globalEnabled: false })
@@ -49,9 +57,15 @@ export function ChatView() {
   const positionedSession = useRef<string | undefined>(undefined)
   const hasPositionedTranscript = useRef(false)
   const busy = snapshot.phase !== 'idle' || snapshot.sessions?.find(session => session.id === snapshot.sessionId)?.executionStatus === 'queued'
-  const selectionRequired = settings?.aiMode === 'local' || settings?.aiMode === 'unconfigured'
+  const selectionRequired = !snapshot.config?.accountRoute && (settings?.aiMode === 'local' || settings?.aiMode === 'unconfigured')
   const model = snapshot.config?.model
-  const configured = !selectionRequired && config.active && Boolean(config.provider === 'ChatGPT Subscription' ? config.model : model)
+  const routedAccount = catalog.accounts.find(account => account.route.provider === snapshot.config?.accountRoute?.provider && account.route.accountId === snapshot.config?.accountRoute?.accountId)
+  const routedModel = routedAccount?.models.find(entry => entry.id === model || Object.values(entry.effortModelIds ?? {}).includes(model ?? '') || Object.values(entry.fastModelIds ?? {}).some(pair => pair.enabled === model || pair.disabled === model))
+  const unavailableAntigravityModel = config.provider === 'Google Antigravity Subscription' && !!model && config.modelCatalogAvailable !== false && !config.models.includes(model)
+  const openAIAPI = snapshot.config?.accountRoute ? snapshot.config.accountRoute.provider === 'cloud' : config.provider === 'OpenAI' && !config.inferenceProfile
+  const openAIModels = snapshot.config?.accountRoute ? routedAccount?.models.map(entry => entry.id) : config.models
+  const unavailableOpenAIAPIModel = Boolean(openAIAPI && model && openAIModels && !isAvailableOpenAIAPIGptModel(model, openAIModels))
+  const configured = snapshot.config?.accountRoute ? routedAccount?.enabled === true && (routedAccount.state === 'connected' || routedAccount.state === 'limited') && routedModel?.available === true && !unavailableOpenAIAPIModel : !selectionRequired && config.active && !unavailableAntigravityModel && !unavailableOpenAIAPIModel && Boolean(config.provider === 'ChatGPT Subscription' ? config.model : model)
   const available = configured && online
   const sessionRef = useRef(snapshot.sessionId)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -61,7 +75,22 @@ export function ChatView() {
   const history = useRef<{ sessionId?: string; entries: Array<{ id: string; content: string }>; index: number | null; draft: string; start: number; end: number; pendingOlder: boolean }>({ entries: [], index: null, draft: '', start: 0, end: 0, pendingOlder: false })
   const slashRefreshId = useRef(0)
   const workspaceKey = snapshot.workspaces?.map((workspace) => `${workspace.id}:${workspace.authorized}`).join('|') ?? ''
+  const scrollKey = useMemo(() => conversationScrollKey(snapshot.messages), [snapshot.messages])
   const suggestions = filterSlashCommands(slashCatalog.commands, slashText)
+  const hasAttachments = Boolean(snapshot.attachments?.length)
+  useEffect(() => {
+    let current = true
+    setActivityWorkspaceRoot(undefined)
+    const sessionId = snapshot.sessionId
+    const workspace = snapshot.workspaces?.find((entry) => entry.authorized)
+    if (!isDesktop || !sessionId || !workspace) return () => { current = false }
+    // The existing project-status permission returns the selected workspace root;
+    // it is used only to normalize activity labels, never to change execution paths.
+    void desktop.chatContext({ action: 'project-status', sessionId, id: workspace.id }).then((result) => {
+      if (current && result.ok) setActivityWorkspaceRoot(result.root)
+    }).catch(() => {})
+    return () => { current = false }
+  }, [snapshot.sessionId, workspaceKey])
   const updateFollowFromPosition = () => {
     const element = transcript.current
     if (!element) return
@@ -234,13 +263,30 @@ export function ChatView() {
   useEffect(() => {
     const disconnect = connectChat()
     let live = true
-    void desktop.getAIStatus().then((result) => {
-      if (live) { setConfig(result.status); setConfigurationError(result.ok ? '' : result.message); setLoading(false) }
-    }).catch(() => { if (live) { setLoading(false); setConfigurationError('Could not load AI settings.') } })
+    void (async () => {
+      try {
+        const result = await desktop.getAIStatus()
+        if (live) { setConfig(result.status); setConfigurationError(result.ok ? '' : result.message); setLoading(false) }
+      } catch {
+        if (live) { setLoading(false); setConfigurationError('Could not load AI settings.') }
+      }
+      // Use the main-process catalog cache on page entry. Provider/model
+      // catalogs are refreshed by explicit account actions, not each time a
+      // conversation is reopened.
+      try { const value = await desktop.getUnifiedAccounts(); if (live) setCatalog(value) }
+      catch { if (live) setConfigurationError('Could not load connected AI accounts.') }
+    })()
     const network = () => setOnline(navigator.onLine)
     window.addEventListener('online', network); window.addEventListener('offline', network)
     return () => { live = false; disconnect(); window.removeEventListener('online', network); window.removeEventListener('offline', network) }
-  }, [settings?.aiMode, settings?.chatGPTCodingBackend, snapshot.sessionId, snapshot.workspaces?.map((workspace) => workspace.id).join('|')])
+  }, [settings?.aiMode, settings?.chatGPTCodingBackend])
+  useEffect(() => {
+    const preferences = settings?.unifiedAccountEnabled ?? {}
+    setCatalog(current => ({ ...current, accounts: current.accounts.map(account => {
+      const key = JSON.stringify([account.route.provider, account.route.accountId])
+      return Object.prototype.hasOwnProperty.call(preferences, key) ? { ...account, enabled: preferences[key] } : account
+    }) }))
+  }, [JSON.stringify(settings?.unifiedAccountEnabled ?? {})])
   useLayoutEffect(() => {
     // A previous conversation's reading position must never suppress the
     // initial scroll for the newly selected session.
@@ -261,7 +307,7 @@ export function ChatView() {
       autoScrollFrame.current = undefined
       if (follow.current) scrollToLatest()
     })
-  }, [snapshot.revision, snapshot.sessionId])
+  }, [scrollKey, snapshot.sessionId])
   useEffect(() => {
     const element = transcript.current
     if (!element) return
@@ -314,18 +360,20 @@ export function ChatView() {
   }
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!input.trim() || busy || voiceActive || pending || uploading || !available) return
-    const resolution = resolveSlashCommand(input, slashCatalog.commands)
+    if ((!input.trim() && !hasAttachments) || busy || voiceActive || pending || uploading || !available) return
+    const resolution = input.trim() ? resolveSlashCommand(input, slashCatalog.commands) : undefined
     if (resolution?.status === 'unknown') { setSelectedSlash(null); setSlashOpen(false); setSlashNotice(`${resolution.parsed.name} is not registered in this conversation. Refresh project commands or send it as ordinary text without a leading slash.`); return }
     if (resolution?.status === 'ambiguous' && !resolution.matches.some(entry => entry.id === selectedSlash?.id)) { setSlashText(resolution.parsed.name); setSlashIndex(0); setSlashOpen(true); setSlashNotice(`Choose which ${resolution.parsed.name} definition to use.`); return }
     const resolved = selectedSlash && resolution?.matches.some(entry => entry.id === selectedSlash.id) ? selectedSlash : resolution?.matches[0]
-    if (selectedSlash && (!resolved || resolved.id !== selectedSlash.id)) { setSlashNotice('The selected command changed. Refresh commands and retry.'); return }
+    if (input.trim() && selectedSlash && (!resolved || resolved.id !== selectedSlash.id)) { setSlashNotice('The selected command changed. Refresh commands and retry.'); return }
     if (resolved?.execution === 'built-in') {
       void runBuiltin(resolved).then((ok) => { if (ok) { changeInput(''); setSelectedSlash(null); setSlashOpen(false) } })
       return
     }
     clearTimeout(draftTimer.current); unsavedDraft.current = undefined
-    let messageText = input
+    // ChatController requires a non-empty message body even when a user sends
+    // only files, images, or a long pasted-text attachment.
+    let messageText = input.trim() ? input : 'Please review the attached content.'
     if (messageText.length > MAX_MESSAGE_LENGTH) {
       // A restored/edited long draft follows the same path as a long paste:
       // persist the complete text as an attachment, then send a short explicit
@@ -405,22 +453,30 @@ export function ChatView() {
   }
   const last = snapshot.messages.at(-1)
   return <div className={`conversation-workbench ${sidebar ? 'with-sidebar' : ''}`}><section className={`ai-chat ${draggingFiles ? 'files-over' : ''}`} aria-label="Athena conversation" onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDraggingFiles(true) } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDraggingFiles(false) }} onDrop={(event) => { event.preventDefault(); void droppedFiles([...event.dataTransfer.files]) }}>
-    <div className="chat-toolbar"><button type="button" className="chat-action" aria-label="Toggle conversation sidebar" aria-expanded={sidebar} onClick={() => setSidebar(!sidebar)}><PanelRight size={17} /></button></div>
-    {loading ? <p role="status">Loading AI configuration…</p> : !configured || configurationError ? <div className="chat-setup" role="status">
-      <p>{selectionRequired ? 'Choose an online provider in Settings → AI. Your local model remains available through floating Athena.' : configurationError || (!config.active ? 'Online chat is not configured. Choose and connect an online provider in Settings → AI.' : config.provider === 'Cursor Subscription' ? 'Select an available Cursor model in the conversation dropdown before chatting.' : 'Select a text model in the conversation dropdown before chatting.')}</p>
-      <button className="button primary" onClick={() => useAthena.getState().setPage('ai')}>Open AI settings</button>
+    <div className="chat-toolbar">
+      {!!snapshot.workspaces?.length && <div className="chat-workspace-strip">
+        <button className="workspace-selector-trigger" aria-expanded={projectBrowser} onClick={() => setProjectBrowser(!projectBrowser)}><FolderOpen size={14} /><span>{snapshot.workspaces[0].name}{snapshot.workspaces[0].authorized ? '' : ' · select again'}</span></button>
+        {snapshot.sessionId && snapshot.workspaces[0].authorized && <GitBranchSelector key={`${snapshot.sessionId}:${snapshot.workspaces[0].id}`} sessionId={snapshot.sessionId} workspaceId={snapshot.workspaces[0].id} readOnly={snapshot.config?.agentMode === 'read-only'} />}
+        {snapshot.sessionId && <OpenInVSCode key={`editor:${snapshot.sessionId}:${snapshot.workspaces[0].id}`} sessionId={snapshot.sessionId} workspaceId={snapshot.workspaces[0].id} onError={message => setEditorIssue({ sessionId: snapshot.sessionId!, workspaceId: snapshot.workspaces![0].id, message })} />}
+      </div>}
+      <button type="button" className="chat-action" aria-label="Toggle conversation sidebar" aria-expanded={sidebar} onClick={() => setSidebar(!sidebar)}><PanelRight size={17} /></button>
+    </div>
+    {!!editorIssue?.message && editorIssue.sessionId === snapshot.sessionId && editorIssue.workspaceId === snapshot.workspaces?.[0]?.id && <div className="chat-context-notice project-editor-notice" role="alert">{editorIssue.message}<button className="chat-action" aria-label="Dismiss VS Code notice" onClick={() => setEditorIssue(undefined)}>×</button></div>}
+    {loading ? <p role="status">Loading AI configuration…</p> : !configured || (!snapshot.config?.accountRoute && configurationError) ? <div className="chat-setup" role="status">
+      <p>{unavailableOpenAIAPIModel ? `The saved OpenAI API model ${model} is unavailable in the current GPT-5.6+ catalog. Choose an available model from the conversation selector; Athena preserved this model and the conversation history.` : snapshot.config?.accountRoute && routedAccount?.enabled === false ? 'The selected account is disabled. Re-enable it in Settings → AI or choose another enabled model before sending. Your conversation history is preserved.' : snapshot.config?.accountRoute && routedAccount && !['connected', 'limited'].includes(routedAccount.state) ? 'The selected account needs attention. Reconnect it in Settings → AI; your conversation is preserved.' : snapshot.config?.accountRoute && !routedModel?.available ? 'This model is unavailable for its selected account. Refresh the catalog or choose another model.' : selectionRequired ? 'Connect an AI account in Settings → AI, then choose its model here. Your local model remains available through floating Athena.' : configurationError || (unavailableAntigravityModel ? `The saved Antigravity model ${model} is no longer available. Choose a model from the conversation dropdown before chatting.` : !config.active ? 'Connect an AI account in Settings → AI, then choose a model.' : config.provider === 'Cursor Subscription' ? 'Select an available Cursor model in the conversation dropdown before chatting.' : 'Select a text model in the conversation dropdown before chatting.')}</p>
+      {!unavailableAntigravityModel && !unavailableOpenAIAPIModel && <button className="button primary" onClick={() => useAthena.getState().setPage('ai')}>Open AI settings</button>}
     </div> : null}
+    {configured && routedAccount?.state === 'limited' && <p role="status" className="chat-gateway-notice">{routedAccount.message ?? 'This gateway declined its last test request. Other discovered models can still be tried.'}</p>}
     {!online && <p role="alert" className="chat-error">Athena is offline. Cloud chat is unavailable; local companion controls still work.</p>}
     {snapshot.error && <p role="alert" className="chat-error">{snapshot.error}</p>}
     {!isDesktop && <p role="status">Use the desktop app for Athena chat.</p>}
-    {!!snapshot.workspaces?.length && <div className="chat-workspace-strip"><FolderOpen size={14} /><button className="chat-action" onClick={() => setProjectBrowser(!projectBrowser)}>{snapshot.workspaces.map((workspace) => workspace.name + (workspace.authorized ? '' : ' · select again')).join(', ')}</button><span>Project agent · permission-controlled</span></div>}
     {projectBrowser && <WorkspacePanel key={snapshot.sessionId} close={() => setProjectBrowser(false)} report={setContextIssue} />}
     <div className="chat-transcript-wrap"><div className="chat-transcript" ref={transcript} role="log" aria-label="Conversation history" aria-live="off" onWheelCapture={cancelAutoScroll} onPointerDownCapture={cancelAutoScroll} onKeyDownCapture={(event) => {
       if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelAutoScroll()
     }} onScroll={() => { if (!autoScrolling.current) updateFollowFromPosition() }}>
       {snapshot.hasMore && <button className="chat-action chat-load-more" onClick={() => { follow.current = false; void command({ action: 'more', id: snapshot.sessionId! }) }}>Load earlier messages</button>}
       {!snapshot.messages.length && !snapshot.voiceSearchPreview && <div className="chat-empty"><div className="chat-empty-symbol"><Sparkles size={28} /></div><span className="chat-empty-eyebrow">A LITTLE CLARITY. A LITTLE POSSIBILITY.</span><h1>What’s on your mind?</h1><p>A question, an idea, a little help with your code.<br />Let’s work through it together.</p><div className="chat-starters">{[{ icon: Code2, title: 'Work through code', text: 'Help me understand a piece of code.' }, { icon: Lightbulb, title: 'Explore an idea', text: 'Help me brainstorm an idea.' }].map(({ icon: Icon, title, text }) => <button key={title} disabled={loading || !available || !isDesktop} onClick={() => { changeInput(text); composer.current?.focus() }}><Icon size={18} /><span>{title}</span><ArrowUp size={14} /></button>)}</div></div>}
-      {snapshot.messages.map((message) => <ChatMessage key={message.id} message={message} sessionId={snapshot.sessionId} speaking={speechStatus.phase === 'playing' && speechStatus.messageId === message.id} onSpeak={() => { if (snapshot.sessionId) void speakMessage(snapshot.sessionId, message.id) }} onStopSpeaking={stopSpeaking} canRetry={message.id === last?.id} retryDisabled={busy || pending || !available} onRetry={() => void retry()} onAnswerChoice={message.id === last?.id && message.role === 'assistant' ? async (answer) => {
+      {snapshot.messages.map((message) => <ChatMessage key={message.id} message={message} sessionId={snapshot.sessionId} workspaceRoot={activityWorkspaceRoot} speaking={speechStatus.phase === 'playing' && speechStatus.messageId === message.id} onSpeak={() => { if (snapshot.sessionId) void speakMessage(snapshot.sessionId, message.id) }} onStopSpeaking={stopSpeaking} canRetry={message.id === last?.id} retryDisabled={busy || pending || !available} onRetry={() => void retry()} onAnswerChoice={message.id === last?.id && message.role === 'assistant' ? async (answer) => {
         if (busy || pending || uploading || !available || voiceActive) return false
         follow.current = true
         return send(answer)
@@ -433,7 +489,7 @@ export function ChatView() {
       {snapshot.voiceSearchPreview && <div><p className="chat-message-note">Voice search result · temporary, not saved to this chat</p><ChatMessage message={snapshot.voiceSearchPreview} sessionId={snapshot.sessionId} canRetry={false} retryDisabled onRetry={() => {}} /></div>}
     </div>{showLatest && <button className="chat-jump" aria-label="Jump to latest message" title="Jump to latest message" onClick={scrollToLatest}><ArrowDown size={17} /></button>}</div>
     <div className="chat-composer-shell">
-      {snapshot.sessionId && <HeldPermissionPrompt messages={snapshot.messages} sessionId={snapshot.sessionId} decide={(approvalId, allow, remember) => command({ action: 'agent-approval', id: snapshot.sessionId!, approvalId, allow, remember })} />}
+      {snapshot.sessionId && <HeldPermissionPrompt messages={snapshot.messages} sessionId={snapshot.sessionId} phase={snapshot.phase} decide={(approvalId, allow, remember) => command({ action: 'agent-approval', id: snapshot.sessionId!, approvalId, allow, remember })} />}
       {slashOpen && !selectedSlash && <div className="chat-slash-menu" role="listbox" id="athena-slash-list" aria-label="Slash command suggestions">
         <div className="chat-slash-menu-heading"><span>Commands</span><button type="button" className="chat-action" aria-label="Refresh commands" onMouseDown={(event) => event.preventDefault()} onClick={() => void refreshSlash()}><RefreshCw size={13} /> Refresh</button></div>
         <div className="chat-slash-options">{suggestions.length ? suggestions.map((entry, index) => <div key={entry.id} id={`athena-slash-option-${index}`} role="option" aria-selected={index === slashIndex} className={`chat-slash-option ${index === slashIndex ? 'selected' : ''}`} onMouseEnter={() => setSlashIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSlash(entry)}><span><strong>{entry.name}</strong><small>{entry.source}{entry.provider ? ` · ${entry.provider === 'claude' ? 'Claude-native' : entry.provider === 'codex' ? 'Codex-native' : 'Athena-native'}` : ''}{entry.compatibility === 'native-only' ? ' · native provider required' : ''}</small></span><span className="chat-slash-description">{entry.description}{entry.argumentHint && <em> {entry.argumentHint}</em>}</span></div>) : <p className="chat-slash-empty">No matching commands in this project.</p>}</div>
@@ -442,6 +498,7 @@ export function ChatView() {
     <form className="ai-chat-composer" onSubmit={submit}>
       {!!snapshot.attachments?.length && snapshot.sessionId && <AttachmentCards sessionId={snapshot.sessionId} attachments={snapshot.attachments} restoreText={restoreTextAttachment} remove={(id) => void contextRequest({ action: 'remove', sessionId: snapshot.sessionId!, id })} />}
       {contextIssue && <div className="chat-context-notice" role="status">{contextIssue}<button className="chat-action" onClick={() => useAthena.getState().setPage('privacy')}>Privacy settings</button><button className="chat-action" aria-label="Dismiss file notice" onClick={() => setContextIssue('')}>×</button></div>}
+      {issue && <p className="chat-context-notice" role="status">{issue}</p>}
       {config.provider === 'Cursor Subscription' && snapshot.cursorModelNotice && <p className="chat-message-note" role="status">{snapshot.cursorModelNotice}</p>}
       {slashNotice && <p className="chat-message-note chat-slash-notice" role="status">{slashNotice}</p>}
       <div className="chat-command-input" role="combobox" aria-label="Slash command suggestions" aria-haspopup="listbox" aria-expanded={slashOpen && !selectedSlash} aria-controls={slashOpen && !selectedSlash ? 'athena-slash-list' : undefined} aria-activedescendant={slashOpen && !selectedSlash && suggestions.length ? `athena-slash-option-${Math.min(slashIndex, suggestions.length - 1)}` : undefined}>{selectedSlash && <span className="chat-command-chip" title={selectedSlash.source}>{selectedSlash.name}</span>}
@@ -507,8 +564,8 @@ export function ChatView() {
       }} /></div>
       <div className="chat-composer-toolbar"><div className="chat-composer-tools"><button type="button" className="chat-action" aria-label="Attach files or images" title="Attach files or images (20 MB each)" disabled={busy || voiceActive || uploading || !snapshot.sessionId} onClick={() => void contextRequest({ action: 'pick-files', sessionId: snapshot.sessionId! })}><Paperclip size={17} /></button><button type="button" className="chat-action" aria-label="Connect project folder" title="Authorize a local project; changes follow the selected permission mode" disabled={busy || voiceActive || uploading || !snapshot.sessionId} onClick={() => void contextRequest({ action: 'connect', sessionId: snapshot.sessionId! }).then((ok) => { if (ok) setProjectBrowser(true) })}><FolderOpen size={17} /></button><PushToTalk sessionId={snapshot.sessionId} toggle disabled={busy || pending || uploading || loading || !available || !isDesktop} onActive={setVoiceActive} onTranscript={(text, id) => {
         receiveTranscript(text, id)
-      }} /></div><ConversationControls config={config} />{speechStatus.phase !== 'idle' && <button type="button" className="chat-action" aria-label="Stop speaking" title="Stop speaking" onClick={stopSpeaking}><VolumeX size={14} /></button>}{busy ? <button type="button" className="chat-send" aria-label="Stop generation" title="Stop generation" disabled={pending} onClick={() => void stop()}><Square size={16} fill="currentColor" /></button> : <button className="chat-send" type="submit" aria-label="Send message" title="Send message" disabled={voiceActive || pending || uploading || loading || !available || !input.trim()}><ArrowUp size={19} /></button>}</div>
+      }} /></div><ConversationControls config={config} catalog={catalog} />{speechStatus.phase !== 'idle' && <button type="button" className="chat-action" aria-label="Stop speaking" title="Stop speaking" onClick={stopSpeaking}><VolumeX size={14} /></button>}{busy ? <button type="button" className="chat-send" aria-label="Stop generation" title="Stop generation" disabled={pending} onClick={() => void stop()}><Square size={16} fill="currentColor" /></button> : <button className="chat-send" type="submit" aria-label="Send message" title={hasAttachments && !input.trim() ? 'Send attached content' : 'Send message'} disabled={voiceActive || pending || uploading || loading || !available || (!input.trim() && !hasAttachments)}><ArrowUp size={19} /></button>}</div>
     </form></div>
-    <p className="chat-privacy-note">AI can make mistakes · History saved on this Mac · Requests use the provider chosen in Settings</p>
+    <p className="chat-privacy-note">AI can make mistakes · History saved on this Mac · Requests use the account selected with this conversation’s model</p>
   </section>{sidebar && <ConversationSidebar />}</div>
 }

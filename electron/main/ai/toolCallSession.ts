@@ -3,6 +3,8 @@ import type { ResponseFunctionToolCall } from 'openai/resources/responses/respon
 import { ChatError, type ProjectTools } from './AIProvider'
 import { limitToolOutput } from './toolOutput'
 import { log } from '../logger'
+import type { ContinuationController } from './continuationController'
+import { classifyOperation } from './operationRisk'
 
 const callEnvelope = z.object({
   call_id: z.string().min(1).max(256),
@@ -20,7 +22,7 @@ export class ToolCallSession {
   private attemptedOperations = new Set<string>()
   private recoveryGuard = false
   private count = 0
-  constructor(private tools: ProjectTools, private signal: AbortSignal, readonly limit: number) {}
+  constructor(private tools: ProjectTools, private signal: AbortSignal, readonly limit: number, private control?: ContinuationController) {}
   get exhausted(): boolean { return this.count >= this.limit }
   get used(): number { return this.count }
   get remaining(): number { return Math.max(0, this.limit - this.count) }
@@ -44,6 +46,24 @@ export class ToolCallSession {
       this.tools.executionBudget.batchLimited(calls.length, count)
     }
     for (const id of ids) this.seen.add(id)
+    this.control?.batch()
+  }
+
+  async executeBatch(calls: ResponseFunctionToolCall[], maxOutputChars: number): Promise<string[]> {
+    this.validateBatch(calls)
+    const execute = (call: ResponseFunctionToolCall) => this.execute(call, maxOutputChars)
+    if (calls.length < 2 || !calls.every((call) => this.tools.parallelSafe?.(call.name))) {
+      const results: string[] = []
+      for (const call of calls) results.push(await execute(call))
+      return results
+    }
+    const results: string[] = []
+    // Only the executor's explicit read-only allowlist can reach this path.
+    // Keep concurrency bounded and preserve provider order in the returned array.
+    for (let start = 0; start < calls.length; start += 4) {
+      results.push(...await Promise.all(calls.slice(start, start + 4).map(execute)))
+    }
+    return results
   }
 
   private checkAccess(): void {
@@ -81,11 +101,16 @@ export class ToolCallSession {
       return finish(failure('invalid_arguments', 'Arguments must be a complete JSON object within the tool size limit. No action was performed.'))
     }
     const operationKey = `${call.name}:${JSON.stringify(args)}`
-    if (this.recoveryGuard && !this.tools.parallelSafe?.(call.name) && this.attemptedOperations.has(operationKey)) {
+    const risk = classifyOperation(this.tools, call.name, args), readOnly = risk === 'read-only'
+    if (!this.tools.executionTrackedByHost && !readOnly && this.control?.isReplay(call.name, args)) {
+      return finish(failure('uncertain_replay', 'This mutation or command was already attempted in the saved task. It was NOT replayed. Inspect current files and results first. Request explicit approval for a repeat in a new user instruction if the same non-idempotent operation is necessary.'))
+    }
+    if (this.recoveryGuard && !readOnly && this.attemptedOperations.has(operationKey)) {
       return finish(failure('uncertain_replay', 'This exact command or mutation was attempted before recovery. It was NOT replayed. Inspect current file/Git state and use a new, evidence-based action only if still needed.'))
     }
-    if (!this.tools.parallelSafe?.(call.name)) this.attemptedOperations.add(operationKey)
+    if (!readOnly) this.attemptedOperations.add(operationKey)
     let result: string
+    const receipt = !this.tools.executionTrackedByHost ? this.control?.operationStarted(call.name, args, risk) : undefined
     try {
       // This guard is intentionally immediately before the executor, not just
       // before the API request: a user can revoke access during generation.
@@ -97,6 +122,7 @@ export class ToolCallSession {
       result = failure('execution_failed', 'The tool failed without a confirmed result. Do not claim success or blindly repeat an action that may have taken effect.')
     }
     this.checkAccess()
+    if (receipt) this.control?.operationFinished(receipt, result)
     return finish(result)
   }
 }

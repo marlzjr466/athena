@@ -15,6 +15,7 @@ export class VroidActionScheduler {
   private lastRandom?: VroidActionId
   private handledTask?: string
   private paused = false
+  private disposed = false
   private pendingVoiceExit?: VroidVoicePlayback
   private clips = new Map<VroidActionId, VroidClipReport>()
   session: VroidActionSession | null = null
@@ -29,12 +30,13 @@ export class VroidActionScheduler {
     }
     this.reconcile()
   }
-  reset(): void { this.dispose(); this.clips.clear(); this.handledTask = undefined; this.lastRandom = undefined; this.paused = false }
-  snapshot(): VroidActionSnapshot { const context = this.hooks.context(); return { session: this.session, voiceSession: this.voiceSession, clips: [...this.clips.values()], blocked: context.blocked || Boolean(context.task) || Boolean(this.voiceSession) } }
+  reset(): void { this.dispose(); this.disposed = false; this.clips.clear(); this.handledTask = undefined; this.lastRandom = undefined; this.paused = false }
+  snapshot(): VroidActionSnapshot { const context = this.readContext(); return { session: this.session, voiceSession: this.voiceSession, clips: [...this.clips.values()], blocked: !context || context.blocked || Boolean(context.task) || Boolean(this.voiceSession) } }
   get remainingMs(): number { return this.session && !this.session.loop ? Math.max(0, this.session.startedAt + this.session.duration * 1000 / this.session.speed - this.now()) : 0 }
 
   /** Floating voice owns a synchronized animation lane, independent of chat task sessions. */
   setVoicePhase(phase: VroidVoicePhase | null): void {
+    if (this.disposed) return
     if (this.voiceSession?.phase === phase || (!phase && !this.voiceSession)) return
     const priorVoice = this.voiceSession
     const previous = priorVoice ? { phase: priorVoice.phase, startedAt: priorVoice.startedAt } : undefined
@@ -44,11 +46,11 @@ export class VroidActionScheduler {
     } else {
       this.pendingVoiceExit = priorVoice ? { phase: priorVoice.phase, startedAt: priorVoice.startedAt } : undefined
       this.voiceSession = null
-      const context = this.hooks.context()
-      if (context.task && context.selected) {
+      const context = this.readContext()
+      if (context?.task && context.selected) {
         this.handledTask = context.task.key
         this.start(context.task.id, 'task', context.task.loop)
-      } else if (!context.task && !context.random && context.selected) { this.handledTask = undefined; this.start('idle', 'idle', true) }
+      } else if (context && !context.task && !context.random && context.selected) { this.handledTask = undefined; this.start('idle', 'idle', true) }
     }
     this.reconcile()
     this.hooks.changed()
@@ -65,11 +67,14 @@ export class VroidActionScheduler {
   }
   private idle(): void { if (this.session?.action !== 'idle') this.start('idle', 'idle', true) }
   private schedule(at: number): void {
-    this.timer = setTimeout(() => { this.timer = undefined; this.reconcile(); this.hooks.changed() }, Math.max(1, at - this.now()))
+    this.timer = setTimeout(() => { this.timer = undefined; if (this.disposed) return; this.reconcile(); if (!this.disposed) this.hooks.changed() }, Math.max(1, at - this.now()))
   }
+  private readContext(): Context | undefined { try { return this.hooks.context() } catch { return undefined } }
   reconcile(): void {
+    if (this.disposed) return
     clearTimeout(this.timer); this.timer = undefined
-    const context = this.hooks.context()
+    const context = this.readContext()
+    if (!context) return
     const paused = context.blocked || Boolean(context.task) || !context.random || Boolean(this.voiceSession)
     const resumed = this.paused && !paused
     this.paused = paused
@@ -105,7 +110,9 @@ export class VroidActionScheduler {
     this.schedule(this.now() + this.remainingMs)
   }
   trigger(id: VroidActionId): { ok: boolean; message?: string } {
-    const context = this.hooks.context()
+    if (this.disposed) return { ok: false, message: 'Athena is closing.' }
+    const context = this.readContext()
+    if (!context) return { ok: false, message: 'Athena is closing.' }
     if (!context.selected) return { ok: false, message: 'Select a ready VRM model first.' }
     if (context.blocked || context.task || this.voiceSession) return { ok: false, message: 'Wait until Athena finishes speaking, flying, or working.' }
     if (id !== 'idle' && !context.enabled.includes(id)) return { ok: false, message: 'Enable this VRoid action before playing it.' }
@@ -114,5 +121,5 @@ export class VroidActionScheduler {
     this.hooks.changed()
     return { ok: true }
   }
-  dispose(): void { clearTimeout(this.timer); this.timer = undefined; this.session = null; this.voiceSession = null; this.pendingVoiceExit = undefined }
+  dispose(): void { this.disposed = true; clearTimeout(this.timer); this.timer = undefined; this.session = null; this.voiceSession = null; this.pendingVoiceExit = undefined }
 }

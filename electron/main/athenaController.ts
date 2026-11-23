@@ -1,4 +1,4 @@
-import { app, globalShortcut, powerMonitor, systemPreferences } from 'electron'
+import { app, globalShortcut, powerMonitor, systemPreferences, type BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { AvatarModelRepository } from './avatarModelRepository'
 import { isVrmAvatar } from '../../shared/avatarModels'
@@ -21,6 +21,11 @@ import type { HandsFreeState } from '../../shared/handsFree'
 import type { ChatSnapshot } from '../../shared/chat'
 import { currentTaskActivity, taskVisualModeForActivity, taskVisualModeForStatus } from '../../shared/taskActivity'
 import { isLocalOwnership } from '../../shared/aiOwnership'
+
+function isWindowVisible(window: BrowserWindow | undefined): boolean {
+  try { return Boolean(window && !window.isDestroyed() && window.isVisible()) }
+  catch { return false }
+}
 
 export class AthenaController {
   settings: Settings
@@ -48,6 +53,7 @@ export class AthenaController {
   private taskCompletionTimer?: ReturnType<typeof setTimeout>
   private taskOutcomeStatus?: string
   private handsFreeState: HandsFreeState = { state: 'paused' }
+  private disposed = false
   onChange?: () => void
   onSettingsChange?: (previous: Settings, next: Settings) => void
 
@@ -85,7 +91,7 @@ export class AthenaController {
       let task: { id: VroidActionId; key: string; loop: boolean } | undefined
       const mode = this.taskMode
       if (mode === 'completed' || mode === 'failed') task = { id: mode === 'completed' ? 'clapping' : 'sad', key: `${mode}:${this.taskStartedAt}`, loop: false }
-      else if (!['idle', 'cancelled'].includes(mode) || (this.conversationState !== null && !this.activeFloatingVoicePhase()) || (!this.isFloatingVoiceActive() && (this.state === 'thinking' || this.state === 'working'))) task = { id: 'thinking', key: `work:${this.taskStartedAt ?? ''}`, loop: true }
+      else if (!this.isFloatingVoiceActive() && (!['idle', 'cancelled'].includes(mode) || this.conversationState !== null || this.state === 'thinking' || this.state === 'working')) task = { id: 'thinking', key: `work:${this.taskStartedAt ?? ''}`, loop: true }
       else if (this.state === 'happy') task = { id: 'greeting', key: 'greeting', loop: false }
       else if (this.state === 'sleeping') task = { id: 'sleepy', key: 'sleeping', loop: true }
       else if (this.state === 'error') task = { id: 'sad', key: 'error', loop: false }
@@ -93,7 +99,7 @@ export class AthenaController {
       return {
         selected: isVrmAvatar(this.settings.avatarVariant) && (!model || model.importStatus === 'ready'),
         blocked: Boolean(this.flight || this.motion?.isDragging || this.voiceState || this.speechState || ['moving', 'speaking', 'listening'].includes(this.state) || mode === 'cancelled' || this.settings.doNotDisturb || this.settings.reducedMotion || systemPreferences.getAnimationSettings().prefersReducedMotion),
-        random: (model?.animationSettings.random ?? this.settings.vroidRandomActions) && (this.windows.floating.isVisible() || this.windows.control.isVisible()),
+        random: (model?.animationSettings.random ?? this.settings.vroidRandomActions) && (isWindowVisible(this.windows.floating) || isWindowVisible(this.windows.control)),
         enabled: model?.enabledActions ?? this.settings.vroidEnabledActions, task,
       }
     }, changed: () => this.broadcast() })
@@ -114,8 +120,8 @@ export class AthenaController {
       taskVisual: this.taskVisualSnapshot(),
       vroidActions: this.vroidActions?.snapshot(),
       importedAvatars: this.avatarModels.list(),
-      visible: !this.windows.floating.isDestroyed() && this.windows.floating.isVisible(), panelMode: this.panelMode,
-      panelVisible: !this.windows.panel.isDestroyed() && this.windows.panel.isVisible(),
+      visible: isWindowVisible(this.windows.floating), panelMode: this.panelMode,
+      panelVisible: isWindowVisible(this.windows.panel),
       handsFreeState: this.handsFreeState,
       floatingVoiceActive: Boolean(this.activeFloatingVoicePhase()),
       onBattery: powerMonitor.isOnBatteryPower(), reducedMotion: systemPreferences.getAnimationSettings().prefersReducedMotion,
@@ -123,9 +129,14 @@ export class AthenaController {
     }
   }
   broadcast(): void {
+    if (this.disposed) return
     this.vroidActions?.reconcile()
     const snapshot = this.snapshot()
-    for (const window of this.windows.all()) window.webContents.send(IPC.changed, snapshot)
+    for (const window of this.windows.all()) {
+      try {
+        if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(IPC.changed, snapshot)
+      } catch { log('window.broadcast_skipped') }
+    }
     this.onChange?.()
   }
   behavior(event: BehaviorEvent): void {
@@ -287,18 +298,14 @@ export class AthenaController {
   }
   private activeFloatingVoicePhase(): VroidVoicePhase | null {
     if (!this.isFloatingVoiceActive()) return null
-    // A local-chat task owns the hologram and its existing animation lifecycle,
-    // even if the floating voice service happens to be active at the same time.
-    if (this.conversationState || (this.taskVisualSource === 'local-chat' && this.taskMode !== 'idle')) return null
+    // An active hands-free lease owns the presentation until voice mode ends.
+    // Text-chat tasks retain their state and resume their visuals afterward.
     if (this.handsFreeState.state === 'listening' || this.handsFreeState.state === 'follow-up') return 'listening'
     if (this.handsFreeState.state === 'processing') {
       if (this.speechState === 'speaking' || this.vroidActions?.voiceSession?.phase === 'talking') return 'talking'
       return 'thinking'
     }
-    if (this.handsFreeState.state === 'speaking') {
-      if (this.speechState === 'speaking') return 'talking'
-      return this.vroidActions?.voiceSession?.phase === 'thinking' ? 'thinking' : null
-    }
+    if (this.handsFreeState.state === 'speaking') return 'talking'
     return null
   }
   private refreshVoiceAnimation(): void { this.vroidActions?.setVoicePhase(this.activeFloatingVoicePhase()) }
@@ -426,6 +433,7 @@ export class AthenaController {
     catch { this.error = 'Settings could not be saved. Check available disk space and permissions.'; this.broadcast(); log('settings.save_failed') }
   }
   dispose(): void {
+    this.disposed = true
     this.windows.quitting = true
     this.actions.dispose()
     this.vroidActions.dispose()

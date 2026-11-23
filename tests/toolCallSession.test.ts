@@ -37,6 +37,25 @@ describe('request-scoped tool dispatch', () => {
     expect(f.tools.execute).not.toHaveBeenCalled(); expect(budget.toolAttempt).not.toHaveBeenCalled()
     expect(f.session.used).toBe(0)
   })
+  it('runs only explicitly safe reads concurrently and preserves provider result order',async()=>{
+    const f=setup(4);f.tools.parallelSafe=()=>true
+    let active=0,maxActive=0
+    vi.mocked(f.tools.execute).mockImplementation(async(_name,input)=>{
+      active++;maxActive=Math.max(maxActive,active)
+      await new Promise(resolve=>setTimeout(resolve,(input as {position:number}).position===1?8:1))
+      active--;return JSON.stringify({position:(input as {position:number}).position})
+    })
+    const results=await f.session.executeBatch([call('first','open_application','{"position":1}'),call('second','open_application','{"position":2}')],4000)
+    expect(maxActive).toBe(2)
+    expect(results.map(result=>JSON.parse(result).position)).toEqual([1,2])
+  })
+  it('keeps non-read-only batches sequential',async()=>{
+    const f=setup(4);f.tools.parallelSafe=()=>false
+    let active=0,maxActive=0
+    vi.mocked(f.tools.execute).mockImplementation(async()=>{active++;maxActive=Math.max(maxActive,active);await Promise.resolve();active--;return '{"ok":true}'})
+    await f.session.executeBatch([call('first'),call('second')],4000)
+    expect(maxActive).toBe(1)
+  })
   it('counts malformed, unknown and failed dispatched attempts once, never a rejected batch', async () => {
     const f = setup(3), budget = hooks(); f.tools.executionBudget = budget
     await f.session.execute(call('bad', 'open_application', '{'), 4000)

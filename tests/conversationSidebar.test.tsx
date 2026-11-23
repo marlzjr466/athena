@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationSidebar } from '../src/features/chat/ConversationSidebar'
+import { AthenaChatSidebar } from '../src/features/athena-ai/AthenaChatSidebar'
 import { useChat } from '../src/store/chatStore'
+import { useAthenaChat } from '../src/store/athenaChatStore'
 import { emptyChatSnapshot } from '../shared/chat'
 
 vi.mock('../src/services/desktop', () => ({ desktop: { searchChats: vi.fn(async () => []) } }))
@@ -79,4 +81,36 @@ it('collapses project sessions independently while preserving project actions an
   fireEvent.click(screen.getByRole('button', { name: 'New chat in Example project' }))
   expect(command).toHaveBeenCalledWith({ action: 'create', workspaceId: project.id })
   expect(group).toHaveAttribute('aria-expanded', 'false')
+})
+
+it('portals project session menus outside the scroll list and preserves the selected session action target', async () => {
+  window.localStorage.removeItem('athena.conversation-projects.online.v1')
+  const initial = useChat.getState().snapshot
+  useChat.setState({ snapshot: { ...initial, sessionId: 'one', sessions: [
+    { id: 'one', title: 'First conversation', createdAt: 1, updatedAt: 1, config: { provider: 'OpenAI', model: null, effort: 'auto' }, project },
+    { id: 'two', title: 'Second conversation', createdAt: 2, updatedAt: 2, config: { provider: 'OpenAI', model: null, effort: 'auto' }, project },
+  ] } })
+  render(<ConversationSidebar />)
+  fireEvent.click(screen.getByRole('button', { name: 'Options for Second conversation' }))
+  const menu = screen.getByRole('dialog', { name: 'Conversation options' })
+  expect(menu.parentElement).toBe(document.body)
+  expect(command).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Conversation title' }), { target: { value: 'Second renamed' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(command).toHaveBeenCalledWith({ action: 'rename', id: 'two', title: 'Second renamed' }))
+})
+
+it('uses the same portal positioning for Athena local project sessions', async () => {
+  window.localStorage.removeItem('athena.conversation-projects.local.v1')
+  useAthenaChat.setState({ pending: false, snapshot: { ...emptyChatSnapshot(), sessionId: 'local-one', sessions: [
+    { id: 'local-one', title: 'Local conversation', createdAt: 1, updatedAt: 1, config: { provider: 'OpenAI', model: null, effort: 'auto' }, project },
+  ] } })
+  render(<AthenaChatSidebar linked={false} onLink={() => undefined} onManageModels={() => undefined} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Options for Local conversation' }))
+  const menu = screen.getByRole('dialog', { name: 'Conversation options' })
+  expect(menu.parentElement).toBe(document.body)
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  expect(screen.getByRole('dialog', { name: 'Delete' })).toBeInTheDocument()
+  expect(command).not.toHaveBeenCalled()
 })

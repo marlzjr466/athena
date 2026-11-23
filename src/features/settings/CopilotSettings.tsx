@@ -1,32 +1,46 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Section, SettingRow } from '../../components/ui/Controls'
 import { desktop } from '../../services/desktop'
 import type { CopilotCommand, CopilotStatus } from '../../../shared/copilot'
+import { UsageDashboard } from './UsageDashboard'
+import type { UsageDashboardData } from '../../../shared/usage'
+import { useChat } from '../../store/chatStore'
+import { observedConversationUsage } from './observedUsage'
+
+let cachedCopilotStatus: CopilotStatus | null = null
+const emptyStatus: CopilotStatus = { accounts: [], activeId: null, message: '' }
 
 export function CopilotSettings() {
-  const [status, setStatus] = useState<CopilotStatus>({accounts:[],activeId:null,message:''})
+  const chat = useChat()
+  const [status, setStatus] = useState<CopilotStatus>(() => cachedCopilotStatus ?? emptyStatus)
   const [clientId, setClientId] = useState('')
   const [busy, setBusy] = useState(false)
-  const [loaded, setLoaded] = useState(false)
+  const [usageBusy, setUsageBusy] = useState(false)
+  const [loaded, setLoaded] = useState(() => cachedCopilotStatus !== null)
   const [notice, setNotice] = useState('')
+  const mounted = useRef(true)
+  const inFlight = useRef(false)
+  const updateStatus = (next: CopilotStatus) => { cachedCopilotStatus = next; if (mounted.current) setStatus(next) }
   const run = async (command: CopilotCommand) => {
-    setBusy(true)
+    if (inFlight.current) return
+    inFlight.current = true
+    if (command.action !== 'status') setBusy(true)
     try {
       const next = await desktop.copilot(command)
-      setStatus(next)
+      updateStatus(next)
       const signedIn = next.accounts.some(account => account.id === next.activeId && account.enabled)
       setNotice(command.action === 'status' && signedIn ? '' : next.message)
     }
     catch { setNotice('Copilot operation failed. Verify your connection, OAuth registration, or CLI login and retry.') }
-    finally { setBusy(false); setLoaded(true) }
+    finally { inFlight.current = false; if (mounted.current) { if (command.action !== 'status') setBusy(false); setLoaded(true) } }
   }
-  useEffect(()=>{ void run({action:'status'}) },[])
+  useEffect(()=>{ mounted.current = true; void run({action:'status'}); return () => { mounted.current = false } },[])
   const authenticating = ['starting','waiting','verifying'].includes(status.cli?.phase ?? '')
   useEffect(()=>{
     if (!authenticating) return
     let live = true, timer: ReturnType<typeof setTimeout>
     const refresh = async () => {
-      try { const next = await desktop.copilot({action:'status'}); if(live) setStatus(next) } catch { /* Keep the cancel action available. */ }
+      try { const next = await desktop.copilot({action:'status'}); if(live) { cachedCopilotStatus = next; setStatus(next) } } catch { /* Keep the cancel action available. */ }
       if(live) timer = setTimeout(refresh, 1000)
     }
     timer = setTimeout(refresh,1000)
@@ -35,16 +49,25 @@ export function CopilotSettings() {
   const disabled = busy || authenticating || status.requestsActive
   const active = status.accounts.find(account => account.id === status.activeId && account.enabled)
   const connected = Boolean(active) && !authenticating
+  const observed = observedConversationUsage(chat.snapshot.messages, ['github-copilot-subscription'], active ? `copilot:${active.id}` : null)
   const refreshModels = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
     setBusy(true)
     setNotice('Checking Copilot status and models…')
     try {
-      const next = await desktop.copilot({action:'status'})
-      setStatus(next)
-      const result = await desktop.getAIStatus()
-      setNotice(result.ok ? `${result.message} ${result.status.models.length} models available; select in Conversation.` : result.message)
+      const next = await desktop.copilot({action:'verify'})
+      updateStatus(next)
+      setNotice(next.message)
     } catch { setNotice('Could not refresh Copilot models.') }
-    finally { setBusy(false) }
+    finally { inFlight.current = false; if (mounted.current) setBusy(false) }
+  }
+  const refreshUsage = async () => {
+    if (usageBusy) return
+    setUsageBusy(true)
+    try { const next = await desktop.copilot({ action: 'usage' }); updateStatus(next); setNotice(next.usageError ?? next.message) }
+    catch { setNotice('Copilot usage could not be refreshed. The previous snapshot is still shown.') }
+    finally { if (mounted.current) setUsageBusy(false) }
   }
   const signOut = async () => {
     if (!active) return
@@ -52,19 +75,35 @@ export function CopilotSettings() {
     setNotice('Signing out of Copilot…')
     try {
       const next = await desktop.copilot({action:'remove', id: active.id})
-      setStatus(next)
+      updateStatus(next)
       setNotice('Copilot account disconnected. GitHub authorization for other CLI applications was not revoked.')
     } catch { setNotice('Copilot operation failed. Verify your connection, OAuth registration, or CLI login and retry.') }
     finally { setBusy(false) }
   }
 
+  const usageData: UsageDashboardData = {
+    provider: 'GitHub Copilot Subscription', account: active?.login ?? 'No selected Copilot account', usageType: 'Subscription quota',
+    availability: !connected ? 'authentication-required' : status.usage ? status.usageError ? 'partial' : 'available' : observed.metrics.length ? 'partial' : 'unavailable',
+    source: 'GitHub Copilot SDK account quota interface and local response receipts', refreshedAt: status.usage?.fetchedAt ?? observed.updatedAt, error: status.usageError,
+    metrics: observed.metrics,
+    explanation: 'The Copilot SDK marks account quota retrieval experimental. Only values returned for the selected account are shown; organization and enterprise billing metrics are not inferred.',
+    officialUrl: 'https://github.com/settings/copilot', officialLabel: 'Open GitHub Copilot settings',
+    quotaGroups: status.usage ? [{ id: 'copilot-quotas', label: 'Account quotas', quotas: status.usage.quotas.map(quota => ({
+      id: quota.id, label: quota.name,
+      remainingPercentage: quota.isUnlimitedEntitlement ? null : quota.remainingPercentage,
+      usedLabel: quota.isUnlimitedEntitlement ? 'Unlimited entitlement' : quota.entitlementRequests === null ? 'Entitlement not reported' : `${quota.usedRequests ?? '—'} / ${quota.entitlementRequests} requests used`,
+      resetAt: quota.resetDate,
+      detail: [quota.overage !== null && quota.overage > 0 ? `${quota.overage} overage requests` : '', quota.usageAllowedWithExhaustedQuota === false ? 'Requests stop when this quota is exhausted.' : ''].filter(Boolean).join(' · ') || undefined,
+    })) }] : [],
+  }
+
   return <Section title="GitHub Copilot Subscription" description="Use your eligible GitHub Copilot plan. Premium usage and model eligibility apply. No model-provider API key is required.">
     {!loaded ? <SettingRow title="Copilot CLI status" description="Checking the saved Copilot account."><span className="ai-status">○ Connecting…</span></SettingRow> : connected && active ? <>
-      <SettingRow title="Copilot CLI status" description={`${status.cli?.message || 'Copilot CLI is signed in.'}${status.cli?.version ? ` · ${status.cli.version}` : ''}`}><span className="ai-status ai-active">{busy ? '○ Connecting…' : '● Connected'}</span></SettingRow>
+      <SettingRow title="Copilot CLI status" description={`${status.cli?.message || 'Copilot account is saved.'}${status.cli?.version ? ` · ${status.cli.version}` : ''}`}><span className="ai-status ai-active">{busy ? '○ Checking…' : '● Connected'}</span></SettingRow>
       <SettingRow title="Signed-in identity" description={active.kind === 'oauth' ? 'Independent OAuth account saved in operating-system credential storage.' : 'Identity verified through the official Copilot CLI. Athena does not read CLI credential files.'}><span>{active.login}</span></SettingRow>
       <SettingRow title="Capabilities" description="Streams Copilot subscription responses and approved project tools. Copilot controls plan eligibility, model access, and usage multipliers."><span>Subscription models · streaming · cancellable</span></SettingRow>
       <SettingRow title="Workspace and safety" description="Copilot uses this conversation’s authorized project context. Athena rechecks the signed-in identity before every request. Copilot host tools, skills, and MCP servers stay disabled."><span>Authorized project workspace</span></SettingRow>
-      <p className="card-description">Choose an available Copilot model in Chat Conversation. Refresh status here if the chat model list is out of date.</p>
+      <p className="card-description">Choose an available Copilot model in Chat Conversation. {status.lastVerifiedAt ? `Last verified ${new Date(status.lastVerifiedAt).toLocaleString()}.` : 'The saved account is revalidated before requests.'}</p>
       <div className="ai-actions">
         <button className="button secondary" disabled={disabled} onClick={() => void signOut()}>Sign out</button>
         <button className="button secondary" disabled={busy} onClick={() => void refreshModels()}>Refresh status & models</button>
@@ -97,6 +136,7 @@ export function CopilotSettings() {
       {status.accounts.map(account=><div className="setting-row" key={account.id}><div><strong>{account.login}</strong><p>{account.kind === 'oauth' ? 'Independent OAuth account' : 'CLI account binding'} · {account.enabled ? 'Enabled' : 'Disabled'}{status.activeId === account.id ? ' · Selected' : ''}</p></div><div className="ai-actions"><button disabled={disabled || !account.enabled || account.id===status.activeId} onClick={()=>void run({action:'select',id:account.id})}>Select</button><button disabled={disabled} onClick={()=>void run({action:'enable',id:account.id,enabled:!account.enabled})}>{account.enabled?'Disable':'Enable'}</button><button disabled={disabled} onClick={()=>void run({action:'remove',id:account.id})}>Disconnect account</button></div></div>)}
       <p className="card-description">Disconnect removes Athena’s saved authorization. It does not revoke GitHub authorization or sign out other CLI applications. Revoke access in GitHub Settings when needed. Expired or revoked tokens require sign-in again.</p>
     </>}
-    <p className="ai-feedback" role="status">{busy ? 'Connecting…' : notice}</p>
+    <UsageDashboard data={usageData} refreshing={usageBusy} onRefresh={connected ? refreshUsage : undefined} />
+    <p className="ai-feedback" role="status">{busy ? 'Connecting…' : usageBusy ? 'Refreshing usage…' : notice}</p>
   </Section>
 }

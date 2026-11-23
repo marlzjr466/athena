@@ -7,11 +7,14 @@ import { modelLimits, tokenCost } from '../electron/main/ai/modelLimits'
 import { limitToolOutput, summarizeLog } from '../electron/main/ai/toolOutput'
 import type { StreamOptions } from '../electron/main/ai/AIProvider'
 import type { ChatMessage } from '../shared/chat'
+import { ContextManager } from '../electron/main/ai/contextManager'
+import { ContinuationController } from '../electron/main/ai/continuationController'
 
 const usage = (input = 100, output = 20) => ({ input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } })
 const sse = (...events: unknown[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } })
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const done = (output: unknown[] = []) => ({ type: 'response.completed', response: { output, usage: usage() } })
+const summaryStream = (response: { status: string; [key: string]: unknown }) => sse({ type: `response.${response.status}`, response })
 const answer = () => sse({ type: 'response.output_text.delta', delta: 'Finished' }, done())
 const input: ChatMessage[] = [{ id: 'user', role: 'user', content: 'Keep existing style. Fix the project and verify it.', status: 'complete', createdAt: 1 }]
 const compacted = [{ role: 'user', content: input[0].content }, { type: 'compaction', id: 'cmp_1', encrypted_content: 'opaque-checkpoint' }]
@@ -23,12 +26,41 @@ async function collect(request: typeof fetch, options: StreamOptions = {}, messa
   return chunks
 }
 describe('model-aware bounded context management', () => {
+  it('does not persist private context when task checkpoints are disabled', () => {
+    const onCheckpoint = vi.fn()
+    const manager = new ContextManager(new OpenAI({ apiKey: 'sk-fixture' }), 'gpt-5.6-sol', '', [], { contextSettings: { ...contextDefaults(), taskCheckpoints: false }, onCheckpoint }, new AbortController().signal)
+    manager.checkpoint([{ role: 'user', content: 'Keep this conversation in ordinary history only.' }], true)
+    expect(onCheckpoint).not.toHaveBeenCalled()
+  })
+  it('does not spend the continuation allowance on six productive context compactions', async () => {
+    const request = vi.fn<typeof fetch>(async () => compaction())
+    const client = new OpenAI({ apiKey: 'sk-fixture', fetch: request })
+    const continuation = new ContinuationController({ maxContinuations: 1 })
+    const manager = new ContextManager(client, 'gpt-5.6-sol', 'Keep project boundaries.', [], { continuation }, new AbortController().signal)
+    for (let step = 0; step < 6; step++) await manager.fit([{ role: 'user', content: `MBM-11825: verified step ${step}, proceed to the next pending check.` }], true)
+    expect(continuation.state).toMatchObject({ compactions: 6, continuations: 0 })
+    expect(request).toHaveBeenCalledTimes(6)
+  })
+  it('fits the reported platform-dev input without sending three futile summaries', async () => {
+    const request = vi.fn<typeof fetch>(async () => answer())
+    const onUsage = vi.fn()
+    await collect(request, { context: { attachments: [], sources: [], repositoryText: 'Fixture project instructions. '.repeat(2600) }, onUsage }, [{ ...input[0], content: '/platform-dev MBM-11825' }], 'gpt-5.6-terra')
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(onUsage.mock.calls.at(-1)?.[0]).toMatchObject({ contextWindow: 1050000, compactions: 0, modelLimitsVerified: true })
+  })
+  it('stops before paid summarization when fixed tools cannot fit an unknown model', async () => {
+    const request = vi.fn<typeof fetch>(async () => answer())
+    const client = new OpenAI({ apiKey: 'sk-fixture', fetch: request })
+    const manager = new ContextManager(client, 'unknown-provider-model', 'Pinned instructions. '.repeat(7000), [], {}, new AbortController().signal)
+    await expect(manager.fit([{ role: 'user', content: 'Do the task.' }])).rejects.toThrow('Summarizing conversation history cannot fix this')
+    expect(request).not.toHaveBeenCalled()
+  })
   it('emits one settled response event without charging cumulative context notifications again', async () => {
     const onUsage = vi.fn(), onModelResponse = vi.fn(), beforeModelRequest = vi.fn()
     const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.output_text.delta', delta: 'Verified' }, { type: 'response.completed', response: { output: [], usage: { ...usage(1000, 600), output_tokens_details: { reasoning_tokens: 500 } } } }))
     await collect(request, { onUsage, onModelResponse, beforeModelRequest })
     expect(onUsage.mock.calls.length).toBeGreaterThan(1)
-    expect(onModelResponse).toHaveBeenCalledExactlyOnceWith({ inputTokens: 1000, outputTokens: 600, reasoningTokens: 500, estimated: false })
+    expect(onModelResponse).toHaveBeenCalledExactlyOnceWith({ inputTokens: 1000, cachedInputTokens: 0, outputTokens: 600, reasoningTokens: 500, estimated: false })
     expect(beforeModelRequest.mock.calls[0][2]).toMatchObject({ contextWindow: 1050000, maxOutputTokens: 128000, limitsVerified: true, outputLimitEnforced: true })
   })
 
@@ -83,9 +115,9 @@ describe('model-aware bounded context management', () => {
     let round = 0
     const request = vi.fn<typeof fetch>(async (_url, init) => {
       const body = JSON.parse(init!.body as string)
-      if (!body.stream) {
+      if (body.instructions.includes('continuation checkpoint')) {
         expect(body.tools).toBeUndefined(); expect(body.instructions).toContain('pending work')
-        return json({ status: 'completed', output: [{ type: 'message', id: 'summary', role: 'assistant', content: [{ type: 'output_text', text: 'Objective: fix project. Preserve conventions. Pending: verify changes.', annotations: [] }], status: 'completed' }], usage: usage() })
+        return summaryStream({ status: 'completed', output: [{ type: 'message', id: 'summary', role: 'assistant', content: [{ type: 'output_text', text: 'Objective: fix project. Preserve conventions. Pending: verify changes.', annotations: [] }], status: 'completed' }], usage: usage() })
       }
       if (++round === 1) return contextError()
       expect(body.input[0].content).toContain('Pending: verify changes')
@@ -103,7 +135,7 @@ describe('model-aware bounded context management', () => {
       const body = JSON.parse(init!.body as string)
       if (body.instructions.includes('continuation checkpoint')) {
         summaryCalls++
-        if (summaryCalls === 1) return sse({ type: 'response.failed', response: { error: null, output: [] } })
+        if (summaryCalls === 1) return sse({ type: 'response.failed', response: { error: { code: 'server_is_overloaded' }, output: [] } })
         return sse({ type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', id: 'summary', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Objective: finish verification. Existing edits are preserved.', annotations: [] }] }], usage: usage() } })
       }
       if (++mainCalls === 1) return contextError()
@@ -117,18 +149,18 @@ describe('model-aware bounded context management', () => {
     })) chunks.push(chunk)
     expect(chunks.at(-1)).toEqual({ type: 'done' })
     expect(summaryCalls).toBe(2)
-    expect(diagnostics.find(item => item.stage === 'context_compaction')).toMatchObject({ kind: 'provider_failed', willRetry: true })
+    expect(diagnostics.find(item => item.stage === 'context_compaction')).toMatchObject({ kind: 'provider_unavailable', willRetry: true })
   })
   it('retries an output-limited checkpoint at low effort without losing the original request', async () => {
     let streams = 0, summaries = 0
     const request = vi.fn<typeof fetch>(async (_url, init) => {
       const body = JSON.parse(init!.body as string)
-      if (!body.stream) {
+      if (body.instructions.includes('continuation checkpoint')) {
         summaries++
         expect(body.reasoning.effort).toBe('low')
         expect(body.instructions).toContain('under 700 words')
-        if (summaries === 1) return json({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [{ type: 'reasoning', id: 'reason-1', summary: [] }], usage: usage(100, 4000) })
-        return json({ status: 'completed', output: [{ type: 'message', id: 'summary-2', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Objective: preserve project changes. Pending: verify.', annotations: [] }] }], usage: usage() })
+        if (summaries === 1) return summaryStream({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [{ type: 'reasoning', id: 'reason-1', summary: [] }], usage: usage(100, 4000) })
+        return summaryStream({ status: 'completed', output: [{ type: 'message', id: 'summary-2', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Objective: preserve project changes. Pending: verify.', annotations: [] }] }], usage: usage() })
       }
       if (++streams === 1) return contextError()
       expect(body.input[0].content).toContain('Pending: verify')
@@ -139,12 +171,12 @@ describe('model-aware bounded context management', () => {
     expect(summaries).toBe(2)
     expect(request).toHaveBeenCalledTimes(4)
   })
-  it('never silently drops history when compaction is disabled or continuation attempts are exhausted', async () => {
+  it('never silently drops history when compaction is disabled or repeatedly makes no progress', async () => {
     const request = vi.fn<typeof fetch>(async (url) => String(url).endsWith('/compact') ? compaction() : contextError())
     await expect(collect(request, { contextSettings: { ...contextDefaults(), automaticCompaction: false } })).rejects.toThrow('compaction disabled')
     expect(request).toHaveBeenCalledTimes(1); request.mockClear()
-    await expect(collect(request, { contextSettings: { ...contextDefaults(), maxContinuations: 1 } })).rejects.toThrow('continuation limit')
-    expect(request).toHaveBeenCalledTimes(3)
+    await expect(collect(request, { contextSettings: { ...contextDefaults(), maxContinuations: 1 } })).rejects.toThrow('compaction repeated without reducing')
+    expect(request.mock.calls.length).toBeLessThanOrEqual(6)
   })
   it('cancels compaction without publishing a late checkpoint or continuing the model/tool loop', async () => {
     const abort = new AbortController(), checkpoint = vi.fn()

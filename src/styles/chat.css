@@ -12,6 +12,7 @@
 .chat-privacy-note, .chat-message-note { color: var(--muted); font-size: 10px; line-height: 1.6; margin: 0; }
 .chat-privacy-note { text-align: center; }
 .chat-setup, .chat-clear-confirm { padding: 14px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--raised); line-height: 1.7; font-size: 12px; }
+.chat-gateway-notice { margin: 8px 14px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); background: var(--raised); font-size: 12px; }
 .chat-transcript-wrap { flex: 1; min-height: 100px; position: relative; }
 .chat-transcript { height: 100%; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 12px 14px 12px 2px; }
 .chat-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100%; padding: 28px 8px; color: var(--muted); text-align: center; }
@@ -38,6 +39,7 @@
 .agent-inline-activity-group.running > summary { color: var(--text); }
 .agent-inline-activity-summary { font-weight: 560; color: inherit; }
 .agent-inline-operation-count, .agent-inline-change-count { color: var(--muted); font-size: 10px; }
+.agent-inline-permission-count { color: var(--muted); font-size: 10px; }
 .agent-inline-activity-group > summary > .agent-timeline-chevron { margin-left: 1px; transition: transform .15s; }
 .agent-inline-activity-group[open] > summary > .agent-timeline-chevron { transform: rotate(90deg); }
 .agent-inline-activity-operations { display: flex; flex-direction: column; gap: 2px; max-height: min(65vh, 720px); overflow: auto; margin: 2px 0 7px 9px; padding: 3px 8px 4px 12px; list-style: none; border-left: 1px solid color-mix(in srgb, var(--border) 80%, transparent); scrollbar-width: thin; }
@@ -87,6 +89,7 @@
 .agent-timeline-change-summary > div { padding: 0 12px 9px; }
 .agent-timeline-change-row { padding: 6px 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 .agent-timeline-change-row > span { display: block; margin-bottom: 4px; }
+.agent-change-diff { max-height: min(58vh, 560px); min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #345466 transparent; }
 @media (max-width: 620px) { .agent-inline-operation-count { display: none; } .agent-inline-activity-operations { padding-left: 8px; } }
 @keyframes agent-state-spin { to { transform: rotate(360deg); } }
 .agent-auth-recovery { margin: 9px 0; padding: 12px; border: 1px solid var(--chat-error); border-radius: 10px; color: var(--text); font-size: 11px; }

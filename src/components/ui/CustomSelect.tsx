@@ -5,6 +5,7 @@ export interface CustomSelectOption {
   value: string
   label: string
   disabled?: boolean
+  description?: string
 }
 
 export function CustomSelect({ ariaLabel, value, options, onChange, disabled = false, className = '', menuPlacement = 'down' }: {
@@ -61,11 +62,11 @@ export function CustomSelect({ ariaLabel, value, options, onChange, disabled = f
     }
   }
   return <div ref={root} className={`custom-select ${menuPlacement === 'up' || (menuPlacement==='auto'&&autoPlacement.up) ? 'opens-up' : ''} ${open ? 'is-open' : ''} ${className}`} onMouseEnter={show} onMouseLeave={closeAfterHover} onFocus={show} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false) }}>
-    <button type="button" role="combobox" className="custom-select-trigger" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} value={value} disabled={disabled} onClick={() => open ? setOpen(false) : show()} onChange={(event) => { const next = event.currentTarget.value; if (next && options.some((option) => option.value === next)) choose(next) }} onKeyDown={keyDown}>
+    <button type="button" role="combobox" className="custom-select-trigger" aria-label={ariaLabel} title={selected?.description} aria-haspopup="listbox" aria-expanded={open} value={value} disabled={disabled} onClick={() => open ? setOpen(false) : show()} onChange={(event) => { const next = event.currentTarget.value; if (next && options.some((option) => option.value === next)) choose(next) }} onKeyDown={keyDown}>
       <span>{selected?.label ?? 'Select'}</span><ChevronDown size={15} aria-hidden="true" />
     </button>
     {open && <div className="custom-select-menu" role="listbox" aria-label={`${ariaLabel} options`} style={menuPlacement==='auto'?{maxHeight:autoPlacement.height}:undefined}>
-      {options.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={option.value === value ? 'selected' : ''} key={option.value} disabled={option.disabled} onMouseEnter={() => { const next = enabled.findIndex((item) => item.value === option.value); if (next >= 0) setActive(next) }} onClick={() => choose(option.value)}>
+      {options.map((option) => <button type="button" role="option" aria-selected={option.value === value} title={option.description} className={option.value === value ? 'selected' : ''} key={option.value} disabled={option.disabled} onMouseEnter={() => { const next = enabled.findIndex((item) => item.value === option.value); if (next >= 0) setActive(next) }} onClick={() => choose(option.value)}>
         <span>{option.label}</span>{option.value === value && <Check size={14} aria-hidden="true" />}
       </button>)}
     </div>}

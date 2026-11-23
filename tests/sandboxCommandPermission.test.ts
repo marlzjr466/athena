@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { sandboxCommandScope } from '../electron/main/permissions/sandboxCommandPermission'
+import { commandNeedsProjectWrites, sandboxCommandScope } from '../electron/main/permissions/sandboxCommandPermission'
 import { RememberedPermissions } from '../electron/main/permissions/rememberedPermissions'
 import { PermissionRepository } from '../electron/main/permissions/permissionRepository'
 import type { CommandRequest } from '../electron/main/ai/agentCommands'
@@ -26,8 +26,18 @@ describe('remembered offline check commands', () => {
     expect(f.permissions.allows({ ...f.scope, command: { ...f.scope.command, tool: 'execute_command' } })).toBe(false)
     f.permissions.command({ action: 'revoke-all' }); expect(f.permissions.allows(f.scope)).toBe(false)
   })
-  it.each([{ network: true }, { loopback: true }, { install: true }, { gitWrite: true }, { localServer: true }, { filesystemMode: 'full-read-write' as const }, { approvedReadPaths: ['/tmp/credentials.json'] }])('does not remember expanded privileges: %j', extra => {
+  it.each([{ network: true }, { loopback: true }, { install: true }, { gitWrite: true }, { localServer: true }, { filesystemMode: 'full-read-write' as const }, { approvedReadPaths: ['/tmp/credentials.json'] }, { projectWrite: true }, { approvedWritePaths: ['src'] }])('does not remember expanded privileges: %j', extra => {
     const f = fixture(); expect(sandboxCommandScope(f.root, { ...f.request, ...extra }, f.executable, 'cursor-terminal')).toBeUndefined()
+  })
+  it('keeps validation read-only and recognizes development writes across package managers', () => {
+    for (const manager of ['npm', 'pnpm', 'yarn']) {
+      for (const script of ['generate:api', 'codegen', 'build', 'format', 'lint:fix']) expect(commandNeedsProjectWrites(manager, ['run', script])).toBe(true)
+      expect(commandNeedsProjectWrites(manager, ['run', 'typecheck'])).toBe(false)
+      expect(commandNeedsProjectWrites(manager, ['run', 'typecheck'], true)).toBe(true)
+      expect(commandNeedsProjectWrites(manager, ['run', 'generate:api'], false)).toBe(false)
+    }
+    expect(commandNeedsProjectWrites('npx', ['graphql-codegen'])).toBe(true)
+    expect(commandNeedsProjectWrites('npm', ['run', 'lint', '--', '--fix'])).toBe(true)
   })
   it.each([['install'], ['run', 'deploy'], ['exec', 'node'], ['test', '--prefix=/elsewhere'], ['test', '--', '../outside.ts'], ['test', '--', '--updateSnapshot'], ['test', '--', '--fix'], ['test', '--', '--config=other.js']])('rejects unsafe or unrecognized command %j', (...args) => {
     const f = fixture(); expect(sandboxCommandScope(f.root, { ...f.request, args }, f.executable, 'cursor-terminal')).toBeUndefined()

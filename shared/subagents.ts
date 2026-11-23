@@ -1,13 +1,16 @@
 import { z } from 'zod'
 import { streamDiagnosticSchema, streamPhaseSchema } from './streamDiagnostics'
+import { accountRouteSchema, modelSelectionSchema } from './unifiedAccounts'
 
-const effort = z.enum(['inherit', 'auto', 'low', 'medium', 'high', 'xhigh'])
+const effort = z.enum(['inherit', 'auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 export const subagentSettingsSchema = z.object({
   enabled: z.boolean().default(true), maxConcurrent: z.number().int().min(1).max(4).default(2),
   defaultModel: z.string().max(200).nullable().default(null), defaultEffort: effort.default('inherit'),
   coldReadModel: z.string().max(200).nullable().default(null), coldReadEffort: effort.default('inherit'),
+  defaultSelection: modelSelectionSchema.nullable().optional(), coldReadSelection: modelSelectionSchema.nullable().optional(),
+  contextSafetyMargin: z.number().min(0.05).max(0.5).optional(),
   maxIterations: z.number().int().min(2).max(48).default(24), maxToolCalls: z.number().int().min(2).max(100).default(40),
-  timeoutMinutes: z.number().min(1).max(20).default(10), contextTokens: z.number().int().min(2000).max(64000).default(24000),
+  timeoutMinutes: z.number().min(1).max(20).default(10), contextTokens: z.number().int().min(2000).max(Number.MAX_SAFE_INTEGER).default(24000),
   tokenBudget: z.number().int().min(8000).max(1000000).default(250000),
   parallelReadOnly: z.boolean().default(true), requireWriteApproval: z.boolean().default(true),
 }).strict()
@@ -22,7 +25,7 @@ export const subagentRequestSchema = z.object({
   model: z.string().min(1).max(200).optional(), effort: effort.optional(),
   maxIterations: z.number().int().min(1).max(48).optional().describe('Optional LOWER lifetime model-request cap, including retries and the final assessment. OMIT to inherit current Settings. Do not invent a smaller allocation.'),
   maxToolCalls: z.number().int().min(1).max(100).optional().describe('Optional LOWER lifetime tool-attempt cap. OMIT to inherit current Settings. Each call in a batch counts separately; this is not a batch or iteration limit. Do not invent a smaller allocation.'),
-  timeoutMinutes: z.number().min(0.01).max(20).optional(), contextTokens: z.number().int().min(1000).max(64000).optional().describe('Optional LOWER per-request context cap, including output. Omit to inherit Settings. This is not the total task budget.'),
+  timeoutMinutes: z.number().min(0.01).max(20).optional(), contextTokens: z.number().int().min(1000).max(Number.MAX_SAFE_INTEGER).optional().describe('Optional LOWER per-request context cap, including output. Omit to inherit Settings. This is not the total task budget.'),
   tokenBudget: z.number().int().min(1000).max(1000000).optional().describe('Optional LOWER TOTAL input + output token cap across ALL requests and retries. Omit to inherit Settings. Do not invent a small allocation or confuse this with max output tokens; repeated context and tool results consume input on each request.'), spendLimitUsd: z.number().positive().max(100).optional(),
   contextSummary: z.string().max(8000).optional(), messageIds: z.array(z.string().uuid()).max(4).optional(),
   required: z.boolean().default(false), gateId: z.string().max(100).optional(), parallelGroup: z.string().max(100).optional(),
@@ -56,6 +59,7 @@ export const subagentBudgetSchema = z.object({
   version: z.literal(2), configuredTokens: z.number(), requestedTokens: z.number().nullable(), effectiveTokens: z.number(),
   configuredContext: z.number(), requestedContext: z.number().nullable(), effectiveContext: z.number(),
   modelContext: z.number().nullable(), modelMaxOutput: z.number().nullable(), modelLimitsVerified: z.boolean(), outputLimitEnforced: z.boolean(),
+  contextSafetyMargin: z.number().optional(), contextLimitReason: z.string().max(1000).optional(),
   measuredInput: z.number(), measuredOutput: z.number(), estimatedInput: z.number(), estimatedOutput: z.number(),
   reasoningTokens: z.number(), legacyEstimate: z.boolean(),
   reservedInput: z.number(), reservedOutput: z.number(), consumedTokens: z.number(), remainingTokens: z.number(), availableTokens: z.number(),
@@ -76,7 +80,8 @@ export type SubagentExecutionBudget = z.infer<typeof subagentExecutionBudgetSche
 export const subagentRunSchema = z.object({
   id: z.string().uuid(), parentExecutionId: z.string().uuid(), conversationId: z.string().uuid(), projectId: z.string(), taskId: z.string().uuid(),
   request: subagentRequestSchema, status: z.enum(['queued', 'running', 'completed', 'blocked', 'failed', 'cancelled', 'interrupted']),
-  model: z.string().nullable(), effort: z.enum(['auto', 'low', 'medium', 'high', 'xhigh']), accountId: z.string().nullable(),
+  model: z.string().nullable(), effort: z.enum(['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']), accountId: z.string().nullable(),
+  accountRoute: accountRouteSchema.optional(), settingsSnapshot: subagentSettingsSchema.optional(),
   startedAt: z.number(), finishedAt: z.number().optional(), attempts: z.number().int(),
   elapsedMs: z.number().nonnegative().default(0),
   iterations: z.number().int(), toolCalls: z.number().int(), inputTokens: z.number(), outputTokens: z.number(), estimatedCostUsd: z.number().nullable(),

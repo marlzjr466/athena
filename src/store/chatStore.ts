@@ -7,6 +7,7 @@ interface ChatStore {
   snapshot: ChatSnapshot
   issue: string | null
   pending: boolean
+  refresh(): Promise<boolean>
   send(text: string, commandId?: string): Promise<boolean>
   retry(): Promise<boolean>
   stop(): Promise<boolean>
@@ -35,6 +36,10 @@ async function approvalRequest(operation: () => Promise<ChatResult>): Promise<bo
 }
 export const useChat = create<ChatStore>((_set, get) => ({
   snapshot: emptyChatSnapshot(), issue: null, pending: false,
+  refresh: async () => {
+    try { accept(await desktop.getChat()); return true }
+    catch { useChat.setState({ issue: 'Could not refresh the saved conversation usage. Try again.' }); return false }
+  },
   send: (text, commandId) => request(() => desktop.sendChat({ text, sessionId: get().snapshot.sessionId, requestId: crypto.randomUUID(), ...(commandId ? { commandId } : {}) })),
   command: (input) => input.action === 'agent-approval' ? approvalRequest(() => desktop.chatSession(input)) : request(() => desktop.chatSession(input)),
   retry: () => request(() => desktop.retryChat()),

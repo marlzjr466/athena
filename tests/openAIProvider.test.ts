@@ -2,7 +2,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import OpenAI from 'openai'
 import { OpenAIProvider, providerError } from '../electron/main/ai/OpenAIProvider'
-import type { PreparedContext } from '../electron/main/ai/AIProvider'
+import { ChatError, type PreparedContext } from '../electron/main/ai/AIProvider'
+import type { ResponseInput } from 'openai/resources/responses/responses'
 import type { AIChunk, ChatMessage } from '../shared/chat'
 import { contextDefaults } from '../shared/context'
 import type { StreamDiagnostic } from '../shared/streamDiagnostics'
@@ -11,6 +12,51 @@ const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`
 const sse = (...values: unknown[]) => new Response(values.map(event).join(''), { headers: { 'content-type': 'text/event-stream' } })
 async function collect(provider: OpenAIProvider, signal?: AbortSignal, context?: PreparedContext) { const chunks: AIChunk[] = []; for await (const chunk of provider.streamMessage(input, { signal, context })) chunks.push(chunk); return chunks }
 describe('OpenAI Responses streaming provider', () => {
+  it.each([false, true])('checkpoints confirmed results when a tool batch stops (parallel reads: %s)', async parallel => {
+    const calls = [1, 2, ...(!parallel ? [3] : [])].map(index => ({ type: 'function_call', id: `item-${index}`, call_id: `call-${index}`, name: 'read_file', arguments: JSON.stringify({ index }), status: 'completed' }))
+    const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.completed', response: { output: calls } }))
+    const execute = vi.fn(async (_name: string, args: unknown) => {
+      if ((args as { index: number }).index === 2) throw new ChatError('Project permission was revoked.')
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return '{"ok":true,"verified":"first"}'
+    })
+    const checkpoints: ResponseInput[] = []
+    const provider = new OpenAIProvider('oauth-test', 'gpt-6-sol', request, undefined, true)
+    await expect(async () => {
+      for await (const _ of provider.streamMessage(input, { onCheckpoint: value => checkpoints.push(value), context: { attachments: [], sources: [], repositoryText: '', projectTools: {
+        definitions: [{ name: 'read_file', description: 'Read', parameters: { type: 'object' } }], assertAccess: () => {}, parallelSafe: () => parallel, execute,
+      } } })) { /* consume */ }
+    }).rejects.toThrow('permission was revoked')
+    expect(request).toHaveBeenCalledOnce()
+    expect(execute).toHaveBeenCalledTimes(2)
+    const saved = checkpoints.at(-1)!.filter(item => item.type === 'function_call_output')
+    expect(saved[0]).toMatchObject({ call_id: 'call-1', output: '{"ok":true,"verified":"first"}' })
+    expect(JSON.parse(saved[1].output as string).error.code).toBe('operation_unconfirmed')
+    if (!parallel) expect(JSON.parse(saved[2].output as string).error.code).toBe('not_executed')
+  })
+  it('classifies unsupported continuation items before executing their tool batch', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.completed', response: { output: [
+      { type: 'unknown_future_item', id: 'future' }, { type: 'function_call', id: 'tool', call_id: 'call', name: 'read_file', arguments: '{}', status: 'completed' },
+    ] } }))
+    const execute = vi.fn(async () => '{}')
+    await expect(collect(new OpenAIProvider('oauth-test', 'gpt-6-sol', request, undefined, true), undefined, { attachments: [], sources: [], repositoryText: '', projectTools: {
+      definitions: [{ name: 'read_file', description: 'Read', parameters: { type: 'object' } }], assertAccess: () => {}, execute,
+    } })).rejects.toThrow('could not serialize for continuation')
+    expect(execute).not.toHaveBeenCalled()
+    expect(request).toHaveBeenCalledOnce()
+  })
+  it('preserves a confirmed tool result when protocol formatting fails', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.completed', response: { output: [{ type: 'function_call', id: 'tool', call_id: 'call', name: 'edit_file', arguments: '{}', status: 'completed' }] } }))
+    const execute = vi.fn(async () => '{"ok":true,"version":"verified"}'), checkpoints: ResponseInput[] = []
+    const provider = new OpenAIProvider('oauth-test', 'gpt-6-sol', request, undefined, true)
+    await expect(async () => {
+      for await (const _ of provider.streamMessage(input, { onCheckpoint: value => checkpoints.push(value), context: { attachments: [], sources: [], repositoryText: '', projectTools: {
+        definitions: [{ name: 'edit_file', description: 'Edit', parameters: { type: 'object' } }], assertAccess: () => {}, execute, formatOutput: () => { throw new Error('private contents') },
+      } } })) { /* consume */ }
+    }).rejects.toThrow('result could not be formatted')
+    expect(execute).toHaveBeenCalledOnce()
+    expect(checkpoints.at(-1)).toContainEqual({ type: 'function_call_output', call_id: 'call', output: '{"ok":true,"version":"verified"}' })
+  })
   it.each(['response.failed', 'sdk-error'] as const)('retains account and HTTP evidence for %s usage limits without retrying', async (format) => {
     const failure = { code: 'subscription_sharing_usage_limit_exceeded', param: 'model', message: 'secret-user@example.com Bearer private-token' }
     const metadata = { id: 'resp_usage', model: 'gpt-5.6-luna', status: 'failed', metadata: { private: 'never-export-me' } }
@@ -29,7 +75,7 @@ describe('OpenAI Responses streaming provider', () => {
     expect(request).toHaveBeenCalledTimes(1)
     expect(execute).not.toHaveBeenCalled()
     expect(diagnostics).toMatchObject([{ httpStatus: 200, requestId: 'req_usage', responseId: 'resp_usage', providerParam: 'model',
-      responseModel: 'gpt-5.6-luna', providerCode: failure.code, kind: 'rate_limited', willRetry: false, recoveryAttempt: 0, quota: 'unknown',
+      responseModel: 'gpt-5.6-luna', providerCode: failure.code, kind: 'quota_exhausted', willRetry: false, recoveryAttempt: 0, quota: 'unknown',
       accountId: '11111111-1111-4111-8111-111111111111', registrationRef: 'abc123abc123', modelSource: 'conversation',
       failureEventType: format === 'response.failed' ? 'response.failed' : 'sdk_stream_error' }])
     expect(diagnostics[0].lastEventType).toBe(format === 'response.failed' ? 'response.failed' : 'response.metadata')
@@ -73,7 +119,7 @@ describe('OpenAI Responses streaming provider', () => {
   })
   it('sends effort, image content and bounded untrusted project data without executable tools', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.output_text.delta', delta: 'Result' }, { type: 'response.completed', response: {} }))
-    const provider = new OpenAIProvider('sk-test-not-real', 'gpt-5.2', request)
+    const provider = new OpenAIProvider('sk-test-not-real', 'gpt-5.6-sol', request)
     const attachment = { id: 'image', name: 'photo.png', mime: 'image/png', size: 20, kind: 'image' as const, characters: 0 }
     for await (const _chunk of provider.streamMessage([{ ...input[0], attachments: [attachment] }], { effort: 'high', context: { attachments: [{ id: 'image', name: 'photo.png', kind: 'image', data: 'data:image/png;base64,AA==' }], repositoryText: 'SOURCE src/auth.ts\n1: export function login() {}', sources: [] } })) { /* consume */ }
     const body = JSON.parse(request.mock.calls[0][1]!.body as string)
@@ -102,6 +148,32 @@ describe('OpenAI Responses streaming provider', () => {
     const request = vi.fn<typeof fetch>(), provider = new OpenAIProvider('sk-test-not-real', 'gpt-4.1', request)
     await expect(async () => { for await (const _chunk of provider.streamMessage(input, { effort: 'xhigh' })) { /* consume */ } }).rejects.toThrow('Select Auto')
     expect(request).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['gpt-5.6-sol', 'none'],
+    ['gpt-6.1-terra', 'max'],
+    ['gpt-6.2-astra', 'xhigh'],
+  ] as const)('sends %s effort %s through Responses without changing tools or streaming', async (model, effort) => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.output_text.delta', delta: 'Ready' }, { type: 'response.completed', response: { output: [] } }))
+    const provider = new OpenAIProvider('sk-test-not-real', model, request)
+    const chunks: AIChunk[] = []
+    for await (const chunk of provider.streamMessage(input, { effort, context: { attachments: [], repositoryText: '', sources: [], projectTools: { definitions: [{ name: 'read_file', description: 'Read a file.', parameters: { type: 'object', properties: {}, required: [], additionalProperties: false } }], assertAccess: () => {}, execute: async () => '{}' } } })) chunks.push(chunk)
+    const body = JSON.parse(request.mock.calls[0][1]!.body as string)
+    expect(body.reasoning).toEqual({ effort })
+    expect(body.tools).toMatchObject([{ type: 'function', name: 'read_file' }])
+    expect(body.stream).toBe(true)
+    expect(chunks.at(-1)).toEqual({ type: 'done' })
+  })
+  it('rejects an effort unsupported by its model without sending the request', async () => {
+    const request = vi.fn<typeof fetch>()
+    await expect(async () => { for await (const _ of new OpenAIProvider('sk-test-not-real', 'gpt-6.2-astra', request).streamMessage(input, { effort: 'none' })) { /* consume */ } }).rejects.toThrow('Select Auto')
+    expect(request).not.toHaveBeenCalled()
+  })
+  it('leaves Auto to the OpenAI API instead of silently sending a different effort', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.output_text.delta', delta: 'Ready' }, { type: 'response.completed', response: { output: [] } }))
+    expect((await collect(new OpenAIProvider('sk-test-not-real', 'gpt-6.2-astra', request))).at(-1)).toEqual({ type: 'done' })
+    const body = JSON.parse(request.mock.calls[0][1]!.body as string)
+    expect(body.reasoning).toBeUndefined()
   })
   it('distinguishes timeout and malformed stream errors without exposing their contents', () => {
     expect(providerError(new OpenAI.APIConnectionTimeoutError()).message).toContain('too long')
@@ -154,9 +226,9 @@ describe('OpenAI Responses streaming provider', () => {
     ['unknown', 'streaming API error'],
   ])('classifies named SSE error %s without an HTTP status', async (code, message) => {
     const body = `event: error\ndata: ${JSON.stringify({ type: 'error', code, message: 'private-key' })}\n\n`
-    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { headers: { 'content-type': 'text/event-stream' } }))
+    const request = vi.fn<typeof fetch>().mockImplementation(async () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }))
     await expect(collect(new OpenAIProvider('sk-test-not-real', 'test', request))).rejects.toThrow(message)
-    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledTimes(code === 'server_is_overloaded' ? 3 : 1)
   })
   it('never exposes raw server text or credential-shaped diagnostic identifiers', () => {
     const error = new OpenAI.APIError(undefined, { code: 'sk-private-secret', param: 'private-path', message: 'private-key' }, undefined, new Headers())
@@ -172,10 +244,10 @@ describe('OpenAI Responses streaming provider', () => {
     await expect(collect(new OpenAIProvider('oauth-token', 'gpt-6.1-sol', request, undefined, true))).rejects.toThrow('parameter: temperature')
     await expect(collect(new OpenAIProvider('oauth-token', 'gpt-6.1-sol', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'rate_limit_exceeded' } }), { status: 429 })), undefined, true))).rejects.toThrow('temporarily rate-limited')
   })
-  it('retries one code-less subscription stream failure after a tool result without repeating the tool', async () => {
+  it('retries one explicitly transient subscription stream failure after a tool result without repeating the tool', async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(sse({ type: 'response.completed', response: { output: [{ id: 'item-1', type: 'function_call', namespace: 'athena', name: 'list_directory', call_id: 'call-1', arguments: '{}', status: 'completed' }] } }))
-      .mockResolvedValueOnce(sse({ type: 'response.failed', response: { error: null, output: [] } }))
+      .mockResolvedValueOnce(sse({ type: 'response.failed', response: { error: { code: 'server_is_overloaded' }, output: [] } }))
       .mockResolvedValueOnce(sse({ type: 'response.output_text.delta', delta: 'Recovered.' }, { type: 'response.completed', response: { output: [] } }))
     const execute = vi.fn(async () => '{"files":["src/main.ts"]}')
     const provider = new OpenAIProvider('oauth-token', 'gpt-6.1-sol', request, undefined, true)
@@ -190,7 +262,7 @@ describe('OpenAI Responses streaming provider', () => {
   it('recovers an interrupted response after a completed edit and records sanitized late-task diagnostics', async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(sse({ type: 'response.completed', response: { output: [{ id: 'edit-1', type: 'function_call', namespace: 'athena', name: 'edit_file', call_id: 'edit-call', arguments: '{"path":"src/a.ts"}', status: 'completed' }] } }))
-      .mockResolvedValueOnce(sse({ type: 'response.failed', response: { error: null, output: [] } }))
+      .mockResolvedValueOnce(sse({ type: 'response.failed', response: { error: { code: 'server_is_overloaded' }, output: [] } }))
       .mockResolvedValueOnce(sse({ type: 'response.output_text.delta', delta: 'Verified remaining work.' }, { type: 'response.completed', response: { output: [] } }))
     const execute = vi.fn(async () => '{"ok":true,"changed":"src/a.ts"}')
     const diagnostics: StreamDiagnostic[] = []
@@ -203,10 +275,26 @@ describe('OpenAI Responses streaming provider', () => {
     })) chunks.push(chunk)
     expect(chunks.at(-1)).toEqual({ type: 'done' })
     expect(execute).toHaveBeenCalledOnce()
-    expect(diagnostics).toMatchObject([{ kind: 'provider_failed', stage: 'response_stream', completedTools: 105, fileChanges: 20, willRetry: true, executionId: 'execution-1' }])
+    expect(diagnostics).toMatchObject([{ kind: 'provider_unavailable', stage: 'response_stream', completedTools: 105, fileChanges: 20, willRetry: true, executionId: 'execution-1' }])
     expect(phases).toContain('recovering')
     const retry = JSON.parse(request.mock.calls[2][1]!.body as string)
     expect(retry.input).toContainEqual({ type: 'function_call_output', call_id: 'edit-call', output: '{"ok":true,"changed":"src/a.ts"}' })
+  })
+  it('recovers raw response-body socket errors without replaying a completed tool', async () => {
+    const fault = new TypeError('terminated private-response', { cause: Object.assign(new Error('private-host'), { code: 'UND_ERR_SOCKET' }) })
+    const broken = new Response(new ReadableStream({ start(controller) { controller.error(fault) } }), { headers: { 'content-type': 'text/event-stream' } })
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(sse({ type: 'response.completed', response: { output: [{ id: 'item-1', type: 'function_call', namespace: 'athena', name: 'read_file', call_id: 'call-1', arguments: '{}', status: 'completed' }] } }))
+      .mockResolvedValueOnce(broken)
+      .mockResolvedValueOnce(sse({ type: 'response.output_text.delta', delta: 'Recovered' }, { type: 'response.completed', response: { output: [] } }))
+    const execute = vi.fn(async () => '{"ok":true}'), diagnostics: StreamDiagnostic[] = []
+    const provider = new OpenAIProvider('oauth-test', 'gpt-6-sol', request, undefined, true)
+    for await (const _ of provider.streamMessage(input, { onStreamDiagnostic: value => diagnostics.push(value), context: { attachments: [], sources: [], repositoryText: '', projectTools: { definitions: [{ name: 'read_file', description: 'Read fixture', parameters: { type: 'object' } }], assertAccess: () => {}, execute } } })) { /* consume */ }
+    expect(execute).toHaveBeenCalledOnce()
+    expect(request).toHaveBeenCalledTimes(3)
+    expect(diagnostics[0]).toMatchObject({ kind: 'connection_reset', exceptionName: 'TypeError', causeCode: 'UND_ERR_SOCKET', willRetry: true })
+    expect(JSON.stringify(diagnostics)).not.toMatch(/private-response|private-host|oauth-test/)
+    expect(JSON.parse(request.mock.calls[2][1]!.body as string).input).toContainEqual({ type: 'function_call_output', call_id: 'call-1', output: '{"ok":true}' })
   })
   it('does not apply a provider-wide timer to a healthy multi-round task', async () => {
     const request = vi.fn<typeof fetch>()
@@ -263,7 +351,7 @@ describe('OpenAI Responses streaming provider', () => {
   it('continues after visible partial text but never retries a named usage error', async () => {
     const partial = vi.fn<typeof fetch>().mockResolvedValueOnce(sse(
       { type: 'response.output_text.delta', delta: 'Partial' },
-      { type: 'response.failed', response: { error: null, output: [] } },
+      { type: 'response.failed', response: { error: { code: 'server_is_overloaded' }, output: [] } },
     )).mockResolvedValueOnce(sse({ type: 'response.output_text.delta', delta: 'Completed.' }, { type: 'response.completed', response: { output: [] } }))
     const chunks = await collect(new OpenAIProvider('oauth-token', 'gpt-6.1-sol', partial, undefined, true))
     expect(chunks.at(-1)).toEqual({ type: 'done' })
@@ -278,10 +366,10 @@ describe('OpenAI Responses streaming provider', () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(sse({ type: 'response.output_text.delta', delta: 'partial' }))
     await expect(collect(new OpenAIProvider('sk-test-not-real', 'test', request))).rejects.toThrow('before a completion event')
   })
-  it.each([400, 401, 402, 403, 404, 422, 429, 500])('sanitizes HTTP %s and does not retry automatically', async (status) => {
+  it.each([400, 401, 402, 403, 404, 422, 429, 500])('sanitizes HTTP %s and retries only temporary server errors', async (status) => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'private-key', type: 'test', code: 'test' } }), { status }))
     await expect(collect(new OpenAIProvider('sk-test-not-real', 'test', request))).rejects.not.toThrow('private-key')
-    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledTimes(status === 500 ? 3 : 1)
   })
   it('aborts cleanly without yielding stale text', async () => {
     const abort = new AbortController()

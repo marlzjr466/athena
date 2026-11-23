@@ -1,3 +1,4 @@
+import { subagentContextAllocation, type ModelContextLimits } from '../../../shared/subagentContext'
 import type { SubagentRun, SubagentSettings, SubagentBudget } from '../../../shared/subagents'
 import { ChatError, type ModelRequestBudget, type ModelResponseUsage } from './AIProvider'
 
@@ -7,11 +8,12 @@ export class SubagentBudgetLedger {
   constructor(private run: SubagentRun, settings: SubagentSettings) {
     const previous = run.budget
     this.state = run.budget = {
-      version: 2, configuredTokens: settings.tokenBudget, requestedTokens: run.request.tokenBudget ?? null,
+      version: 2, configuredTokens: previous?.configuredTokens ?? settings.tokenBudget, requestedTokens: run.request.tokenBudget ?? null,
       effectiveTokens: Math.min(settings.tokenBudget, run.request.tokenBudget ?? settings.tokenBudget, previous?.effectiveTokens ?? Infinity),
-      configuredContext: settings.contextTokens, requestedContext: run.request.contextTokens ?? null,
-      effectiveContext: Math.min(settings.contextTokens, run.request.contextTokens ?? settings.contextTokens),
-      modelContext: null, modelMaxOutput: null, modelLimitsVerified: false, outputLimitEnforced: false,
+      configuredContext: previous?.configuredContext ?? settings.contextTokens, requestedContext: run.request.contextTokens ?? null,
+      effectiveContext: Math.min(settings.contextTokens, run.request.contextTokens ?? settings.contextTokens, previous?.effectiveContext ?? Infinity),
+      modelContext: previous?.modelContext ?? null, modelMaxOutput: previous?.modelMaxOutput ?? null, modelLimitsVerified: previous?.modelLimitsVerified ?? false, outputLimitEnforced: previous?.outputLimitEnforced ?? false,
+      contextSafetyMargin: previous?.contextSafetyMargin, contextLimitReason: previous?.contextLimitReason,
       measuredInput: previous?.measuredInput ?? 0, measuredOutput: previous?.measuredOutput ?? 0,
       estimatedInput: previous?.estimatedInput ?? run.inputTokens, estimatedOutput: previous?.estimatedOutput ?? run.outputTokens,
       reasoningTokens: previous?.reasoningTokens ?? 0, legacyEstimate: previous?.legacyEstimate ?? (run.inputTokens + run.outputTokens > 0),
@@ -22,6 +24,13 @@ export class SubagentBudgetLedger {
     // A crash may have left a request in flight. Its usage is unknown, not free.
     this.interrupted()
     this.sync()
+  }
+  configureContext(limits: ModelContextLimits | undefined, margin: number): void {
+    const b = this.state
+    const allocation = subagentContextAllocation(b.configuredContext, limits, b.contextSafetyMargin ?? margin, b.requestedContext ?? undefined, b.effectiveContext)
+    b.effectiveContext = allocation.effective; b.contextSafetyMargin ??= margin
+    b.modelContext = allocation.modelContext; b.modelMaxOutput = limits?.maxOutputTokens ?? null
+    b.modelLimitsVerified = allocation.verified; b.contextLimitReason = allocation.reason
   }
   private sync(): void {
     const b = this.state
@@ -41,9 +50,10 @@ export class SubagentBudgetLedger {
     const inputTokens = metadata?.inputTokens ?? Math.ceil(contextBytes / 3)
     if (![inputTokens, outputTokens].every(value => Number.isFinite(value) && value >= 0)) throw new ChatError('Provider returned invalid token-budget metadata. No request was started.')
     if (metadata) {
-      b.modelContext = metadata.contextWindow; b.modelMaxOutput = metadata.maxOutputTokens
-      b.modelLimitsVerified = metadata.limitsVerified; b.outputLimitEnforced = metadata.outputLimitEnforced
-      b.effectiveContext = Math.min(b.configuredContext, b.requestedContext ?? b.configuredContext, metadata.contextWindow)
+      if (b.modelContext === null || metadata.contextWindow < b.modelContext) { b.modelContext = metadata.contextWindow; b.modelLimitsVerified = metadata.limitsVerified }
+      if (!b.contextLimitReason) b.modelLimitsVerified = metadata.limitsVerified
+      b.modelMaxOutput = metadata.maxOutputTokens; b.outputLimitEnforced = metadata.outputLimitEnforced
+      b.effectiveContext = Math.min(b.effectiveContext, Math.floor(metadata.contextWindow * (1 - (b.contextSafetyMargin ?? 0))))
     }
     b.lastRequest = { inputTokens, outputTokens, requiredTokens: inputTokens + outputTokens, remainingBefore: b.remainingTokens, inputEstimated: metadata?.inputEstimated ?? true }
     if (inputTokens + outputTokens > b.effectiveContext) this.stop('context', `Sub-agent context limit reached: next request needs ${inputTokens} input + ${outputTokens} output reserve, exceeding the ${b.effectiveContext} per-request limit. Total task budget is separate (${b.effectiveTokens}). Saved observations remain available.`)

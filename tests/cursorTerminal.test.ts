@@ -11,6 +11,7 @@ import { AgentCommands } from '../electron/main/ai/agentCommands'
 import { CursorTerminalBridge } from '../electron/main/ai/cursorTerminal'
 import { CursorACPProvider, CursorACPService } from '../electron/main/ai/cursorACP'
 import { projectCommandLease } from '../electron/main/ai/projectCommandLease'
+import type { OperationRisk } from '../shared/generation'
 
 const disposable: string[] = []
 afterEach(async () => { for (const path of disposable.splice(0)) await rm(path, { recursive: true, force: true }) })
@@ -155,7 +156,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     const commands = new AgentCommands()
     expect(await commands.supported()).toBe(true)
     const approvals: string[] = []
-    const bridge = new CursorTerminalBridge(root, new AbortController().signal, async (title) => { approvals.push(title); return true }, async () => {}, commands)
+    const risks: (OperationRisk | undefined)[] = []
+    const bridge = new CursorTerminalBridge(root, new AbortController().signal, async (title, _description, _signal, _changes, _scope, _eligible, operation) => { approvals.push(title); risks.push(operation?.risk); return true }, async () => {}, commands)
     const execute = async (command: string, args: string[]) => {
       const { terminalId } = await bridge.create({ sessionId: 'session-1', cwd: root, command, args }, 'session-1')
       const status = await bridge.waitForExit({ sessionId: 'session-1', terminalId }, 'session-1')
@@ -174,6 +176,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     expect(execFileSync('git', ['show', '--format=', '--name-only', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()).toBe('slice.txt')
     expect(execFileSync('git', ['status', '--short'], { cwd: root, encoding: 'utf8' })).toContain('?? unrelated.txt')
     expect(approvals).toContain('Create reviewed Git commit')
+    expect(risks).toEqual(['read-only', 'read-only', 'read-only', 'unknown', 'unknown', 'read-only'])
     bridge.dispose()
   }, 45_000)
 

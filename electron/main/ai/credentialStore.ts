@@ -1,3 +1,4 @@
+import { credentialEntry } from './secureCredentialEntry'
 import { createHash } from 'node:crypto'
 import { app } from 'electron'
 import { z } from 'zod'
@@ -22,8 +23,7 @@ export function credentialServiceName(): string {
 export class KeychainCredentialStore implements CredentialStore {
   private async entry() {
     if (process.platform !== 'darwin') throw new Error('Credential storage is currently supported on macOS only.')
-    const { AsyncEntry } = await import('@napi-rs/keyring')
-    return new AsyncEntry(credentialServiceName(), 'openai-configuration')
+    return credentialEntry(credentialServiceName(), 'openai-configuration')
   }
   async read(): Promise<AICredential | null> {
     const raw = await (await this.entry()).getPassword()

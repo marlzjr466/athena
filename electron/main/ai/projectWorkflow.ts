@@ -36,6 +36,7 @@ export function projectWorkflowTools(session: Conversation, base: ProjectTools, 
     { name: 'inspect_project_workflow', description: 'Read a saved plan and actual step results from this conversation/project/model. Pending or failed steps are not successful executions.', schema: inspect },
   ]
   return { definitions: specs.map(({ name, description, schema }) => { const { $schema: _, ...parameters } = z.toJSONSchema(schema); return { name, description, parameters } }), assertAccess: base.assertAccess,
+    operationRisk: (name, input) => !specs.find(tool => tool.name === name)?.schema.safeParse(input).success ? 'unknown' : name === 'inspect_project_workflow' ? 'read-only' : 'non-idempotent',
     execute: async (name, input, signal) => {
       base.assertAccess(); signal.throwIfAborted()
       if (name === 'plan_project_workflow') {

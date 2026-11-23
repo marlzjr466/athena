@@ -12,7 +12,7 @@ function fixture() {
     write: vi.fn(async (value) => { saved = structuredClone(value) }),
     remove: vi.fn(async () => { saved = null }),
   }
-  const tester: ConnectionTester = { test: vi.fn<ConnectionTester['test']>(async () => ({ ok: true, models: ['model-a', 'model-b'] })) }
+  const tester: ConnectionTester = { test: vi.fn<ConnectionTester['test']>(async () => ({ ok: true, models: ['gpt-5.6-luna', 'gpt-6-sol'] })) }
   const service = new AIConfiguration(vault, tester)
   return { service, vault, tester, saved: () => saved }
 }
@@ -38,17 +38,39 @@ describe('Phase 1 AI activation', () => {
     const f = fixture()
     const result = await f.service.activate({ apiKey: key })
     expect(result.status.model).toBeNull()
-    expect(await f.service.getActiveConfiguration('model-b')).toEqual({ apiKey: key, model: 'model-b' })
+    expect(await f.service.getActiveConfiguration('gpt-6-sol')).toEqual({ apiKey: key, model: 'gpt-6-sol' })
     expect((await f.service.getStatus()).status.model).toBeNull()
   })
   it('persists the key and selected model across service restarts', async () => {
     const f = fixture()
     await f.service.activate({ apiKey: key })
-    await f.service.selectModel({ model: 'model-b' })
+    await f.service.selectModel({ model: 'gpt-6-sol' })
     const restarted = new AIConfiguration(f.vault, f.tester)
-    expect((await restarted.getStatus()).status).toMatchObject({ active: true, hasKey: true, model: 'model-b' })
+    expect((await restarted.getStatus()).status).toMatchObject({ active: true, hasKey: true, model: 'gpt-6-sol' })
+    expect((await restarted.getStatus()).status.modelEfforts?.['gpt-6-sol']).toEqual(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max'])
     await restarted.test()
     expect(f.tester.test).toHaveBeenLastCalledWith(key)
+  })
+  it('retains reasoning metadata through a filtered catalog refresh without inventing levels for unknown variants', async () => {
+    const f = fixture()
+    await f.service.activate({ apiKey: key })
+    vi.mocked(f.tester.test).mockResolvedValueOnce({ ok: true, models: ['gpt-4.1', 'gpt-6.2-astra', 'gpt-6.2-custom', 'gpt-5.6-sol'] })
+    const status = (await f.service.test()).status
+    expect(status.models).toEqual(['gpt-6.2-astra', 'gpt-6.2-custom', 'gpt-5.6-sol'])
+    expect(status.modelEfforts?.['gpt-6.2-astra']).toEqual(['auto', 'low', 'medium', 'high', 'xhigh', 'max'])
+    expect(status.modelEfforts?.['gpt-5.6-sol']).toContain('none')
+    expect(status.modelEfforts?.['gpt-6.2-custom']).toBeUndefined()
+  })
+  it('preserves a previously saved legacy model while requiring an explicit GPT-5.6+ selection', async () => {
+    const f = fixture()
+    await f.service.activate({ apiKey: key })
+    const old = f.saved()!
+    await f.vault.write({ ...old, model: 'gpt-4.1', models: ['gpt-4.1', 'gpt-6.1-pro'] })
+    const restarted = new AIConfiguration(f.vault, f.tester)
+    expect((await restarted.getStatus()).status).toMatchObject({ model: 'gpt-4.1', models: ['gpt-6.1-pro'] })
+    await expect(restarted.getActiveConfiguration('gpt-4.1')).rejects.toThrow('no longer selectable')
+    expect((await restarted.selectModel({ model: 'gpt-4.1' })).ok).toBe(false)
+    expect((await restarted.selectModel({ model: 'gpt-6.1-pro' })).ok).toBe(true)
   })
   it('rejects invalid keys and preserves a working key on failed replacement', async () => {
     const f = fixture()
@@ -109,10 +131,10 @@ describe('Phase 1 AI activation', () => {
       expect((await f.service.activate(value)).ok).toBe(false)
     }
     expect(f.tester.test).not.toHaveBeenCalled()
-    expect((await f.service.selectModel({ model: 'model-a' })).ok).toBe(false)
+    expect((await f.service.selectModel({ model: 'gpt-5.6-luna' })).ok).toBe(false)
     await f.service.activate({ apiKey: key })
     expect((await f.service.selectModel({ model: 'unlisted' })).ok).toBe(false)
-    expect((await f.service.selectModel({ model: 'model-a' })).ok).toBe(true)
+    expect((await f.service.selectModel({ model: 'gpt-5.6-luna' })).ok).toBe(true)
   })
   it('serializes removal behind in-flight activation so no key reappears afterward', async () => {
     const f = fixture()
@@ -121,7 +143,7 @@ describe('Phase 1 AI activation', () => {
     const activation = f.service.activate({ apiKey: key })
     await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
     const removal = f.service.remove()
-    finish({ ok: true, models: ['model-a'] })
+    finish({ ok: true, models: ['gpt-5.6-luna'] })
     await activation
     expect((await removal).status.active).toBe(false)
     expect(f.saved()).toBeNull()

@@ -1,6 +1,8 @@
 import { z } from 'zod'
 export const copilotCommandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('status') }).strict(),
+  z.object({ action: z.literal('verify') }).strict(),
+  z.object({ action: z.literal('usage') }).strict(),
   z.object({ action: z.literal('cli-manage') }).strict(),
   z.object({ action: z.literal('cli-check') }).strict(),
   z.object({ action: z.literal('cli-login'), flow: z.enum(['browser','device']) }).strict(),
@@ -21,7 +23,26 @@ export interface CopilotStatus {
   managing?: boolean
   requestsActive?: boolean
   device?: { code: string; url: string; expiresAt: number; interval: number }
+  lastVerifiedAt?: number | null
+  modelCount?: number
+  models?: { id: string; name: string }[]
+  usage?: CopilotUsageSnapshot | null
+  usageError?: string | null
 }
+
+export interface CopilotUsageQuota {
+  id: string
+  name: string
+  isUnlimitedEntitlement: boolean | null
+  entitlementRequests: number | null
+  usedRequests: number | null
+  remainingPercentage: number | null
+  resetDate: string | null
+  usageAllowedWithExhaustedQuota: boolean | null
+  overage: number | null
+  overageAllowedWithExhaustedQuota: boolean | null
+}
+export interface CopilotUsageSnapshot { accountId: string; fetchedAt: number; quotas: CopilotUsageQuota[] }
 
 export interface CopilotCLIStatus {
   installed: boolean

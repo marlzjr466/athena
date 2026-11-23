@@ -4,12 +4,12 @@ import { PERMISSION_DESCRIPTIONS, PERMISSION_LABELS, type AthenaPermission, type
 import type { ApplicationDetectionResult } from '../../../shared/applicationDetection'
 import { usePermissions } from '../../store/permissionStore'
 import { desktop } from '../../services/desktop'
-import { Section, SettingRow, Toggle } from '../../components/ui/Controls'
+import { Section, Toggle } from '../../components/ui/Controls'
 import '../../styles/permissions.css'
 
 const statusLabel: Record<OSPermissionStatus, string> = { 'not-requested': 'Not requested', allowed: 'Allowed', denied: 'Denied', restricted: 'Restricted', unavailable: 'Unavailable', 'not-required': 'No blanket OS permission' }
 export function PermissionSettings() {
-  const { snapshot, pending, error, notice, refresh, setEnabled, setFilesystemAccess, request, openSettings, updateRemembered } = usePermissions()
+  const { snapshot, pending, error, notice, refresh, setEnabled, setFilesystemAccess, request, openSettings } = usePermissions()
   const [confirm, setConfirm] = useState<AthenaPermission | null>(null)
   const [applications, setApplications] = useState<ApplicationDetectionResult | null>(null)
   const [checkingApplications, setCheckingApplications] = useState(false)
@@ -40,20 +40,6 @@ export function PermissionSettings() {
         <p className="permission-detail">{entry.detail}</p>
         {(entry.canRequest || entry.canOpenSettings) && <div className="permission-actions">{entry.canRequest && <button className="button secondary" disabled={pending || !entry.enabled} onClick={() => void request(entry.permission)}>Request macOS access<span className="permission-sr-only"> for {PERMISSION_LABELS[entry.permission]}</span></button>}{entry.canOpenSettings && <button className="button secondary" disabled={pending} onClick={() => void openSettings(entry.permission)}><ExternalLink size={13} /> System Settings<span className="permission-sr-only"> for {PERMISSION_LABELS[entry.permission]}</span></button>}</div>}
         {entry.permission === 'applicationDetection' && entry.capabilityAllowed && <div className="application-preview"><button className="button secondary" disabled={checkingApplications} onClick={() => void checkApplications()}><RefreshCw size={13} /> {checkingApplications ? 'Checking apps…' : 'Check active and running apps'}</button>{applications && (applications.ok ? <div className="application-preview-result" role="status"><p>Active app: <strong>{applications.active?.name ?? 'None detected'}</strong></p><p>{applications.running.length} user-facing apps running</p><ul>{applications.running.slice(0, 12).map((app) => <li key={`${app.bundleId ?? app.name}-${app.pid}`}>{app.name}</li>)}</ul>{applications.running.length > 12 && <p>Showing the first 12. Ask Athena in Conversation for the full list.</p>}</div> : <p className="permission-error" role="alert">{applications.message}</p>)}</div>}
-      </div>)}
-    </Section>
-    <Section title="Remembered permissions" description="Exact operations and resources explicitly approved with Always allow. OS consent, project access, read-only mode, and mandatory sensitive-action confirmations still apply.">
-      <SettingRow title="Enable Always allow" description="Use active remembered permissions for future matching requests."><Toggle label="Enable Always allow" checked={snapshot?.remembered?.enabled ?? true} disabled={pending || !snapshot?.remembered} onChange={enabled => void updateRemembered({ action: 'enable', enabled })} /></SettingRow>
-      <p className="permission-detail">Disabling pauses all remembered grants without deleting their history. Re-enabling restores grants that have not been revoked.</p>
-      <button className="button secondary" disabled={pending || !snapshot?.remembered?.rules.some(rule => !rule.revokedAt)} onClick={() => void updateRemembered({ action: 'revoke-all' })}>Revoke all remembered permissions</button>
-      {!snapshot?.remembered?.rules.length && <p>No remembered permissions.</p>}
-      {snapshot?.remembered?.rules.map(rule => <div className="permission-card" key={rule.id}>
-        <h3>{rule.scope.operation.replaceAll('_', ' ')}</h3>
-        <p style={{ overflowWrap: 'anywhere' }}>Scope: {rule.scope.project}</p>
-        {rule.scope.resources.map(resource => <p key={resource} style={{ overflowWrap: 'anywhere' }}><code>{resource}</code></p>)}
-        {rule.scope.command && <p style={{ overflowWrap: 'anywhere' }}><code>{rule.scope.command.manager} {rule.scope.command.args.join(' ')}</code><br />Offline sandbox · source and dependency writes blocked · configuration-bound</p>}
-        <p>Granted {new Date(rule.grantedAt).toLocaleString()} · {rule.revokedAt ? `Revoked ${new Date(rule.revokedAt).toLocaleString()}` : snapshot.remembered?.enabled ? 'Active — subject to current resource and project validation' : 'Inactive — Always allow disabled'}</p>
-        {!rule.revokedAt && <button className="button secondary" disabled={pending} onClick={() => void updateRemembered({ action: 'revoke', id: rule.id })}>Revoke</button>}
       </div>)}
     </Section>
     <Section title="Filesystem Access" description="Your selected project remains Athena’s default working directory. Choose whether it is also the filesystem boundary.">

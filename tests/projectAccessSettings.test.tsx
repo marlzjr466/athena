@@ -13,11 +13,12 @@ vi.mock('../src/store/chatStore', () => ({ useChat: () => ({ snapshot: {
 vi.mock('../src/services/desktop', () => ({ desktop: { chatContext: mocks.chatContext } }))
 
 describe('project permission settings', () => {
-  it('offers all four modes and enables command permission when Advanced Agent is selected', () => {
+  it('preserves the four settings modes and shows Full Access as composer-only', () => {
     render(<ProjectAccessSettings />)
     const select = screen.getByRole('combobox', { name: 'Project access level' })
     fireEvent.click(select)
-    expect(screen.getAllByRole('option')).toHaveLength(4)
+    expect(screen.getAllByRole('option')).toHaveLength(5)
+    expect(screen.getByRole('option', { name: 'Full Access · enable in composer' })).toBeDisabled()
     fireEvent.click(screen.getByRole('option', { name: 'Advanced Agent' }))
     expect(mocks.command).toHaveBeenCalledWith(expect.objectContaining({ action: 'project-permissions', mode: 'advanced', allowCommands: true }))
   })

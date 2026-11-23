@@ -6,12 +6,14 @@ import { useAthena } from '../src/store/athenaStore'
 import { emptyChatSnapshot } from '../shared/chat'
 import { defaultSettings } from '../shared/settings'
 import type { Snapshot } from '../shared/contracts'
+import type { UnifiedAccountCatalog } from '../shared/unifiedAccounts'
 
 const sessionId = '00000000-0000-4000-a000-000000000002'
 const command = { id: 'project:one:claude-command:.claude/commands/platform-spec.md', name: '/platform-spec', description: 'Generate a platform specification', source: 'Claude Project' as const, sourceFile: '.claude/commands/platform-spec.md', scope: 'project' as const, execution: 'prompt' as const }
 const mocks = vi.hoisted(() => ({
-  getChat: vi.fn(), getAIStatus: vi.fn(), getSlashCommands: vi.fn(), sendChat: vi.fn(), chatSession: vi.fn(),
+  getChat: vi.fn(), getAIStatus: vi.fn(), getUnifiedAccounts: vi.fn<() => Promise<UnifiedAccountCatalog>>(async () => ({ accounts: [], refreshedAt: Date.now() })), getSlashCommands: vi.fn(), sendChat: vi.fn(), chatSession: vi.fn(),
   chatContext: vi.fn(),
+  projectGit: vi.fn(async () => ({ ok: true, state: { repository: false, head: '', branches: [] } })), onProjectGit: vi.fn(() => () => {}),
   onChat: vi.fn(() => () => {}), stopAllSpeech: vi.fn(async () => ({ ok: true })),
 }))
 vi.mock('../src/services/desktop', () => ({ desktop: mocks, isDesktop: true }))
@@ -25,8 +27,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   useChat.setState({ snapshot: emptyChatSnapshot(), pending: false, issue: null })
   useAthena.setState({ snapshot: { settings: defaultSettings, visible: false } as Snapshot })
-  mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-5.2', effort: 'auto' }, draft: '', attachments: [], workspaces: [] })
-  mocks.getAIStatus.mockResolvedValue({ ok: true, status: { provider: 'OpenAI', active: true, model: 'gpt-5.2', models: ['gpt-5.2'] } })
+  mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-5.6-sol', effort: 'auto' }, draft: '', attachments: [], workspaces: [] })
+  mocks.getAIStatus.mockResolvedValue({ ok: true, status: { provider: 'OpenAI', active: true, model: 'gpt-5.6-sol', models: ['gpt-5.6-sol'] } })
   mocks.getSlashCommands.mockResolvedValue({ commands: [command], globalEnabled: false })
   mocks.sendChat.mockResolvedValue({ ok: true })
   mocks.chatSession.mockResolvedValue({ ok: true })
@@ -34,6 +36,20 @@ beforeEach(() => {
 })
 
 describe('slash command composer', () => {
+  it('allows a routed OpenAI API conversation while Settings shows Antigravity models', async () => {
+    const route = { provider: 'cloud' as const, accountId: 'openai-api' }
+    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-6.2-astra', effort: 'high', accountRoute: route }, draft: '', attachments: [], workspaces: [] })
+    mocks.getAIStatus.mockResolvedValue({ ok: true, status: { provider: 'Google Antigravity Subscription', active: true, model: 'gemini-4-argon', models: ['gemini-4-argon'] } })
+    mocks.getUnifiedAccounts.mockResolvedValue({ refreshedAt: 1, accounts: [{ route, name: 'OpenAI API', enabled: true, state: 'connected', models: [{ id: 'gpt-6.2-astra', label: 'GPT-6.2 Astra', available: true, efforts: ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] }] }] })
+    const view = render(<ChatView />)
+    try {
+      const input = await screen.findByRole('textbox', { name: 'Message Athena' })
+      fireEvent.change(input, { target: { value: 'Hello' } })
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled())
+      fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+      await waitFor(() => expect(mocks.sendChat).toHaveBeenCalledWith({ text: 'Hello', sessionId, requestId: expect.any(String) }))
+    } finally { view.unmount() }
+  })
   it('turns an oversized plain-text paste into a managed attachment without losing it', async () => {
     const text = `Implementation prompt\n${'const answer = 42;\n'.repeat(900)}`
     const attachment = { id: '11111111-1111-4111-8111-111111111111', name: 'Pasted code.ts', kind: 'text', mime: 'text/plain', size: text.length, characters: text.length, origin: 'paste' } as const
@@ -56,7 +72,7 @@ describe('slash command composer', () => {
   })
   it('clears the project authorization warning after the folder is reconnected', async () => {
     const workspace = { id: 'project-one', name: 'map-governance-ui', fingerprint: 'project-fingerprint', authorized: false }
-    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-5.2', effort: 'auto' }, draft: '', attachments: [], workspaces: [workspace] })
+    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-5.6-sol', effort: 'auto' }, draft: '', attachments: [], workspaces: [workspace] })
     mocks.getSlashCommands.mockResolvedValueOnce({ commands: [], globalEnabled: false, message: 'Project commands are unavailable until this folder is reauthorized.' })
       .mockResolvedValue({ commands: [command], globalEnabled: false })
     const view = render(<ChatView />)
@@ -81,7 +97,7 @@ describe('slash command composer', () => {
     } finally { view.unmount() }
   })
   it('sends a chosen assistant answer directly while preserving an unsent composer draft', async () => {
-    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-5.2', effort: 'auto' }, draft: 'Unsent draft', attachments: [], workspaces: [], messages: [{ id: 'choice', role: 'assistant', status: 'complete', content: 'Choose one:\n- React\n- Vue', createdAt: 1 }] })
+    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, config: { provider: 'OpenAI', model: 'gpt-5.6-sol', effort: 'auto' }, draft: 'Unsent draft', attachments: [], workspaces: [], messages: [{ id: 'choice', role: 'assistant', status: 'complete', content: 'Choose one:\n- React\n- Vue', createdAt: 1 }] })
     const view = render(<ChatView />)
     try {
       const input = await screen.findByRole('textbox', { name: 'Message Athena' })
@@ -181,7 +197,7 @@ describe('slash command composer', () => {
       { id: 'u3', role: 'user' as const, content: '/platform-spec MBM-11390', status: 'complete' as const, createdAt: 5 },
       { id: 'transient', role: 'user' as const, content: 'not saved', status: 'streaming' as const, createdAt: 6 },
     ]
-    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, messages, config: { provider: 'OpenAI', model: 'gpt-5.2', effort: 'auto' }, draft, attachments: [], workspaces: [] })
+    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, messages, config: { provider: 'OpenAI', model: 'gpt-5.6-sol', effort: 'auto' }, draft, attachments: [], workspaces: [] })
     const view = render(<ChatView />)
     try {
       const input = await screen.findByRole('textbox', { name: 'Message Athena' }) as HTMLTextAreaElement
@@ -208,7 +224,7 @@ describe('slash command composer', () => {
       { id: 'u5', role: 'user' as const, content: 'Previous page boundary', status: 'complete' as const, createdAt: 5 },
       { id: 'u6', role: 'user' as const, content: 'Most recent message', status: 'complete' as const, createdAt: 6 },
     ]
-    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, messages: visible, hasMore: true, config: { provider: 'OpenAI', model: 'gpt-5.2', effort: 'auto' }, draft: '', attachments: [], workspaces: [] })
+    mocks.getChat.mockResolvedValue({ ...emptyChatSnapshot(), sessionId, revision: 1, messages: visible, hasMore: true, config: { provider: 'OpenAI', model: 'gpt-5.6-sol', effort: 'auto' }, draft: '', attachments: [], workspaces: [] })
     mocks.chatSession.mockImplementation(async (request: any) => {
       if (request.action === 'more') useChat.setState(state => ({ snapshot: { ...state.snapshot, revision: state.snapshot.revision + 1, messages: [{ id: 'u4', role: 'user', content: 'Loaded older message', status: 'complete', createdAt: 4 }, ...visible], hasMore: false } }))
       return { ok: true }

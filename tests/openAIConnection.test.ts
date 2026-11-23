@@ -11,9 +11,17 @@ describe('OpenAI connection-only service', () => {
     expect(JSON.stringify(result)).not.toContain(key)
   })
   it('uses only the fixed authenticated models endpoint and deduplicates IDs', async () => {
-    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ object: 'list', data: [{ id: 'model-b' }, { id: 'model-a' }, { id: 'model-a' }] })))
-    expect(await new OpenAIConnection(request).test(key)).toEqual({ ok: true, models: ['model-a', 'model-b'] })
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-6-mini' }, { id: 'gpt-4.1' }, { id: 'gpt-5.6-codex' }, { id: 'gpt-6-mini' }, { id: 'gpt-6-image' }, { id: 'gpt-6.10' }] })))
+    expect(await new OpenAIConnection(request).test(key)).toEqual({ ok: true, models: ['gpt-6.10', 'gpt-6-mini', 'gpt-5.6-codex'] })
     expect(request).toHaveBeenCalledWith('https://api.openai.com/v1/models', expect.objectContaining({ method: 'GET', headers: { Authorization: `Bearer ${key}` }, redirect: 'error', credentials: 'omit' }))
+  })
+  it('reflects model additions and removals on each official catalog refresh', async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.6' }, { id: 'gpt-6-pro' }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-6.1-pro' }, { id: 'gpt-6-pro' }] })))
+    const service = new OpenAIConnection(request)
+    expect(await service.test(key)).toEqual({ ok: true, models: ['gpt-6-pro', 'gpt-5.6'] })
+    expect(await service.test(key)).toEqual({ ok: true, models: ['gpt-6.1-pro', 'gpt-6-pro'] })
   })
   it.each([401, 403, 429, 500])('sanitizes HTTP %s without returning response bodies', async (status) => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(`error with ${key}`, { status }))

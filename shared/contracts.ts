@@ -110,7 +110,14 @@ export interface AthenaAPI {
   sendChat(input: { text: string; sessionId?: string; requestId?: string; commandId?: string }): Promise<ChatResult>
   getSlashCommands(input: { action: 'list' | 'authorize-global' | 'revoke-global'; sessionId: string; surface?: 'conversation' | 'local' }): Promise<SlashCommandCatalog>
   chatSession(input: SessionCommand): Promise<ChatResult>
+  getProviderUsage(input: { provider: import('./providerUsage').UsageProvider; accountId?: string; period?: import('./providerUsage').UsagePeriod; conversationId?: string; refresh?: boolean }): Promise<import('./providerUsage').ProviderUsageResult>
+  configureOpenAIUsage(input: { key: string; projectId?: string }): Promise<{ ok: boolean }>
+  removeOpenAIUsage(): Promise<{ ok: boolean }>
+  getUnifiedAccounts(input?: { refresh?: boolean }): Promise<import('./unifiedAccounts').UnifiedAccountCatalog>
   chatContext(input: ContextCommand): Promise<ContextResult>
+  projectGit(input: import('./projectGit').ProjectGitCommand): Promise<import('./projectGit').ProjectGitResult>
+  projectEditor(input: import('./projectEditor').ProjectEditorCommand): Promise<import('./projectEditor').ProjectEditorResult>
+  onProjectGit(callback: (event: import('./projectGit').ProjectGitEvent) => void): () => void
   searchChats(input: { query: string }): Promise<string[]>
   retryChat(): Promise<ChatResult>
   stopChat(): Promise<ChatResult>
@@ -129,11 +136,13 @@ export interface AthenaAPI {
   onAthenaChat(callback: (snapshot: ChatSnapshot) => void): () => void
   copilot(input: import('./copilot').CopilotCommand): Promise<import('./copilot').CopilotStatus>
   getAIStatus(): Promise<AIResult>
+  getOpenAIAccountStatus(): Promise<AIResult>
   testAIConnection(input?: { apiKey: string }): Promise<AIResult>
   activateAI(input: { apiKey: string }): Promise<AIResult>
   selectAIModel(input: { model: string }): Promise<AIResult>
   removeAIKey(): Promise<AIResult>
   getWebSearchStatus(): Promise<WebSearchStatus>
+  restartWebSearch(): Promise<{ ok: boolean; message: string }>
   testWebSearch(input?: { apiKey?: string; model?: string }): Promise<WebSearchTestResult>
   saveWebSearchKey(input: { apiKey: string }): Promise<WebSearchTestResult>
   removeWebSearchKey(): Promise<{ ok: boolean; message: string }>
@@ -143,9 +152,11 @@ export interface AthenaAPI {
   activateClaudeAPI(input: { apiKey: string }): Promise<AIResult>
   selectClaudeModel(input: { model: string }): Promise<AIResult>
   removeClaudeAPIKey(): Promise<AIResult>
+  inferenceConnections(input: import('./thirdPartyInference').InferenceCommand): Promise<import('./thirdPartyInference').InferenceResult>
   getCursorStatus(input?: { refreshModels?: boolean; cachedOnly?: boolean }): Promise<CursorStatus>
   signInCursor(): Promise<CursorStatus>
   signOutCursor(): Promise<CursorStatus>
+  antigravity(input: import('./antigravity').AntigravityCommand): Promise<import('./antigravity').AntigravityStatus>
   getChatGPTStatus(): Promise<ChatGPTStatus>
   getCodexCLIStatus(input?: { refresh?: boolean }): Promise<CodexCLIStatus>
   addChatGPTAccount(): Promise<ChatGPTStatus>

@@ -59,6 +59,16 @@ describe('isolated commands', () => {
     expect(classifyDevelopmentServerFailure('listen EPERM: Operation not permitted')).toBe('bind-permission')
     expect(classifyDevelopmentServerFailure('EADDRNOTAVAIL')).toBe('invalid-host')
   })
+  it('limits the project instruction metadata/read exception to the Git status subcommand', () => {
+    const request = { executable: 'git', args: ['--no-pager', '-c', 'core.fsmonitor=false', 'status', '--short'], network: false, install: false, gitWrite: false }
+    const profile = commandProfile('/project', '/scratch', request)
+    expect(profile).toContain('(require-not (subpath "/project/.claude"))')
+    expect(profile).toContain('(deny file-read-data')
+    expect(profile).toContain('(deny file-write* (regex #"(^|/)(\\.claude|\\.codex)(/|$)"))')
+    for (const args of [['show', 'status'], ['hash-object', '--', 'status'], ['-c', 'alias.x=status', 'x']]) {
+      expect(commandProfile('/project', '/scratch', { ...request, args })).not.toContain('(require-not (subpath "/project/.claude"))')
+    }
+  })
   it('preserves project wrapper scripts and forwards only explicitly supplied arguments', () => {
     expect(developmentScriptArguments('npm', 'dev:mock')).toEqual(['run', 'dev:mock'])
     expect(developmentScriptArguments('pnpm', 'start', ['--port', '43210'])).toEqual(['run', 'start', '--port', '43210'])

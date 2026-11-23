@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { modelIdSchema } from './ai'
 
-export const chatGPTModelSchema = z.object({ slug: modelIdSchema, displayName: z.string().min(1).max(200) })
+export const chatGPTModelSchema = z.object({ slug: modelIdSchema, contextWindow: z.number().int().positive().max(10_000_000).optional(), displayName: z.string().min(1).max(200) })
 export type ChatGPTModel = z.infer<typeof chatGPTModelSchema>
 export interface ChatGPTStatus {
   connected: boolean

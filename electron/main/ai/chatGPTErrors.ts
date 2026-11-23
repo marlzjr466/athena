@@ -56,7 +56,9 @@ export function chatGPTErrorDetails(error: unknown): ChatGPTErrorDetails {
   const responseError = objectValue(response?.error)
   const headers = candidate?.headers instanceof Headers ? candidate.headers : undefined
   const status = typeof candidate?.status === 'number' ? candidate.status : undefined
-  const code = safeIdentifier(candidate?.code ?? body?.code ?? nested?.code ?? responseError?.code)
+  const code = safeIdentifier(candidate?.code ?? body?.code ?? nested?.code ?? responseError?.code
+    ?? (typeof body?.error === 'string' ? body.error : undefined)
+    ?? (typeof candidate?.error === 'string' ? candidate.error : undefined))
   const param = safeIdentifier(candidate?.param ?? body?.param ?? nested?.param ?? responseError?.param)
   const requestId = safeIdentifier(candidate?.requestID ?? candidate?.request_id ?? body?.request_id ?? nested?.request_id ?? headers?.get('x-request-id'))
   const providerMessage = redactedMessage(nested?.message ?? body?.message ?? candidate?.message)
@@ -86,6 +88,7 @@ export function logChatGPTError(details: ChatGPTErrorDetails, operation = 'infer
 export function chatGPTErrorMessage(details: ChatGPTErrorDetails): string {
   const code = details.code
   if (['invalid_grant', 'invalid_refresh_token', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused', 'token_expired'].includes(code ?? '')) return `ChatGPT authorization expired (${statusLabel(details)}${codeLabel(details)}). Reconnect the same account in Settings → AI; completed work is preserved.${reference(details)}`
+  if (code === 'invalid_client') return `ChatGPT rejected Athena's saved OAuth client registration (${statusLabel(details)}). Check the account connection in Settings → AI. Changing models will not repair this registration.${reference(details)}`
   if (code === 'subscription_sharing_usage_limit_exceeded') {
     return `ChatGPT plan usage limit reached${codeLabel(details)}. The exact quota is unknown: this code alone does not identify a shared five-hour, weekly, or app-specific limit, remaining usage, or reset time. Open ChatGPT Settings → Usage for the same account and workspace used by this request, and review this app's limit. The connection is preserved; Athena did not retry or switch to API billing.${reference(details)}`
   }
@@ -112,7 +115,7 @@ export function chatGPTErrorMessage(details: ChatGPTErrorDetails): string {
   if (details.status === 401) return `ChatGPT authorization expired or was rejected (${statusLabel(details)}${codeLabel(details)}). Reconnect in Settings → AI.${reference(details)}`
   if (details.status === 403) return `ChatGPT plan usage was denied (${statusLabel(details)}${codeLabel(details)}). Verify the selected account, plan permission, workspace policy, and serving region in Settings → AI.${reference(details)}`
   if (details.status === 429) return `ChatGPT temporarily rate-limited this request (${statusLabel(details)}${codeLabel(details)}). Wait briefly and retry; this is not confirmation of plan exhaustion.${reference(details)}`
-  if (details.status === 400 || details.status === 404) return `ChatGPT rejected the request (${statusLabel(details)}${codeLabel(details)}${details.param ? `; parameter: ${details.param}` : ''}). Refresh models or choose a supported model and retry.${reference(details)}`
+  if (details.status === 400 || details.status === 404) return `ChatGPT rejected the request (${statusLabel(details)}${codeLabel(details)}${details.param ? `; parameter: ${details.param}` : ''}). The response did not identify a model-availability problem; review the connection diagnostic before retrying.${reference(details)}`
   if (details.status && details.status >= 500) return `ChatGPT is temporarily unavailable (${statusLabel(details)}${codeLabel(details)}). Retry later.${reference(details)}`
   return `${details.code ? `ChatGPT reported provider failure ${details.code}.` : 'ChatGPT returned a provider error with no status or code.'} This does not establish that your login or model is invalid. Completed operations and file changes are preserved; review the sanitized connection diagnostics in Activity before continuing.${reference(details)}`
 }
@@ -134,12 +137,17 @@ export async function chatGPTResponseError(response: Response, operation: string
   const nested = objectValue(bodyObject?.error)
   const details: ChatGPTErrorDetails = {
     status: response.status,
-    code: safeIdentifier(nested?.code ?? bodyObject?.code),
+    // OAuth token endpoints use { error: "invalid_grant", error_description }
+    // while inference uses { error: { code, message } }. Preserve both forms.
+    code: safeIdentifier(nested?.code ?? bodyObject?.code ?? (typeof bodyObject?.error === 'string' ? bodyObject.error : undefined)),
     param: safeIdentifier(nested?.param ?? bodyObject?.param),
     requestId: safeIdentifier(response.headers.get('x-request-id')),
-    providerMessage: redactedMessage(nested?.message ?? bodyObject?.detail ?? bodyObject?.message ?? body),
+    providerMessage: redactedMessage(nested?.message ?? bodyObject?.error_description ?? bodyObject?.detail ?? bodyObject?.message ?? body),
   }
   logChatGPTError(details, operation)
   const reconnect = operation === 'oauth_refresh' && ['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused'].includes(details.code ?? '')
-  return new ChatError(chatGPTErrorMessage(details), reconnect ? 'auth-reconnect' : undefined)
+  const message = operation === 'oauth_refresh' && !reconnect && !details.code
+    ? `ChatGPT token renewal failed (${statusLabel(details)}). No model request was sent. Check the account connection in Settings → AI before retrying; completed work is preserved.${reference(details)}`
+    : chatGPTErrorMessage(details)
+  return new ChatError(message, reconnect ? 'auth-reconnect' : undefined)
 }

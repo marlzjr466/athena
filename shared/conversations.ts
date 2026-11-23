@@ -3,11 +3,13 @@ import { modelIdSchema } from './ai'
 import { agentModeSchema } from './agent'
 import { contextSettingsSchema } from './context'
 import { cursorModelIdSchema } from './cursor'
+import { accountRouteSchema } from './unifiedAccounts'
+import { knownReasoningEfforts } from './modelCapabilities'
 
-export const effortSchema = z.enum(['auto', 'low', 'medium', 'high', 'xhigh'])
+export const effortSchema = z.enum(['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 export type ReasoningEffort = z.infer<typeof effortSchema>
 const conversationModelIdSchema = z.union([modelIdSchema, cursorModelIdSchema])
-export const conversationConfigSchema = z.object({ provider: z.literal('OpenAI').default('OpenAI'), model: conversationModelIdSchema.nullable().default(null), cursorModel: cursorModelIdSchema.nullable().optional(), cursorPendingModel: cursorModelIdSchema.optional(), effort: effortSchema.default('auto'), agentMode: agentModeSchema.optional(), contextSettings: contextSettingsSchema.optional() })
+export const conversationConfigSchema = z.object({ provider: z.literal('OpenAI').default('OpenAI'), model: conversationModelIdSchema.nullable().default(null), accountRoute: accountRouteSchema.optional(), cursorModel: cursorModelIdSchema.nullable().optional(), cursorPendingModel: cursorModelIdSchema.optional(), effort: effortSchema.default('auto'), thirdPartyEfforts: z.record(z.string().max(500), effortSchema).optional(), agentMode: agentModeSchema.optional(), fullAccessWorkspaceId: z.string().uuid().optional(), contextSettings: contextSettingsSchema.optional() })
 export type ConversationConfig = z.infer<typeof conversationConfigSchema>
 export const defaultConversationConfig = (): ConversationConfig => ({ provider: 'OpenAI', model: null, effort: 'auto' })
 export const attachmentSchema = z.object({ id: z.string().uuid(), name: z.string().max(255), mime: z.string().max(100), size: z.number().int().nonnegative(), kind: z.enum(['image', 'pdf', 'text']), characters: z.number().int().nonnegative().default(0), origin: z.enum(['file', 'paste']).optional() })
@@ -18,7 +20,7 @@ export interface ConversationSummary { id: string; title: string; updatedAt: num
 export const sessionCommandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('cancel-subagent'), id: z.string().uuid(), subagentId: z.string().uuid().optional() }).strict(),
   z.object({ action: z.literal('configure-context'), id: z.string().uuid(), settings: contextSettingsSchema }).strict(),
-  z.object({ action: z.literal('agent-mode'), id: z.string().uuid(), mode: agentModeSchema }).strict(),
+  z.object({ action: z.literal('agent-mode'), id: z.string().uuid(), mode: agentModeSchema, confirmed: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal('project-permissions'), id: z.string().uuid(), mode: agentModeSchema, allowDeletion: z.boolean(), allowCommands: z.boolean() }).strict(),
   z.object({ action: z.literal('agent-approval'), id: z.string().uuid(), approvalId: z.string().uuid(), allow: z.boolean(), remember: z.boolean().optional() }).strict(),
   z.object({ action: z.literal('create'), workspaceId: z.string().uuid().optional() }).strict(),
@@ -27,6 +29,7 @@ export const sessionCommandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('delete'), id: z.string().uuid(), confirmed: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal('configure'), id: z.string().uuid(), config: conversationConfigSchema }).strict(),
   z.object({ action: z.literal('configure-model'), id: z.string().uuid(), model: conversationModelIdSchema }).strict(),
+  z.object({ action: z.literal('select-account-model'), id: z.string().uuid(), route: accountRouteSchema, model: conversationModelIdSchema }).strict(),
   z.object({ action: z.literal('configure-effort'), id: z.string().uuid(), effort: effortSchema }).strict(),
   z.object({ action: z.literal('edit'), id: z.string().uuid(), messageId: z.string().uuid(), text: z.string().trim().min(1).max(12_000), commandId: z.string().min(1).max(500).optional() }).strict(),
   z.object({ action: z.literal('draft'), id: z.string().uuid(), text: z.string().max(1_000_000) }).strict(),
@@ -62,17 +65,12 @@ export interface ContextResult { ok: boolean; message?: string; root?: string; p
 
 // /models lists IDs, not capabilities. Unknown/new models safely use provider defaults.
 // Only known families receive explicit settings; the live catalog remains authoritative.
-export function modelCapabilities(model: string | null, transport?: 'cursor-acp' | 'openai-responses' | 'claude-messages' | 'ollama' | 'unknown'): { efforts: ReasoningEffort[]; vision: boolean; contextCharacters: number; fileInput?: boolean; toolCalling?: boolean; reason?: string } {
+export function modelCapabilities(model: string | null, transport?: 'cursor-acp' | 'antigravity-acp' | 'openai-responses' | 'claude-messages' | 'ollama' | 'third-party' | 'unknown'): { efforts: ReasoningEffort[]; vision: boolean; contextCharacters: number; fileInput?: boolean; toolCalling?: boolean; reason?: string } {
   const id = model ?? ''
-  let efforts: ReasoningEffort[] = ['auto']
-  if (/^(o[134](?:-|$)|gpt-5(?:[.-]|$))/.test(id) && !/chat|pro/.test(id)) efforts = ['auto', 'low', 'medium', 'high']
-  if (/^gpt-5\.[2345](?:-|$)/.test(id) && !/chat/.test(id)) efforts = /pro/.test(id) ? ['auto', 'medium', 'high', 'xhigh'] : ['auto', 'low', 'medium', 'high', 'xhigh']
-  if (/^gpt-5\.6(?:-|$)/.test(id)) efforts = ['auto', 'low', 'medium', 'high', 'xhigh']
-  if (/^gpt-6-(?:astra|sol)(?:-|$)/.test(id)) efforts = ['auto', 'low', 'medium', 'high', 'xhigh']
-  if (/^gpt-6\.1-sol(?:-|$)/.test(id)) efforts = ['auto', 'low', 'medium', 'high', 'xhigh']
-  if (/^gpt-5\.6-luna(?:-|$)/.test(id)) efforts = ['auto', 'low', 'medium', 'high', 'xhigh']
+  const efforts = knownReasoningEfforts('subscription', id) ?? ['auto']
   const cursorVision = transport === 'cursor-acp' && /^(?:cursor-)?grok-4\.(?:6|7)(?:-|\[|$)/i.test(id)
-  const vision = cursorVision || (/^(gpt-4o|gpt-4\.1|gpt-5|gpt-6(?:\.1-sol|-astra|-sol)|o3(?:-|$)|o4)/.test(id) && !/audio|transcribe|tts/.test(id))
+  const antigravityVision = transport === 'antigravity-acp' && /^gemini(?:-|$)/i.test(id)
+  const vision = cursorVision || antigravityVision || (/^(gpt-4o|gpt-4\.1|gpt-5|gpt-6(?:\.1-sol|-astra|-sol)|o3(?:-|$)|o4)/.test(id) && !/audio|transcribe|tts/.test(id))
   return { efforts, vision, fileInput: vision, toolCalling: vision, contextCharacters: cursorVision || /^gpt-(4\.1|5|6(?:\.1-sol|-astra|-sol))|^o[34]/.test(id) ? 100_000 : 20_000,
     ...(transport === 'cursor-acp' && !cursorVision ? { reason: 'Cursor ACP did not verify image input for this selected model.' } : {}) }
 }

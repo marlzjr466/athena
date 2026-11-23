@@ -5,7 +5,8 @@ export const webAccessSettingsSchema = z.object({
   systemInformationEnabled: z.boolean().default(true),
   webSearchEnabled: z.boolean().default(false),
   automaticSearch: z.boolean().default(true),
-  searchProvider: z.enum(['brave', 'openai-built-in']).default('brave'),
+  searchProvider: z.enum(['searxng', 'brave', 'openai-built-in']).default('searxng'),
+  automaticStartup: z.boolean().default(true),
   // Independent of the model used by online chat or local Athena.
   openAIModel: modelIdSchema.nullable().default(null),
   maxResults: z.number().int().min(1).max(10).default(5),
@@ -20,7 +21,8 @@ export const webAccessDefaults = webAccessSettingsSchema.parse({})
 
 export interface WebSearchStatus {
   hasKey: boolean
-  provider: 'Brave Search API' | 'OpenAI built-in web search'
+  provider: 'Brave Search API' | 'OpenAI built-in web search' | 'Local SearXNG'
+  local?: LocalSearchStatus
   active: boolean
   model: string | null
   availableModels: string[]
@@ -28,6 +30,8 @@ export interface WebSearchStatus {
   strictOffline: boolean
   note: string
 }
+
+export interface LocalSearchStatus { state: 'running' | 'starting' | 'stopped' | 'error'; message: string; version?: string }
 
 export interface WebSearchTestResult {
   ok: boolean

@@ -1,9 +1,26 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import OpenAI from 'openai'
-import { chatGPTErrorMessage, chatGPTProviderError, chatGPTResponseError } from '../electron/main/ai/chatGPTErrors'
+import { chatGPTErrorDetails, chatGPTErrorMessage, chatGPTProviderError, chatGPTResponseError } from '../electron/main/ai/chatGPTErrors'
 
 describe('ChatGPT subscription error classification', () => {
+  it.each(['invalid_grant', 'invalid_refresh_token', 'token_expired', 'refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused'])('recognizes standard OAuth %s responses', async code => {
+    const body = { error: code, error_description: 'private subject Bearer secret-refresh-value' }
+    const error = await chatGPTResponseError(new Response(JSON.stringify(body), { status: 400, headers: { 'x-request-id': 'req_oauth' } }), 'oauth_refresh')
+    expect(error.code).toBe('auth-reconnect')
+    expect(error.userMessage).toContain(code)
+    expect(error.userMessage).toContain('Reference: req_oauth')
+    expect(error.userMessage).not.toMatch(/private subject|secret-refresh|Refresh models/)
+    expect(chatGPTErrorDetails({ status: 400, error: body }).code).toBe(code)
+  })
+  it('distinguishes unknown token-endpoint errors and invalid client configuration from models', async () => {
+    const unknown = await chatGPTResponseError(new Response('unavailable', { status: 400 }), 'oauth_refresh')
+    expect(unknown.userMessage).toContain('token renewal failed')
+    expect(unknown.code).toBeUndefined()
+    const client = await chatGPTResponseError(new Response(JSON.stringify({ error: 'invalid_client' }), { status: 400 }), 'oauth_refresh')
+    expect(client.userMessage).toContain('OAuth client registration')
+    expect(client.code).toBeUndefined()
+  })
   it('distinguishes a confirmed shared/app usage limit from an ordinary 429', () => {
     expect(chatGPTErrorMessage({ status: 429, requestId: 'req_usage' })).toContain('temporarily rate-limited')
     expect(chatGPTErrorMessage({ status: 429, code: 'subscription_sharing_usage_limit_exceeded', requestId: 'req_usage' })).toContain('plan usage limit reached')

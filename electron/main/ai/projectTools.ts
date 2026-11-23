@@ -43,6 +43,8 @@ export function createProjectTools(service: WorkspaceService, id: string, name: 
       return { name, description, parameters }
     }),
     assertAccess,
+    readOnly: (name) => definitions.some(definition => definition.name === name),
+    operationRisk: (name, input) => definitions.find(definition => definition.name === name)?.schema.safeParse(input).success ? 'read-only' : 'unknown',
     invalidate: () => seen.clear(),
     async execute(tool, input, signal) {
       assertAccess()

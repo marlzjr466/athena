@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { modelIdSchema } from '../../../shared/ai'
 import { billingErrorMessage } from './apiErrors'
 import { readResponseBytes } from './responseBody'
+import { openAIAPIGptModels } from '../../../shared/modelCatalog'
 
 export type ConnectionResult = { ok: true; models: string[] } | { ok: false; kind: 'invalid-key' | 'failed'; message: string }
 export interface ConnectionTester { test(apiKey: string): Promise<ConnectionResult> }
@@ -30,7 +31,7 @@ export class OpenAIConnection implements ConnectionTester {
       }
       const parsed = modelsSchema.safeParse(JSON.parse(new TextDecoder().decode(await readResponseBytes(response, 2 * 1024 * 1024, controller.signal))))
       if (!parsed.success) return { ok: false, kind: 'failed', message: 'Connection failed. OpenAI returned an unexpected response.' }
-      const models = [...new Set(parsed.data.data.map(({ id }) => id).filter((id) => !id.includes(apiKey)))].sort()
+      const models = openAIAPIGptModels(parsed.data.data.map(({ id }) => id).filter((id) => !id.includes(apiKey)))
       return { ok: true, models }
     } catch {
       return { ok: false, kind: 'failed', message: controller.signal.aborted ? 'Connection failed. The request timed out; try again.' : 'Connection failed. Check your internet connection and try again.' }

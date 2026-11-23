@@ -8,8 +8,11 @@ import { useChat } from '../../store/chatStore'
 import { useAthena } from '../../store/athenaStore'
 import { emptyCodexCLIStatus, type CodexCLIStatus } from '../../../shared/codex'
 import '../../styles/ai.css'
+import { UsageDashboard } from './UsageDashboard'
+import { ProviderUsageDashboard } from './ProviderUsageDashboard'
+import { observedConversationUsage } from './observedUsage'
 
-export function ChatGPTSettings() {
+export function ChatGPTSettings({ onAccountsChanged }: { onAccountsChanged?: () => void } = {}) {
   const chat = useChat()
   const savedSettings = useAthena((state) => state.snapshot?.settings)
   const updateSettings = useAthena((state) => state.update)
@@ -23,8 +26,12 @@ export function ChatGPTSettings() {
   const run = async (operation: () => Promise<ChatGPTStatus>) => {
     if (busy) return
     setBusy(true); setNotice('')
-    try { const result = await operation(); setStatus(result); setPendingLabel(result.pendingAccount?.label ?? ''); setNotice(result.message) }
-    catch (error) { setNotice(error instanceof Error ? error.message : 'ChatGPT account operation failed. Try again.') }
+    try { const result = await operation(); setStatus(result); setPendingLabel(result.pendingAccount?.label ?? ''); setNotice(result.message); onAccountsChanged?.() }
+    catch (error) {
+      setNotice(error instanceof Error ? error.message : 'ChatGPT account operation failed. Try again.')
+      // Refresh cached status after a terminal token error, without retrying OAuth.
+      try { setStatus(await desktop.getChatGPTStatus()); onAccountsChanged?.() } catch { /* Keep the original error. */ }
+    }
     finally { setBusy(false) }
   }
   const updateAccount = (accountId: string, update: Partial<ChatGPTAccountStatus>) => setStatus((current) => ({ ...current, accounts: current.accounts.map((account) => account.id === accountId ? { ...account, ...update } : account) }))
@@ -35,6 +42,8 @@ export function ChatGPTSettings() {
   // Existing sessions can retain their own model even if the account default differs.
   const reasoningModel = chat.snapshot.config?.model ?? active?.model ?? null
   const codexEfforts = codexStatus.models.find((model) => model.id === reasoningModel)?.efforts ?? []
+  const codexUsageActive = codingBackend === 'codex-cli' && Boolean(chat.snapshot.workspaces?.length)
+  const observed = observedConversationUsage(chat.snapshot.messages, codexUsageActive ? ['codex-subscription'] : ['chatgpt-subscription'], codexUsageActive ? null : active?.id ?? 'no-active-chatgpt-account')
   const offeredEfforts = codingBackend === 'codex-cli' && chat.snapshot.workspaces?.length
     ? [...new Set<ReasoningEffort>(['auto', ...codexEfforts])]
     : reasoningModel ? modelCapabilities(reasoningModel).efforts : []
@@ -45,11 +54,12 @@ export function ChatGPTSettings() {
     catch { setNotice('Codex CLI status could not be refreshed.') }
     finally { setCheckingCodex(false) }
   }
-  return <Section title="ChatGPT Subscription" description="Connect and choose among separate ChatGPT account registrations. Sign-in uses OpenAI’s official browser flow; Athena verifies the returned identity before saving any new account. OAuth credentials remain in macOS Keychain and are never exposed to the renderer.">
+  return <>
+  <Section title="ChatGPT Subscription" description="Connect one ChatGPT account. Sign-in uses OpenAI’s official browser flow; Athena verifies the returned identity before saving the account. OAuth credentials remain in macOS Keychain and are never exposed to the renderer.">
     <SettingRow title="Active account" description={active ? `${active.label}${active.email ? ` · ${active.email}` : ''}` : 'No ChatGPT account is selected. Choose an enabled, authorized account below.'}>
-      <span className={`ai-status ${active?.planEnabled ? 'ai-active' : ''}`}>{active?.planEnabled ? '● In use' : '○ Not selected'}</span>
+      <span className={`ai-status ${active?.planEnabled && active.connected ? 'ai-active' : ''}`}>{active && !active.connected ? '○ Reconnect required' : active?.planEnabled ? '● In use' : '○ Not selected'}</span>
     </SettingRow>
-    {active && <><p className="card-description">Request account reference: {active.id.slice(0, 8)}. Conversation model: {chat.snapshot.config?.model ?? 'account default'}; account default: {active.model ?? 'not selected'}. An existing conversation keeps its own model. Workspace access is bound to this OAuth registration; Athena does not infer a workspace from your email or report a remaining-quota percentage. Compare ChatGPT Settings → Usage using this same account and workspace, including this app’s limit—not a separate Codex connection.</p><button className="button secondary" onClick={() => void desktop.openChatGPTUsage()}>Open ChatGPT Usage</button></>}
+    {active && <p className="card-description">Request account reference: {active.id.slice(0, 8)}. Conversation model: {chat.snapshot.config?.model ?? 'account default'}; account default: {active.model ?? 'not selected'}. An existing conversation keeps its own model. Workspace access is bound to this OAuth registration; Athena does not infer a workspace from your email or report a remaining-quota percentage.</p>}
 
     <SettingRow title="Coding execution backend" description="Only project-linked coding conversations use this selection. General ChatGPT conversation remains on Athena’s existing subscription connection. Codex uses the account already signed in to the official CLI; it is not an automatic fallback or an API key.">
       <CustomSelect ariaLabel="ChatGPT coding execution backend" value={codingBackend} disabled={busy || chatBusy} options={[
@@ -72,15 +82,15 @@ export function ChatGPTSettings() {
             }} />
             <span>{account.email ?? 'Email not provided by OpenAI'} · Account reference {account.id.slice(0, 8)}</span>
           </div>
-          <span className={`ai-status ${account.planEnabled ? 'ai-active' : ''}`}>{account.active ? '● Active account' : account.enabled ? account.planEnabled ? '● Connected' : '○ Reconnect required' : '○ Disabled'}</span>
+          <span className={`ai-status ${account.planEnabled && account.connected ? 'ai-active' : ''}`}>{!account.connected ? '○ Reconnect required' : account.active ? '● Active account' : account.enabled ? account.planEnabled ? '● Connected' : '○ Reconnect required' : '○ Disabled'}</span>
         </div>
         <div className="chatgpt-account-card__controls">
           <label className="chatgpt-account-enabled"><input type="checkbox" checked={account.enabled} disabled={busy || account.active} onChange={(event) => void run(() => desktop.setChatGPTAccountEnabled({ accountId: account.id, enabled: event.target.checked }))} /> <span>Enabled</span></label>
-          {!account.active && <button className="button primary" disabled={busy || chatBusy || !account.enabled || !account.planEnabled} title={chatBusy ? 'Finish or stop the current chat request before changing the active account.' : undefined} onClick={() => void run(() => desktop.selectChatGPTAccount({ accountId: account.id }))}>Use Account</button>}
+          {!account.active && <button className="button primary" disabled={busy || chatBusy || !account.enabled || !account.planEnabled || !account.connected} title={chatBusy ? 'Finish or stop the current chat request before changing the active account.' : undefined} onClick={() => void run(() => desktop.selectChatGPTAccount({ accountId: account.id }))}>Use Account</button>}
           <button className="button secondary" disabled={busy} onClick={() => void run(() => desktop.reconnectChatGPTAccount({ accountId: account.id }))}>Reconnect</button>
           <button className="button secondary" disabled={busy} onClick={() => void run(() => desktop.removeChatGPTAccount({ accountId: account.id }))}>Remove</button>
         </div>
-        {account.planEnabled && <div className="chatgpt-account-card__models"><button className="button secondary" disabled={busy || !account.enabled} onClick={() => void run(() => desktop.refreshChatGPTModels({ accountId: account.id }))}>Refresh models</button></div>}
+        {account.planEnabled && <div className="chatgpt-account-card__models"><button className="button secondary" disabled={busy || !account.enabled || !account.connected} onClick={() => void run(() => desktop.refreshChatGPTModels({ accountId: account.id }))}>Refresh models</button></div>}
       </article>)}
     </div>}
 
@@ -100,9 +110,11 @@ export function ChatGPTSettings() {
       <CustomSelect ariaLabel="ChatGPT Subscription reasoning effort" value={chat.snapshot.config?.effort ?? 'auto'} disabled={busy || !chat.snapshot.sessionId || chatBusy} options={offeredEfforts.map((effort) => ({ value: effort, label: effort === 'xhigh' ? 'Extra High' : effort[0].toUpperCase() + effort.slice(1) }))} onChange={(effort) => { if (chat.snapshot.sessionId) void chat.command({ action: 'configure-effort', id: chat.snapshot.sessionId, effort: effort as ReasoningEffort }) }} />
     </SettingRow>}
     <div className="ai-actions">
-      <button className="button secondary" disabled={busy || Boolean(status.pendingAccount)} onClick={() => void run(() => desktop.addChatGPTAccount())}>{status.accounts.length ? 'Add ChatGPT Account' : 'Continue with ChatGPT'}</button>
+      <button className="button secondary" disabled={busy || Boolean(status.pendingAccount) || status.accounts.length > 0} onClick={() => void run(() => desktop.addChatGPTAccount())}>Continue with ChatGPT</button>
     </div>
     <p className="card-description">The account chooser is provided by OpenAI’s official authorization page when available; Athena never reads browser cookies or assumes the browser’s active identity without showing it for confirmation. ChatGPT app-sharing and Codex CLI usage are separate execution paths; OpenAI controls actual model access and plan limits for both.</p>
     <div className="ai-feedback" role={notice && !status.planEnabled ? 'alert' : 'status'} aria-live="polite">{busy ? 'Working with ChatGPT…' : notice}</div>
   </Section>
+  {codexUsageActive ? <UsageDashboard data={{ provider: 'ChatGPT Subscription', account: codexUsageActive ? `Codex CLI · ${codexStatus.identity ?? 'identity not exposed'}` : active ? `${active.label}${active.email ? ` · ${active.email}` : ''}` : 'No active ChatGPT account', usageType: 'Locally observed response usage · subscription quota is not exposed', availability: active?.planEnabled || codexUsageActive ? observed.metrics.length ? 'partial' : 'unavailable' : 'authentication-required', source: 'OpenAI response metadata where returned; scoped to this conversation and account', refreshedAt: observed.updatedAt, metrics: observed.metrics, officialUrl: 'https://chatgpt.com/settings/usage', officialLabel: 'Open ChatGPT Usage', explanation: 'Athena’s supported ChatGPT subscription integration does not expose an app-specific quota endpoint. These local response metrics are not ChatGPT plan allowance and are separate from OpenAI API billing. Refresh Usage reloads the saved conversation snapshot; it does not query ChatGPT plan quota. Interrupted requests may be billed; token usage remains unknown when no receipt was returned.' }} onRefresh={chat.refresh} /> : <ProviderUsageDashboard provider="chatgpt-subscription" account={active ? `${active.label}${active.email ? ` · ${active.email}` : ''}` : 'No active account'} accountId={active?.id ?? 'not-connected'} connected={Boolean(active?.connected && active.planEnabled)} />}
+  </>
 }

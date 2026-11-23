@@ -4,6 +4,7 @@ import { Notification, systemPreferences } from 'electron'
 import { z } from 'zod'
 import { APPLICATIONS, appIdentifierSchema, webURLSchema, notificationActionSchema, type AccessibilityActionResult, type AccessibilityInspection, type AppIdentifier, type DesktopActionResult } from '../../../shared/desktopActions'
 import type { DesktopPlatform } from './desktopPlatform'
+import { openMacApplicationFolder } from './vscodeApplication'
 
 const executeFile = promisify(execFile)
 type CommandRunner = (file: string, args: string[], options: { timeout: number; maxBuffer: number; signal: AbortSignal; encoding?: 'utf8' }) => Promise<{ stdout: string }>
@@ -108,8 +109,8 @@ export class MacOSDesktopPlatform implements DesktopPlatform {
   }
   async openWorkspace(path: string, app: 'vscode' | 'finder', signal: AbortSignal): Promise<DesktopActionResult> {
     const deadline = this.signal(signal)
-    const args = app === 'vscode' ? ['-b', APPLICATIONS.vscode.bundleId, '--', path] : [path]
-    await this.run('/usr/bin/open', args, { timeout: 5_000, maxBuffer: 16 * 1024, signal: deadline })
+    if (app === 'vscode') await openMacApplicationFolder({ bundleId: APPLICATIONS.vscode.bundleId }, path, deadline, (file, args, options) => this.run(file, args, { ...options, signal: deadline }))
+    else await this.run('/usr/bin/open', [path], { timeout: 5_000, maxBuffer: 16 * 1024, signal: deadline })
     const result = await this.inspect(app, false, deadline)
     return result.running
       ? { ok: true, status: 'completed', message: `${app === 'vscode' ? 'Visual Studio Code' : 'Finder'} is running and macOS accepted the project folder. The folder view itself was not inspected.` }

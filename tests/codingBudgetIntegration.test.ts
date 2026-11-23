@@ -37,7 +37,7 @@ describe('coding budgets and authorized slash execution', () => {
     let n = 0, context: ChatContextService
     const request = vi.fn<typeof fetch>(async (_url, init) => {
       const body = JSON.parse(init!.body as string)
-      expect(body.tools[0].tools.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['create_file', 'edit_file', 'apply_patch', 'move_file', 'delete_file', 'run_tests']))
+      expect(body.tools[0].tools.map((t: { name: string }) => t.name)).toEqual(expect.arrayContaining(['create_file', 'edit_file', 'apply_patch', 'discover_athena_tools', 'run_tests']))
       expect(body.input.some((m: { content?: string }) => typeof m.content === 'string' && m.content.includes('Implement MBM-11390'))).toBe(true)
       expect(body.parallel_tool_calls).toBe(true)
       n++

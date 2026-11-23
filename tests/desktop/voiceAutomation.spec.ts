@@ -9,7 +9,7 @@ test('floating voice IPC executes recognized app commands through the real Elect
   const appEnvironment = { ...process.env, ATHENA_TEST_DATA: profile, ELECTRON_RENDERER_URL: new URL('../../out/renderer/index.html', import.meta.url).href }
   const app: ElectronApplication = await electron.launch({ args: ['.'], env: appEnvironment })
   try {
-    await expect.poll(() => app.windows().length).toBe(3)
+    await expect.poll(() => app.windows().filter(page => /surface=(control|floating)/.test(page.url())).length).toBe(2)
     const control = app.windows().find(page => page.url().includes('surface=control'))!
     const floating = app.windows().find(page => page.url().includes('surface=floating'))!
     const initial = await control.evaluate(() => window.athena!.getSnapshot())
@@ -48,8 +48,24 @@ test('floating voice IPC executes recognized app commands through the real Elect
     expect(lease.ownership).toMatchObject({ origin: 'athena-local', sessionId: localSession.sessionId })
     const ownership = lease.ownership!
 
+    // Exercise the mounted floating renderer through the same trusted IPC
+    // status channel used by HandsFreeAssistant, without recording microphone audio.
+    expect(await floating.evaluate(ownership => window.athena!.setHandsFreeState({ state: 'processing', ownership }), ownership)).toMatchObject({ ok: true })
+    expect((await floating.evaluate(() => window.athena!.getSnapshot())).floatingVoiceActive).toBe(true)
+    await expect(floating.locator('.task-holograms')).toHaveCount(0)
+    expect(await floating.evaluate(ownership => window.athena!.setHandsFreeState({ state: 'speaking', ownership }), ownership)).toMatchObject({ ok: true })
+    expect((await floating.evaluate(() => window.athena!.getSnapshot())).floatingVoiceActive).toBe(true)
+    await expect(floating.locator('.task-holograms')).toHaveCount(0)
+    await floating.evaluate(ownership => window.athena!.handsFreePlayback({ playing: false, ownership }), ownership)
+    expect(await floating.evaluate(ownership => window.athena!.setHandsFreeState({ state: 'follow-up', ownership }), ownership)).toMatchObject({ ok: true })
+    expect((await floating.evaluate(() => window.athena!.getSnapshot())).floatingVoiceActive).toBe(true)
+
     const opened = await floating.evaluate(({ text, ownership }) => window.athena!.answerHandsFree({ text, ownership }), { text: 'Hey Athena, open YouTube in my current browser.', ownership })
     expect(opened.ok, `${opened.message}\n${await app.evaluate(() => (globalThis as unknown as { automationLogs: string[] }).automationLogs.join('\n'))}`).toBe(true)
+    const afterVoiceReply = await floating.evaluate(() => window.athena!.getSnapshot())
+    expect(afterVoiceReply.floatingVoiceActive).toBe(true)
+    expect(afterVoiceReply.taskVisual?.mode).toBe('idle')
+    await expect(floating.locator('.task-holograms')).toHaveCount(0)
     expect(opened.text).toContain('Page loading was not verified')
     expect(await app.evaluate(() => (globalThis as unknown as { openedUrls: string[] }).openedUrls)).toEqual(['https://www.youtube.com/'])
     expect(await app.evaluate(() => (globalThis as unknown as { automationDialogs: Array<{ message: string; detail: string }> }).automationDialogs)).toEqual([

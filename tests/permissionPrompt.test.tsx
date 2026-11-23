@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Profiler } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { HeldPermissionPrompt, PermissionPrompt, latestPendingApproval, selectActiveApproval } from '../src/components/PermissionPrompt'
 import type { AgentApproval } from '../shared/agent'
@@ -14,7 +15,9 @@ const first = approval('11111111-1111-4111-8111-111111111111', 'Run isolated pro
 first.description = `${'npm test -- project.test.ts\nWorking directory: authorized project\n'.repeat(20)}`
 first.changes = [{ id: 'change', path: 'src/add.ts', diff: '+export const add = 1', status: 'proposed' }]
 
-const messages = (item?: AgentApproval) => item ? [{ execution: { approval: item } }] : [{ execution: {} }]
+const messages = (item?: AgentApproval, status: 'streaming' | 'complete' = 'streaming') => item
+  ? [{ id: 'task-1', status, execution: { approval: item } }]
+  : [{ id: 'task-1', status, execution: {} }]
 
 describe('composer permission prompt', () => {
   it('keeps approval details in the scrollable body and sends the existing decisions', () => {
@@ -77,12 +80,12 @@ describe('permission prompt lifecycle', () => {
   const sessionId = '00000000-0000-4000-a000-000000000002'
   const firstPrompt = approval('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'First command')
   const secondPrompt = approval('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Second command')
-  const thirdPrompt = approval('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Third command')
   const prompt = () => screen.queryByRole('region', { name: 'Approval required' })
 
   it('renders nothing when the queue is empty', () => {
     render(<HeldPermissionPrompt messages={messages()} sessionId={sessionId} decide={vi.fn()} />)
     expect(prompt()).not.toBeInTheDocument()
+    expect(document.querySelector('.agent-approval-host')).toHaveAttribute('hidden')
   })
 
   it.each([
@@ -111,30 +114,58 @@ describe('permission prompt lifecycle', () => {
     await waitFor(() => expect(prompt()).not.toBeInTheDocument())
   })
 
-  it('shows each later approval after the previous decision succeeds', async () => {
+  it.each([2, 3, 5])('hides the prompt between %i consecutive approvals without changing its shell or composer', async (count) => {
+    const requests = Array.from({ length: count }, (_, index) => approval(`request-${index + 1}`, `Command ${index + 1}`))
     const decide = vi.fn().mockResolvedValue(true)
-    const view = render(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} decide={decide} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
-    await waitFor(() => expect(prompt()).not.toBeInTheDocument())
-    view.rerender(<HeldPermissionPrompt messages={messages(secondPrompt)} sessionId={sessionId} decide={decide} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
-    await waitFor(() => expect(prompt()).not.toBeInTheDocument())
-    view.rerender(<HeldPermissionPrompt messages={messages(thirdPrompt)} sessionId={sessionId} decide={decide} />)
-    expect(screen.getByText('Third command')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Always allow' }))
-    await waitFor(() => expect(prompt()).not.toBeInTheDocument())
-    expect(decide.mock.calls.map((call) => [call[0], call[1], call[2]])).toEqual([
-      [firstPrompt.id, true, undefined],
-      [secondPrompt.id, false, undefined],
-      [thirdPrompt.id, true, true],
-    ])
+    const profilerPhases: string[] = []
+    const rect = { x: 0, y: 0, top: 0, right: 600, bottom: 112, left: 0, width: 600, height: 112, toJSON: () => ({}) }
+    const measure = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect as DOMRect)
+    function Harness({ item, status = 'streaming', phase = 'thinking' }: { item?: AgentApproval; status?: 'streaming' | 'complete'; phase?: 'idle' | 'thinking' | 'speaking' }) {
+      return <><Profiler id="approval-prompt" onRender={(_id, profilerPhase) => profilerPhases.push(profilerPhase)}><HeldPermissionPrompt messages={messages(item, status)} sessionId={sessionId} phase={phase} decide={decide} /></Profiler><textarea aria-label="Composer draft" defaultValue="keep my draft" /></>
+    }
+    const view = render(<Harness item={requests[0]} />)
+    const shell = screen.getByTestId('permission-prompt-shell')
+    const host = shell.parentElement as HTMLElement
+    const composer = screen.getByRole('textbox', { name: 'Composer draft' })
+    expect(host.style.height).toBe('112px')
+    fireEvent.change(composer, { target: { value: 'unsent text stays here' } })
+    expect(shell).toContainElement(screen.getByText('Command 1'))
+
+    for (let index = 0; index < count; index++) {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+      await waitFor(() => expect(host).toHaveAttribute('hidden'))
+      expect(screen.queryByText('Decision recorded. Athena is continuing the task.')).not.toBeInTheDocument()
+      expect(host.style.height).toBe('')
+      expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Approval required' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('permission-prompt-shell')).toBe(shell)
+      if (index + 1 < count) {
+        view.rerender(<Harness item={requests[index + 1]} />)
+        expect(host).not.toHaveAttribute('hidden')
+        expect(screen.getByTestId('permission-prompt-shell')).toBe(shell)
+        expect(screen.getByText(`Command ${index + 2}`)).toBeVisible()
+        expect(screen.getByRole('textbox', { name: 'Composer draft' })).toBe(composer)
+        expect(composer).toHaveValue('unsent text stays here')
+        expect(host.style.height).toBe('112px')
+      }
+    }
+
+    view.rerender(<Harness status="complete" phase="idle" />)
+    expect(host).toHaveAttribute('hidden')
+    expect(host.style.height).toBe('')
+    expect(screen.getByRole('textbox', { name: 'Composer draft' })).toBe(composer)
+    expect(profilerPhases.filter(phase => phase === 'mount')).toHaveLength(1)
+    measure.mockRestore()
+    expect(decide).toHaveBeenCalledTimes(count)
   })
 
   it('keeps a failed approval visible, explains the failure, and allows a retry', async () => {
     const decide = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
     render(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} decide={decide} />)
+    const shell = screen.getByTestId('permission-prompt-shell')
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('This approval could not be completed. You can try again.')
+    expect(screen.getByTestId('permission-prompt-shell')).toBe(shell)
     expect(screen.getByText('First command')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
@@ -158,17 +189,19 @@ describe('permission prompt lifecycle', () => {
 
   it('does not restore a resolved prompt from a duplicate or late approval event', async () => {
     const decide = vi.fn().mockResolvedValue(true)
-    const view = render(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} decide={decide} />)
+    const view = render(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} phase="thinking" decide={decide} />)
+    const host = document.querySelector('.agent-approval-host')
+    const region = screen.getByTestId('permission-prompt-shell')
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
-    await waitFor(() => expect(prompt()).not.toBeInTheDocument())
-    view.rerender(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} decide={decide} />)
-    expect(prompt()).not.toBeInTheDocument()
-    view.rerender(<HeldPermissionPrompt messages={messages(secondPrompt)} sessionId={sessionId} decide={decide} />)
-    const region = screen.getByRole('region', { name: 'Approval required' })
-    view.rerender(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} decide={decide} />)
-    expect(screen.getByRole('region', { name: 'Approval required' })).toBe(region)
+    await waitFor(() => expect(host).toHaveAttribute('hidden'))
+    expect(screen.queryByText('Decision recorded. Athena is continuing the task.')).not.toBeInTheDocument()
+    view.rerender(<HeldPermissionPrompt messages={messages(secondPrompt)} sessionId={sessionId} phase="thinking" decide={decide} />)
+    expect(host).not.toHaveAttribute('hidden')
     expect(screen.getByText('Second command')).toBeVisible()
-    view.rerender(<HeldPermissionPrompt messages={messages()} sessionId={sessionId} decide={decide} />)
+    view.rerender(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} phase="thinking" decide={decide} />)
+    expect(screen.getByTestId('permission-prompt-shell')).toBe(region)
+    expect(screen.getByText('Second command')).toBeVisible()
+    view.rerender(<HeldPermissionPrompt messages={messages()} sessionId={sessionId} phase="idle" decide={decide} />)
     expect(prompt()).not.toBeInTheDocument()
   })
 
@@ -186,6 +219,45 @@ describe('permission prompt lifecycle', () => {
     await waitFor(() => expect(prompt()).not.toBeInTheDocument())
     expect(decide.mock.calls.map((call) => call[0])).toEqual([firstPrompt.id, secondPrompt.id])
     view.rerender(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} decide={decide} />)
+    expect(prompt()).not.toBeInTheDocument()
+  })
+
+  it('keeps a newer pending request active when an older resolution arrives late', async () => {
+    let finishFirst: (ok: boolean) => void = () => {}
+    const decide = vi.fn()
+      .mockImplementationOnce(() => new Promise<boolean>(resolve => { finishFirst = resolve }))
+      .mockResolvedValueOnce(true)
+    const view = render(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} phase="thinking" decide={decide} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    view.rerender(<HeldPermissionPrompt messages={messages(secondPrompt)} sessionId={sessionId} phase="thinking" decide={decide} />)
+    const shell = screen.getByTestId('permission-prompt-shell')
+    expect(screen.getByText('Second command')).toBeVisible()
+    finishFirst(true)
+    await waitFor(() => expect(screen.getByText('Second command')).toBeVisible())
+    expect(screen.getByTestId('permission-prompt-shell')).toBe(shell)
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    await waitFor(() => expect(document.querySelector('.agent-approval-host')).toHaveAttribute('hidden'))
+    expect(screen.getByTestId('permission-prompt-shell')).toBe(shell)
+  })
+
+  it('keeps the prompt visible only while a decision is unresolved, then releases its reserved height', async () => {
+    let finish: (ok: boolean) => void = () => {}
+    const decide = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve }))
+    const view = render(<HeldPermissionPrompt messages={messages(firstPrompt)} sessionId={sessionId} phase="thinking" decide={decide} />)
+    const host = document.querySelector('.agent-approval-host') as HTMLElement
+    const shell = screen.getByTestId('permission-prompt-shell')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Recording your decision…')
+    expect(host).not.toHaveAttribute('hidden')
+
+    view.rerender(<HeldPermissionPrompt messages={messages()} sessionId={sessionId} phase="thinking" decide={decide} />)
+    expect(screen.getByTestId('permission-prompt-shell')).toBe(shell)
+    expect(screen.getByText('First command')).toBeVisible()
+
+    finish(true)
+    await waitFor(() => expect(host).toHaveAttribute('hidden'))
+    expect(host.style.height).toBe('')
     expect(prompt()).not.toBeInTheDocument()
   })
 })

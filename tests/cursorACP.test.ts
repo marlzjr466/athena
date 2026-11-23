@@ -1,11 +1,71 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { classifyACPMessage, cursorActivityChunk, cursorEffectiveModel, cursorVariantDiagnostic, CursorACPProvider, CursorACPService, cursorACPArguments, parseCursorModels } from '../electron/main/ai/cursorACP'
 import { cursorCatalogModelFromEffective, cursorEffectiveSelectionMatches, cursorModelDisplayLabel, cursorModelEffortOptions, cursorModelFastPairAvailable, cursorModelVariantId, cursorReportedModelVariant, cursorSelectableModels, defaultCursorModel, groupCursorModels, resolveCursorModel, type CursorStatus } from '../shared/cursor'
 
 describe('Cursor model variants', () => {
+  it('uses a progress-aware 30-minute ACP prompt while preserving activity callbacks', async () => {
+    const service = new CursorACPService(async (_command, args) => {
+      if (args[0] === '--version') return { stdout: '2026.10.01', stderr: '' }
+      if (args[0] === 'status') return { stdout: 'Logged in as athena@example.test', stderr: '' }
+      return { stdout: '', stderr: '' }
+    }, async () => '/mock/agent')
+    let notification: ((message: any) => void) | undefined
+    let promptTimer: [number | undefined, boolean | undefined] | undefined
+    const provider = new CursorACPProvider(service, '/authorized/project', true, null, null, async () => {}, () => ({
+      get onNotification() { return notification }, set onNotification(value) { notification = value },
+      request: async (method, _params, timeout, progressAware) => {
+        if (method === 'session/new') return { sessionId: 'long-running-session' }
+        if (method === 'session/prompt') {
+          promptTimer = [timeout, progressAware]
+          notification?.({ method: 'session/update', params: { sessionId: 'long-running-session', update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', kind: 'edit', status: 'completed', title: 'Edited source file' } } })
+          notification?.({ method: 'session/update', params: { sessionId: 'long-running-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done.' } } } })
+          return { stopReason: 'end_turn' }
+        }
+        return {}
+      }, notify: async () => {}, respond: () => {}, respondError: () => {}, close: () => {},
+    }))
+    const progress = vi.fn()
+    for await (const _chunk of provider.streamMessage([{ id: 'one', role: 'user', status: 'complete', createdAt: 1, content: 'Check this project' }], { onMeaningfulProgress: progress })) { /* consume */ }
+    expect(promptTimer).toEqual([30 * 60_000, true])
+    expect(progress).toHaveBeenCalledTimes(2)
+  })
+  it('attaches the completed ACP diff when the initial event lacked a target and disk already changed', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'athena-cursor-file-change-'))
+    try {
+      await writeFile(join(cwd, 'events.yaml'), 'phase: draft\n')
+      const service = new CursorACPService(async (_command, args) => {
+        if (args[0] === '--version') return { stdout: '2026.10.01', stderr: '' }
+        if (args[0] === 'status') return { stdout: 'Logged in as athena@example.test', stderr: '' }
+        return { stdout: '', stderr: '' }
+      }, async () => '/mock/agent')
+      let notification: ((message: any) => void) | undefined
+      const client: any = {
+        get onNotification() { return notification }, set onNotification(value: typeof notification) { notification = value },
+        request: async (method: string) => {
+          if (method === 'session/new') return { sessionId: 'file-change-session' }
+          if (method === 'session/prompt') return new Promise(resolve => {
+            void (async () => {
+              const title = `Edit \`${join(cwd, 'events.yaml')}\``
+              notification?.({ method: 'session/update', params: { sessionId: 'file-change-session', update: { sessionUpdate: 'tool_call', toolCallId: 'edit-1', kind: 'edit', status: 'pending', title: 'Edit File' } } })
+              await writeFile(join(cwd, 'events.yaml'), 'phase: reopened\n')
+              notification?.({ method: 'session/update', params: { sessionId: 'file-change-session', update: { sessionUpdate: 'tool_call_update', toolCallId: 'edit-1', status: 'completed', title, content: [{ type: 'diff', path: join(cwd, 'events.yaml'), oldText: 'phase: draft\n', newText: 'phase: reopened\n' }] } } })
+              notification?.({ method: 'session/update', params: { sessionId: 'file-change-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Updated the status.' } } } })
+              resolve({ stopReason: 'end_turn' })
+            })()
+          })
+          return {}
+        },
+        notify: vi.fn(), respond: vi.fn(), respondError: vi.fn(), close: vi.fn(),
+      }
+      const provider = new CursorACPProvider(service, cwd, true, 'athena@example.test', null, async () => {}, () => client)
+      const chunks = []
+      for await (const chunk of provider.streamMessage([{ id: 'user-1', role: 'user', status: 'complete', createdAt: 1, content: 'Edit the file' }])) chunks.push(chunk)
+      expect(chunks.find(chunk => chunk.type === 'activity' && chunk.changes?.length)).toMatchObject({ type: 'activity', status: 'complete', changes: [{ path: 'events.yaml', status: 'applied', providerId: 'cursor-subscription', verified: true }] })
+    } finally { await rm(cwd, { recursive: true, force: true }) }
+  })
   const variants = [
     { id: 'cursor-grok-4.6-medium', label: 'Grok 4.6 Medium' },
     { id: 'cursor-grok-4.6-medium-fast', label: 'Grok 4.6 Medium Fast' },

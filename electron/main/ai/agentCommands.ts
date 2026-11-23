@@ -1,16 +1,17 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { FilesystemAccessMode } from '../../../shared/permissions'
 import { ChatError } from './AIProvider'
 import { managedProcessLifecycle, ownsDetachedProcess } from './ownedProcess'
-import { commandFilesystemDenial, validateCommandReadPaths, type CommandFilesystemDenial } from './commandFileAccess'
+import { commandFilesystemDenial, validateCommandReadPaths, validateCommandWritePaths, type CommandFilesystemDenial } from './commandFileAccess'
 import { projectCommandLease } from './projectCommandLease'
+import { log } from '../logger'
 
-export interface CommandRequest { executable: string; args: string[]; network: boolean; install: boolean; gitWrite: boolean; filesystemMode?: FilesystemAccessMode; localServer?: boolean; loopback?: boolean; port?: number; approvedReadPaths?: string[]; /** Trusted index-review callers stream bounded output rather than retaining it in a normal command result. */ streamOutput?: boolean; /** Only a trusted caller already holding projectCommandLease may set this. */ projectLeaseHeld?: boolean }
-export interface CommandResult { command: string; exitCode: number | null; output: string; stdout?: string; stderr?: string; truncated: boolean; timedOut: boolean; filesystemDenial?: CommandFilesystemDenial; localNetworkFailure?: { kind: 'refused' | 'timeout' | 'dns' | 'policy' | 'tls' | 'proxy' | 'unknown'; message: string }; approvedReadPaths?: string[]; environment?: { workingDirectory: string; executablePath: string; nodeExecutable: string | null; nodeVersion: string | null } }
+export interface CommandRequest { executable: string; args: string[]; network: boolean; install: boolean; gitWrite: boolean; filesystemMode?: FilesystemAccessMode; localServer?: boolean; loopback?: boolean; port?: number; approvedReadPaths?: string[]; /** Project directories, including new descendants, approved for writes by this command only. */ approvedWritePaths?: string[]; /** Granted by the command router after approval, never from raw provider input. */ projectWrite?: boolean; projectDelete?: boolean; /** Recheck live conversation/workspace authorization after the execution queue. */ assertAuthorization?: () => void | Promise<void>; /** Trusted index-review callers stream bounded output rather than retaining it in a normal command result. */ streamOutput?: boolean; /** Only a trusted caller already holding projectCommandLease may set this. */ projectLeaseHeld?: boolean }
+export interface CommandResult { command: string; exitCode: number | null; output: string; stdout?: string; stderr?: string; truncated: boolean; timedOut: boolean; filesystemDenial?: CommandFilesystemDenial; localNetworkFailure?: { kind: 'refused' | 'timeout' | 'dns' | 'policy' | 'tls' | 'proxy' | 'unknown'; message: string }; approvedReadPaths?: string[]; approvedWritePaths?: string[]; environment?: { workingDirectory: string; executablePath: string; nodeExecutable: string | null; nodeVersion: string | null } }
 export interface ManagedCommand { child: ReturnType<typeof spawn>; dispose(): Promise<void> }
 export function developmentEnvironment(scratch: string, request: CommandRequest): NodeJS.ProcessEnv {
   const java = [process.env.JAVA_HOME, join(homedir(), '.sdkman/candidates/java/current'), '/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home'].find((path) => path?.startsWith('/') && existsSync(join(path, 'bin/java')))
@@ -44,6 +45,16 @@ export function localNetworkFailure(output: string, requested: boolean, timedOut
   return { kind: code, message: messages[code] }
 }
 const quote = (value: string) => JSON.stringify(value)
+function isGitStatus(request: CommandRequest): boolean {
+  if (request.executable !== 'git') return false
+  let index = 0
+  while (index < request.args.length) {
+    if (request.args[index] === '--no-pager' || request.args[index] === '--no-optional-locks') { index++; continue }
+    if (request.args[index] === '-c') { index += 2; continue }
+    return request.args[index] === 'status'
+  }
+  return false
+}
 export function commandProfile(root: string, scratch: string, request: CommandRequest): string {
   // Full Mac Access is an explicit filesystem authorization for the active
   // provider. The sandbox still blocks secrets and macOS TCC/SIP still apply.
@@ -57,10 +68,23 @@ export function commandProfile(root: string, scratch: string, request: CommandRe
   // TypeScript build-mode checks write incremental metadata here even when
   // emitting no source. Authorize only this cache, not dependency/source edits.
   const writes = [scratch, ...['dist', 'build', 'out', 'coverage', 'node_modules/.tmp'].map((path) => join(root, path))]
+  const approvedWrites = request.approvedWritePaths?.length ? validateCommandWritePaths(root, request.approvedWritePaths) : []
+  writes.push(...approvedWrites)
+  if ((request.projectWrite || approvedWrites.length) && (request.filesystemMode === 'full-read-only' || request.executable === 'git' || root === '/')) throw new ChatError('This command cannot receive workspace write permission.')
+  if (request.projectWrite) writes.push(root)
   if (request.localServer) writes.push(...['.next', '.turbo', '.vite', '.rspack-cache', 'node_modules/.cache', 'node_modules/.vite'].map((path) => join(root, path)))
   if (request.install) writes.push(join(root, 'node_modules'))
   if (request.gitWrite) writes.push(join(root, '.git'))
   const denyDeveloperConfig = request.filesystemMode === undefined || request.filesystemMode === 'project-only' ? '|\\.claude|\\.codex' : ''
+  // Git status must inspect tracked project instruction files too. This is a
+  // read-only exception for this operation and these project-local trees;
+  // global configuration, secrets, symlink targets and all writes stay denied.
+  const projectGitStatus = isGitStatus(request)
+  // stat is needed even for protected tracked files; it does not reveal their
+  // contents. Content reads remain denied, and a required hash of a protected
+  // file must report an incomplete status rather than bypassing that denial.
+  const protectedRead = projectGitStatus ? 'file-read-data' : 'file-read*'
+  const developerReadExclusions = projectGitStatus ? ['.claude', '.codex'].map(path => `(require-not (subpath ${quote(join(root, path))}))`).join(' ') : ''
   const approvedReads = request.approvedReadPaths?.length ? validateCommandReadPaths(root, request.approvedReadPaths) : []
   const credentialRule = '(regex #"(^|/)[^/]*[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][^/]*(/|$)")'
   // Exclude only literal approved files from the credential READ denial.
@@ -74,11 +98,18 @@ export function commandProfile(root: string, scratch: string, request: CommandRe
     (allow file-read* ${read.map((path) => `(subpath ${quote(path)})`).join(' ')} (literal "/") (literal "/private") (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random") (literal "/private/etc/ssl/openssl.cnf") ${request.loopback || request.localServer ? '(literal "/private/etc/hosts") (literal "/etc/hosts") (literal "/private/var/run/mDNSResponder")' : ''})
     (allow file-write* ${writes.map((path) => `(subpath ${quote(path)})`).join(' ')} (literal "/dev/null"))
     ${request.install ? `(allow file-write* ${['package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'].map((path) => `(literal ${quote(join(root, path))})`).join(' ')})` : ''}
-    (deny file-read* ${credentialReadRule})
+    ${request.projectWrite || approvedWrites.length ? `
+      (deny file-write-unlink (literal ${quote(root)}))
+      ${request.projectDelete ? '' : `(deny file-write-unlink (subpath ${quote(root)}))`}
+      (deny file-write* (regex #"(^|/)(\\.git|\\.claude|\\.codex|\\.agents)(/|$)"))
+      ${request.install ? '' : `(deny file-write* (require-all (subpath ${quote(join(root, 'node_modules'))}) (require-not (subpath ${quote(join(root, 'node_modules/.tmp'))}))) ${['package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'].map(path => `(literal ${quote(join(root, path))})`).join(' ')})`}
+    ` : ''}
+    (deny ${protectedRead} ${credentialReadRule})
     (deny file-write* ${credentialRule})
-    (deny file-read* file-write* (regex #"(^|/)(\\.env([^/]*|)|[^/]*[Ss]ecrets?[^/]*|id_rsa|id_ed25519)(/|$)"))
-    (deny file-read* (regex #"\\.(pem|p12|pfx|key|keystore)$"))
-    (deny file-read* file-write* (regex #"(^|/)(\\.aws|\\.azure|\\.kube|\\.docker|\\.ssh|\\.npmrc|\\.netrc|\\.yarnrc|\\.config${denyDeveloperConfig}|\\.gnupg|Keychains|auth\\.json|Login Data)(/|$)"))
+    (deny ${protectedRead} file-write* (regex #"(^|/)(\\.env([^/]*|)|[^/]*[Ss]ecrets?[^/]*|id_rsa|id_ed25519)(/|$)"))
+    (deny ${protectedRead} file-write* (regex #"\\.(pem|p12|pfx|key|keystore)$"))
+    (deny ${protectedRead} file-write* (regex #"(^|/)(\\.aws|\\.azure|\\.kube|\\.docker|\\.ssh|\\.npmrc|\\.netrc|\\.yarnrc|\\.config|\\.gnupg|Keychains|auth\\.json|Login Data)(/|$)"))
+    ${denyDeveloperConfig ? `(deny file-read* ${developerReadExclusions ? `(require-all (regex #"(^|/)(\\.claude|\\.codex)(/|$)") ${developerReadExclusions})` : '(regex #"(^|/)(\\.claude|\\.codex)(/|$)")'}) (deny file-write* (regex #"(^|/)(\\.claude|\\.codex)(/|$)"))` : ''}
     (deny file-read* file-write* (regex #"/Library/(Application Support|Cookies)/.*[Cc]ookies(\\.binarycookies|\\.sqlite)?(/|$)"))
     ${request.executable !== 'git' ? `(deny file-read* file-write* (subpath ${quote(join(root, '.git'))}))` : ''}
     ${request.network ? '(allow network-outbound)' : ''}
@@ -109,7 +140,7 @@ export class AgentCommands {
   }
   async supported(): Promise<boolean> { return this.available ??= this.probe() }
   executable(name: string): string {
-    if (!['echo', 'npm', 'pnpm', 'yarn', 'node', 'git', 'python3', 'go', 'cargo', 'curl'].includes(name)) throw new ChatError('Only supported development executables are allowed; shell interpreters and command strings are not accepted.')
+    if (!['echo', 'npm', 'pnpm', 'yarn', 'npx', 'node', 'git', 'python3', 'go', 'cargo', 'curl'].includes(name)) throw new ChatError('Only supported development executables are allowed; shell interpreters and command strings are not accepted.')
     if (name === 'echo') return '/bin/echo'
     if (name === 'git') {
       for (const candidate of ['/Applications/Xcode.app/Contents/Developer/usr/bin/git', '/Library/Developer/CommandLineTools/usr/bin/git']) {
@@ -168,15 +199,24 @@ export class AgentCommands {
     signal.throwIfAborted()
     const executable = this.executable(request.executable)
     root = realpathSync(root)
+    const rootIdentity = statSync(root)
     // Validate before allocating resources and again at profile generation.
-    request = { ...request, approvedReadPaths: request.approvedReadPaths?.length ? validateCommandReadPaths(root, request.approvedReadPaths) : undefined }
+    const approvedWritePaths = request.approvedWritePaths?.length ? validateCommandWritePaths(root, request.approvedWritePaths) : []
+    request = {
+      ...request,
+      approvedReadPaths: request.approvedReadPaths?.length ? validateCommandReadPaths(root, request.approvedReadPaths) : undefined,
+    }
     const release = request.projectLeaseHeld ? () => {} : await projectCommandLease.acquire(root, signal)
     try {
+    await request.assertAuthorization?.()
+    signal.throwIfAborted()
+    const currentRoot = statSync(root)
+    if (realpathSync(root) !== root || currentRoot.dev !== rootIdentity.dev || currentRoot.ino !== rootIdentity.ino) throw new ChatError('Project root changed while the command was waiting. Authorize the workspace again before retrying.')
     const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'athena-command-')))
     let profile: string
     try { profile = commandProfile(root, scratch, request) }
     catch (error) { rmSync(scratch, { recursive: true, force: true }); throw error }
-    const env: NodeJS.ProcessEnv = { ...developmentEnvironment(scratch, request), GIT_OPTIONAL_LOCKS: request.gitWrite ? '1' : '0' }
+    const env: NodeJS.ProcessEnv = { ...developmentEnvironment(scratch, request), GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: request.gitWrite ? '1' : '0' }
     const environment = this.environmentDetails(root, executable, env)
     if (request.executable === 'git' && request.network && existsSync('/etc/ssl/cert.pem')) {
       // The sandbox blocks arbitrary .pem files to protect private keys. Git's
@@ -189,6 +229,7 @@ export class AgentCommands {
       } catch (error) { rmSync(scratch, { recursive: true, force: true }); throw error }
     }
     return await new Promise((resolve, reject) => {
+      const startedAt = Date.now()
       const child = spawn('/usr/bin/sandbox-exec', ['-p', profile, executable, ...request.args], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
         env,
@@ -249,10 +290,17 @@ export class AgentCommands {
         else onOutput?.(redactOutput(output))
         clean()
         const result: CommandResult = { command: [request.executable, ...request.args].join(' '), exitCode, output: redactOutput(output), truncated, timedOut, environment }
+        const permissionDenied = /Operation not permitted|Permission denied|\bEPERM\b|\bEACCES\b/i.test(stderr)
+        if (isGitStatus(request) && (permissionDenied || truncated || timedOut)) {
+          result.exitCode = exitCode || 1
+          result.output = `Git status is incomplete; do not infer a clean working tree. ${permissionDenied ? 'Some paths could not be inspected. Check the sandbox/OS restriction before retrying.' : 'The inspection did not finish.'}\n${result.output}`
+        }
+        log('agent.command_finished', { executable: request.executable, sandbox: 'macos-seatbelt', scope: request.filesystemMode ?? 'project-only', exitCode: result.exitCode ?? -1, durationMs: Date.now() - startedAt, timedOut, truncated, permissionDenied })
         if ((exitCode !== 0 || timedOut) && (request.loopback || /\b(?:localhost|127\.0\.0\.1|::1)\b/i.test(request.args.join(' ')) && /(?:connect|fetch|ECONN|ETIMEDOUT|ENOTFOUND|EPERM|EACCES|proxy|TLS)/i.test(output))) result.localNetworkFailure = localNetworkFailure(output, Boolean(request.loopback || request.network), timedOut)
         const denial = commandFilesystemDenial(root, result.output, request.approvedReadPaths)
         if (denial) result.filesystemDenial = denial
         if (request.approvedReadPaths?.length) result.approvedReadPaths = request.approvedReadPaths
+        if (approvedWritePaths.length) result.approvedWritePaths = approvedWritePaths
         // Keep channel data available to index-only Git validation without
         // tripling normal tool-result, activity, and conversation payloads.
         Object.defineProperties(result, { stdout: { value: redactOutput(stdout) }, stderr: { value: redactOutput(stderr) } })

@@ -18,7 +18,7 @@ const message = { id: 'u', role: 'user' as const, content: 'Complete platform-in
 const contextError = () => new Response(JSON.stringify({ error: { code: 'context_length_exceeded' } }), { status: 400 })
 async function collect(request: typeof fetch, options: StreamOptions = {}) {
   const chunks = []
-  for await (const chunk of new OpenAIProvider('test-only', 'gpt-6-sol', request, undefined, true).streamMessage([message], { effort: 'high', ...options })) chunks.push(chunk)
+  for await (const chunk of new OpenAIProvider('test-only', 'gpt-6-sol', request, undefined, true, undefined, {}, undefined, 1_050_000).streamMessage([message], { effort: 'high', ...options })) chunks.push(chunk)
   return chunks
 }
 describe('live-shape slash response regressions', () => {

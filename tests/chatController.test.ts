@@ -4,6 +4,7 @@ import { ChatError, NOT_CONFIGURED, type AIProvider } from '../electron/main/ai/
 import { localInferenceSlots } from '../electron/main/ai/localInferenceSlots'
 import type { AIChunk, ChatMessage } from '../shared/chat'
 import { timelineBlocks } from '../src/features/chat/agentTimelinePresentation'
+import { contextDefaults } from '../shared/context'
 vi.mock('../electron/main/logger', () => ({ log: vi.fn() }))
 const gate = () => { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done }); return { promise, resolve } }
 function fixture(stream: AIProvider['streamMessage'] = async function* () { yield { type: 'text', text: 'Hello.' }; yield { type: 'done' } }) {
@@ -13,6 +14,80 @@ function fixture(stream: AIProvider['streamMessage'] = async function* () { yiel
 }
 afterEach(() => vi.useRealTimers())
 describe('main-owned conversation lifecycle', () => {
+  it('preserves global continuation settings when project permission mode changes', () => {
+    const chat = new ChatController({ provider: async () => ({ testConnection: async () => true, streamMessage: async function* () { yield { type: 'done' as const } } }), changed: vi.fn(), phase: vi.fn(), contextDefaults: () => ({ ...contextDefaults(), maxContinuations: 12, contextSafetyMargin: 0.2, safeTaskRecovery: false }) })
+    const id = chat.current().id
+    chat.addWorkspace(id, { id: '58922cd4-0341-42bb-9c8d-2bc40c1d13eb', name: 'Project' })
+    expect(chat.command({ action: 'agent-mode', id, mode: 'advanced' }).ok).toBe(true)
+    expect(chat.current().config.contextSettings).toMatchObject({ maxContinuations: 12, contextSafetyMargin: 0.2, safeTaskRecovery: false, allowProjectCommands: true })
+    expect(chat.command({ action: 'project-permissions', id, mode: 'ask', allowDeletion: false, allowCommands: false }).ok).toBe(true)
+    expect(chat.current().config.contextSettings).toMatchObject({ maxContinuations: 12, contextSafetyMargin: 0.2, safeTaskRecovery: false, allowProjectCommands: false })
+    chat.dispose()
+  })
+  it('keeps third-party effort choices separate by connection and model', () => {
+    const chat = new ChatController({ provider: async () => ({ testConnection: async () => true, streamMessage: async function* () { yield { type: 'done' as const } } }), changed: vi.fn(), phase: vi.fn(), modelSupportsEffort: (_model, effort, route) => route?.provider === 'third-party' ? ['auto','low','high'].includes(effort) : effort === 'auto' })
+    const id = chat.current().id
+    const first = { provider: 'third-party' as const, accountId: '11111111-1111-4111-8111-111111111111' }
+    const second = { provider: 'third-party' as const, accountId: '22222222-2222-4222-8222-222222222222' }
+    expect(chat.command({ action: 'select-account-model', id, route: first, model: 'model-a' }).ok).toBe(true)
+    expect(chat.command({ action: 'configure-effort', id, effort: 'high' }).ok).toBe(true)
+    expect(chat.command({ action: 'select-account-model', id, route: first, model: 'model-b' }).ok).toBe(true)
+    expect(chat.current().config.effort).toBe('auto')
+    expect(chat.command({ action: 'configure-effort', id, effort: 'low' }).ok).toBe(true)
+    expect(chat.command({ action: 'select-account-model', id, route: second, model: 'model-a' }).ok).toBe(true)
+    expect(chat.current().config.effort).toBe('auto')
+    expect(chat.command({ action: 'select-account-model', id, route: first, model: 'model-a' }).ok).toBe(true)
+    expect(chat.current().config.effort).toBe('high')
+    expect(chat.command({ action: 'select-account-model', id, route: first, model: 'model-b' }).ok).toBe(true)
+    expect(chat.current().config.effort).toBe('low')
+    chat.dispose()
+  })
+  it('updates a saved change when a later provider event revises the same change ID', async () => {
+    const f = fixture(async function* () {
+      const change = { id: 'net-change', path: 'src/app.ts', diff: '+first', status: 'applied' as const }
+      yield { type: 'activity', id: 'edit', tool: 'edit_file', label: 'Edit src/app.ts', status: 'complete', changes: [change] }
+      yield { type: 'activity', id: 'edit', tool: 'edit_file', label: 'Edit src/app.ts', status: 'complete', changes: [{ ...change, diff: '+final' }] }
+      yield { type: 'text', text: 'Done.' }
+      yield { type: 'done' }
+    })
+    f.chat.send({ text: 'Edit the file' })
+    await vi.waitFor(() => expect(f.chat.snapshot().phase).toBe('idle'))
+    expect(f.chat.snapshot().messages[1].execution?.activities[0].changes).toEqual([{ id: 'net-change', path: 'src/app.ts', diff: '+final', status: 'applied' }])
+    f.chat.dispose()
+  })
+  it('keeps an ACP tool running beyond 30 total minutes without applying the old 15-minute task deadline', async () => {
+    vi.useFakeTimers()
+    const finish = gate()
+    let entered = false
+    const provider: AIProvider = {
+      executionTimeoutPolicy: 'activity', testConnection: async () => true,
+      streamMessage: async function* (_messages, options) {
+        entered = true
+        options?.onStreamPhase?.('running-tools')
+        yield { type: 'activity', id: 'native-read', tool: 'read_file', label: 'Read project file', status: 'running' }
+        await finish.promise
+        options?.onMeaningfulProgress?.()
+        options?.onStreamPhase?.('waiting-model')
+        yield { type: 'activity', id: 'native-read', tool: 'read_file', label: 'Read project file', status: 'complete' }
+        yield { type: 'text', text: 'Review complete.' }
+        yield { type: 'done' }
+      },
+    }
+    const chat = new ChatController({ provider: async () => provider, changed: vi.fn(), phase: vi.fn() })
+    chat.addWorkspace(chat.current().id, { id: '58922cd4-0341-42bb-9c8d-2bc40c1d13eb', name: 'Project' })
+    chat.current().config.contextSettings = { ...contextDefaults(), maxExecutionMinutes: 15, acpInactivityMinutes: 20, acpToolInactivityMinutes: 40 }
+    expect(chat.send({ text: 'Review the project' })).toEqual({ ok: true })
+    for (let index = 0; index < 50 && !entered; index++) await Promise.resolve()
+    expect(entered).toBe(true)
+    for (let index = 0; index < 50 && !chat.snapshot().messages[1].execution?.activities.length; index++) await Promise.resolve()
+    vi.advanceTimersByTime(31 * 60_000)
+    expect(chat.snapshot().messages[1].error).toBeUndefined()
+    expect(chat.snapshot().messages[1].execution?.activities[0]?.status).toBe('running')
+    finish.resolve()
+    for (let index = 0; index < 50 && chat.snapshot().phase !== 'idle'; index++) await Promise.resolve()
+    expect(chat.snapshot().messages[1].content).toContain('Review complete.')
+    chat.dispose()
+  })
   it('shows the project inspection preface only on the first ordinary turn', async () => {
     const f = fixture()
     f.chat.addWorkspace(f.chat.current().id, { id: '58922cd4-0341-42bb-9c8d-2bc40c1d13eb', name: 'Project' })
@@ -55,6 +130,22 @@ describe('main-owned conversation lifecycle', () => {
     expect(f.chat.send({ text: 'Find current React information' })).toEqual({ ok: true })
     await vi.waitFor(() => expect(f.chat.snapshot().phase).toBe('idle'))
     expect(f.chat.snapshot().messages[1].content).toBe('Here is the current React information.')
+    f.chat.dispose()
+  })
+
+  it('persists an explicit choice interaction and records its associated answer message', async () => {
+    const f = fixture(async function* () {
+      yield { type: 'text', text: 'Is there a Figma screen or BA mockup (for example an HTML file)?\n\nChoose one:\n- Yes — I’ll point to the file or link\n- No — design from the written spec' }
+      yield { type: 'done' }
+    })
+    const conversationId = f.chat.current().id
+    f.chat.send({ text: 'Continue the work' })
+    await vi.waitFor(() => expect(f.chat.snapshot().phase).toBe('idle'))
+    const assistant = f.chat.snapshot().messages[1]
+    expect(assistant.interaction).toMatchObject({ type: 'choice', conversationId, messageId: assistant.id, question: expect.stringContaining('Is there a Figma'), options: ['Yes — I’ll point to the file or link', 'No — design from the written spec'], status: 'pending' })
+    f.chat.send({ text: 'No — design from the written spec' })
+    expect(f.chat.current().messages[1].interaction).toMatchObject({ status: 'answered', answerMessageId: f.chat.current().messages[2].id, answer: 'No — design from the written spec' })
+    await vi.waitFor(() => expect(f.chat.snapshot().phase).toBe('idle'))
     f.chat.dispose()
   })
 
@@ -152,7 +243,7 @@ describe('main-owned conversation lifecycle', () => {
     expect(handoff).toContain('Do not repeat completed slices')
     chat.dispose()
   })
-  it('does not resume a task under a different subscription account', async () => {
+  it('requires consent before resuming under a different subscription account', async () => {
     const firstAccount = '08aa3f5f-8eea-408b-afcc-c49927489588'
     let activeAccount = firstAccount
     let chat!: ChatController
@@ -160,7 +251,7 @@ describe('main-owned conversation lifecycle', () => {
       chat.activity('read_file', 'Read project file')
       throw new ChatError('Reconnect ChatGPT.', 'auth-reconnect')
     }) }
-    chat = new ChatController({ provider: async () => provider, accountIdentity: async () => activeAccount, changed: vi.fn(), phase: vi.fn() })
+    chat = new ChatController({ provider: async () => provider, accountIdentity: async () => activeAccount, changed: vi.fn(), phase: vi.fn(), approvalChanged: event => { if(event.action === 'required') queueMicrotask(() => chat.command({action:'agent-approval', id:event.sessionId, approvalId:event.approvalId, allow:false})) } })
     expect(chat.send({ text: 'Inspect project' })).toEqual({ ok: true })
     await vi.waitFor(() => expect(chat.snapshot().phase).toBe('idle'))
     const failed = chat.snapshot().messages[1]
@@ -200,6 +291,8 @@ describe('main-owned conversation lifecycle', () => {
     const savedBefore = f.chat.snapshot().messages.map((message) => message.content)
 
     expect(await f.chat.answerHandsFree({ text: 'What is TypeScript?' })).toMatchObject({ ok: true, text: 'TypeScript adds types.' })
+    expect(f.hooks.phase).toHaveBeenCalledWith('thinking', expect.any(Object), 'floating-voice')
+    expect(f.hooks.phase).toHaveBeenCalledWith('idle', expect.any(Object), 'floating-voice')
     expect(await f.chat.answerHandsFree({ text: 'Who maintains it?' })).toMatchObject({ ok: true, text: 'It is maintained by Microsoft.' })
     const voiceCall = vi.mocked(f.provider.streamMessage).mock.calls.at(-1)![0]
     expect(voiceCall.map(({ role, content }) => [role, content])).toEqual([
@@ -407,7 +500,7 @@ describe('main-owned conversation lifecycle', () => {
     f.chat.send({ text: 'Hi' })
     await vi.advanceTimersByTimeAsync(120_000)
     expect(f.chat.snapshot().phase).toBe('idle')
-    expect(f.chat.snapshot().error).toContain('task deadline')
+    expect(f.chat.snapshot().error).toContain('Provider initialization timed out')
     expect(vi.getTimerCount()).toBe(0)
     f.chat.dispose()
   })

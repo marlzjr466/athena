@@ -9,7 +9,7 @@
   "main": "out/main/main.js",
   "scripts": {
     "setup:local-signing": "node scripts/setup-local-signing.mjs",
-    "dev": "node scripts/build-screen-ocr.mjs && node scripts/prepare-dev.mjs && electron-vite dev --entry out-dev",
+    "dev": "node scripts/start-dev.mjs",
     "build": "node scripts/build-screen-ocr.mjs && node scripts/copy-vad-assets.mjs && npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
@@ -18,11 +18,18 @@
     "test:watch": "vitest",
     "test:desktop": "npm run build && playwright test",
     "generate:icon": "env -u ELECTRON_RUN_AS_NODE electron scripts/generate-icon.cjs",
-    "package": "npm run build && npm run generate:icon && electron-builder --mac --dir",
-    "dist:mac": "npm run build && npm run generate:icon && electron-builder --mac"
+    "prepare:search": "node scripts/prepare-search-runtime.mjs",
+    "package": "npm run prepare:search && npm run build && npm run generate:icon && electron-builder --mac --dir",
+    "dist:mac": "npm run prepare:search && npm run build && npm run generate:icon && electron-builder --mac",
+    "dist:win": "npm run prepare:search && npm run build && electron-builder --win --x64"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock": "^3.1172.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1172.0",
+    "@azure/ai-projects": "^2.11.0",
+    "@azure/identity": "^4.14.1",
     "@github/copilot-sdk": "1.0.28",
+    "@google/genai": "^3.6.1",
     "@napi-rs/canvas": "^1.0.10",
     "@napi-rs/keyring": "^2.1.0",
     "@pixiv/three-vrm": "^3.5.5",
@@ -46,6 +53,7 @@
     "remark-gfm": "^4.0.1",
     "three": "^0.180.0",
     "typescript": "^5.9.3",
+    "undici": "^6.29.1",
     "zod": "^4.1.12",
     "zustand": "^5.0.8"
   },
@@ -78,6 +86,7 @@
   "build": {
     "appId": "com.athena.companion",
     "productName": "Athena",
+    "beforePack": "scripts/check-search-bundle.mjs",
     "directories": {
       "output": "release"
     },
@@ -86,6 +95,7 @@
       "package.json"
     ],
     "extraResources": [
+      { "from": "build/search-runtime/${platform}-${arch}", "to": "search-runtime" },
       {
         "from": "voice-service",
         "to": "voice-service",
@@ -116,6 +126,9 @@
       "identity": "-",
       "sign": "scripts/sign-local-mac.mjs",
       "hardenedRuntime": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Athena uses your microphone for chat dictation, optional local wake-word detection, and authorized meeting recording. Meeting audio is transcribed locally and retained only according to your meeting settings. Passive wake-word audio is not saved or uploaded.",
         "NSAudioCaptureUsageDescription": "Athena captures system audio only when you explicitly enable authorized meeting recording.",
@@ -135,6 +148,7 @@
         }
       ]
     },
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
     "asarUnpack": [
       "node_modules/@github/copilot-sdk-*/**"
     ]

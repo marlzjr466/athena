@@ -1,3 +1,4 @@
+import { providerFetch } from './providerTransport'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -66,7 +67,7 @@ export class OllamaService {
   private pull?: AbortController
   private ggufPaths = new Map<string, string | null>()
   mlx?: MLXInference
-  constructor(private endpoint: () => string, private request: typeof fetch = fetch) {}
+  constructor(private endpoint: () => string, private request: typeof fetch = providerFetch) {}
   private url(path: string): string {
     const base = localEndpointSchema.parse(this.endpoint())
     return new URL(path, base.endsWith('/') ? base : `${base}/`).toString()
@@ -79,12 +80,13 @@ export class OllamaService {
       if (path !== 'api/chat') throw new ChatError(`MLX model does not support ${path}.`)
       return this.mlx.call(body, signal)
     }
-    const deadline = AbortSignal.timeout(timeout)
+    const deadline = path === 'api/chat' && signal ? signal : AbortSignal.timeout(timeout)
     let response: Response
     try {
       response = await this.request(this.url(path), { method: body === undefined ? 'GET' : 'POST', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, deadline]) : deadline, redirect: 'error' })
     } catch (error) {
-      if (signal?.aborted) throw new ChatError('Local AI request cancelled.')
+      if (signal?.aborted) throw signal.reason
+      if (path === 'api/chat') throw error // Preserve transport classification for the shared recovery controller.
       if (deadline.aborted) throw new ChatError('Ollama took too long to respond. Check the selected model and system memory.')
       throw new ChatError('Cannot reach Ollama on this Mac. Start Ollama and check its endpoint in My Athena → Local AI setup.')
     }

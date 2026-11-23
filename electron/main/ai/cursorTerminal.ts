@@ -1,17 +1,19 @@
-import { sandboxCommandScope } from '../permissions/sandboxCommandPermission'
+import { commandNeedsProjectWrites, sandboxCommandScope } from '../permissions/sandboxCommandPermission'
 import type { RememberedScope } from '../../../shared/permissions'
 import { randomUUID } from 'node:crypto'
 import { lstat, realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ChangePreview } from '../../../shared/agent'
 import { AgentCommands, type CommandRequest, type CommandResult } from './agentCommands'
-import { ChatError } from './AIProvider'
+import { ChatError, type StreamOptions } from './AIProvider'
+import { classifyCommandOperation } from './operationRisk'
+import type { OperationRisk } from '../../../shared/generation'
 import { assertStagedCommitUnchanged, inspectStagedCommit } from './gitCommitReview'
 import { GitIdentityService } from './gitIdentity'
 import { sensitiveContent, sensitivePath } from './workspaceService'
 
 type Terminal = { controller: AbortController; output: string; truncated: boolean; result?: { exitCode: number | null; signal: string | null }; finished: Promise<void> }
-export type TerminalApproval = (title: string, description: string, signal: AbortSignal, changes?: ChangePreview[], rememberScope?: RememberedScope) => Promise<boolean>
+export type TerminalApproval = NonNullable<StreamOptions['requestApproval']>
 
 /** Cursor's ACP client terminal: never grant the agent a native, unsandboxed shell. */
 export class CursorTerminalBridge {
@@ -26,19 +28,20 @@ export class CursorTerminalBridge {
     private readonly commands = new AgentCommands(),
     private readonly identity = new GitIdentityService(),
     private readonly leaseHeld = false,
+    private readonly allowProjectDeletion = true,
   ) {}
 
   private execute(request: CommandRequest, signal: AbortSignal, onOutput?: (output: string) => void): Promise<CommandResult> {
-    return this.commands.execute(this.root, { ...request, projectLeaseHeld: this.leaseHeld }, signal, onOutput)
+    return this.commands.execute(this.root, { ...request, projectLeaseHeld: this.leaseHeld, assertAuthorization: this.assertAccess }, signal, onOutput)
   }
   private readonly gitRunner = { execute: (root: string, request: CommandRequest, signal: AbortSignal) => this.commands.execute(root, { ...request, projectLeaseHeld: this.leaseHeld }, signal) }
 
   async supported(): Promise<boolean> { return this.commands.supported() }
   dispose(): void { this.shutdown.abort(); for (const terminal of this.terminals.values()) terminal.controller.abort(); this.terminals.clear() }
 
-  private async permission(title: string, description: string, signal: AbortSignal, changes?: ChangePreview[], rememberScope?: RememberedScope): Promise<void> {
+  private async permission(title: string, description: string, signal: AbortSignal, changes?: ChangePreview[], rememberScope?: RememberedScope, risk: OperationRisk = 'unknown'): Promise<void> {
     await this.assertAccess()
-    if (!this.approve || !await this.approve(title, description, signal, changes, rememberScope)) throw new ChatError('Command permission was declined or unavailable. No command was run; ask the user before retrying.')
+    if (!this.approve || !await this.approve(title, description, signal, changes, rememberScope, undefined, { risk })) throw new ChatError('Command permission was declined or unavailable. No command was run; ask the user before retrying.')
     signal.throwIfAborted()
     await this.assertAccess()
   }
@@ -61,7 +64,7 @@ export class CursorTerminalBridge {
     if (typeof raw !== 'string' || !raw || raw.length > 200 || /[\s\0]/.test(raw)) throw new ChatError('Invalid terminal executable. Provide a direct executable and separate argument array; shell strings are blocked.')
     const executable = basename(raw)
     if (raw.includes('/') && this.commands.executable(executable) !== raw) throw new ChatError('Executable path is not an authorized development tool.')
-    if (!['echo', 'npm', 'pnpm', 'yarn', 'node', 'git', 'python3', 'go', 'cargo', 'curl'].includes(executable)) throw new ChatError(`${executable} is not an authorized development executable. Shell interpreters are blocked.`)
+    if (!['echo', 'npm', 'pnpm', 'yarn', 'npx', 'node', 'git', 'python3', 'go', 'cargo', 'curl'].includes(executable)) throw new ChatError(`${executable} is not an authorized development executable. Shell interpreters are blocked.`)
     const args = params.args === undefined ? [] : params.args
     if (!Array.isArray(args) || args.length > 40 || args.some((arg) => typeof arg !== 'string' || arg.length > 1000 || arg.includes('\0'))) throw new ChatError('Terminal arguments must be a bounded string array.')
     if (Array.isArray(params.env) && params.env.length || params.env !== undefined && !Array.isArray(params.env)) throw new ChatError('Agent-supplied environment variables are blocked; Athena creates an isolated command environment.')
@@ -86,12 +89,16 @@ export class CursorTerminalBridge {
     const controller = new AbortController()
     const signal = AbortSignal.any([this.parentSignal, this.shutdown.signal, controller.signal])
     if (params.local_network !== undefined && typeof params.local_network !== 'boolean') throw new ChatError('local_network must be a boolean.')
+    if (params.workspace_write !== undefined && typeof params.workspace_write !== 'boolean') throw new ChatError('workspace_write must be a boolean.')
     const request: CommandRequest = { executable, args, network: false, loopback: params.local_network === true, install: false, gitWrite: false, filesystemMode: 'project-only' }
     let run: (onOutput: (output: string) => void) => Promise<CommandResult>
     if (executable === 'git') run = await this.prepareGit(args, request, signal)
     else {
-      if (['npm', 'pnpm', 'yarn'].includes(executable) && (args[0] === 'install' || args[0] === 'add' || args[0] === 'update' || args[0] === 'ci')) request.install = true
-      await this.permission('Run isolated project command', `${executable} ${args.join(' ')}\nWorking directory: ${this.root}\nNetwork: ${request.loopback ? 'outbound loopback only; external internet and listening sockets blocked' : 'blocked'}. Source writes: blocked. ${request.install ? 'Dependency writes: allowed only for this approved command.' : 'Dependency writes: blocked.'}`, signal, undefined, sandboxCommandScope(this.root, request, this.commands.executable(executable), 'cursor-terminal'))
+      if (['npm', 'pnpm', 'yarn', 'npx'].includes(executable) && (args[0] === 'install' || args[0] === 'add' || args[0] === 'update' || args[0] === 'ci')) request.install = true
+      request.projectWrite = commandNeedsProjectWrites(executable, args, params.workspace_write as boolean | undefined)
+      request.projectDelete = request.projectWrite && this.allowProjectDeletion
+      const risk = request.projectWrite || request.install || request.loopback ? 'unknown' : classifyCommandOperation(executable, args)
+      await this.permission('Run isolated project command', `${executable} ${args.join(' ')}\nWorking directory: ${this.root}\nNetwork: ${request.loopback ? 'outbound loopback only; external internet and listening sockets blocked' : 'blocked'}. Source writes: ${request.projectWrite ? `allowed within this project, including new nested directories; deletion ${request.projectDelete ? 'allowed' : 'blocked'}` : 'blocked'}. Protected files and workspace escapes remain blocked. ${request.install ? 'Dependency writes: allowed only for this approved command.' : 'Dependency writes: blocked.'}`, signal, undefined, sandboxCommandScope(this.root, request, this.commands.executable(executable), 'cursor-terminal'), risk)
       run = (onOutput) => this.execute(request, signal, onOutput)
     }
     signal.throwIfAborted()
@@ -115,8 +122,8 @@ export class CursorTerminalBridge {
     const base = ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'credential.helper=']
     if (readOnly.has(action) && !(action === 'branch' && args.slice(1).some((arg) => !['--list', '-a', '-r', '--show-current', '-v', '-vv'].includes(arg)))) {
       if (args.some((arg) => /^(?:-c|-C|--exec-path|--git-dir|--work-tree|--config-env|--output|--ext-diff|--no-index)(?:=|$)/.test(arg))) throw new ChatError('Git configuration, repository override, and output-file flags are blocked.')
-      request.args = [...base, ...args]
-      await this.permission('Run isolated Git inspection', `git ${args.join(' ')}\nRepository: ${this.root}\nRead-only; no network access.`, signal)
+      request.args = [...base, action, ...(['diff', 'log'].includes(action) ? ['--no-ext-diff', '--no-textconv'] : []), ...args.slice(1)]
+      await this.permission('Run isolated Git inspection', `git ${args.join(' ')}\nRepository: ${this.root}\nRead-only; no network access.`, signal, undefined, undefined, classifyCommandOperation('git', args))
       return (onOutput) => this.execute(request, signal, onOutput)
     }
     if (action === 'add') {

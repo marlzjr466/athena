@@ -7,10 +7,24 @@ import { allocationNotice, contextProfiles, resolveLocalContext } from '../../..
 import { localChatCompatibility, localContextCeiling, localOutputCeiling, type LocalAIPreset, type LocalPullProgress, type LocalStatus, type LocalAISettings, type LocalInferenceSettings } from '../../../shared/localAI'
 import { applyResponsePreset, generationLimitFor, generationLimitLabel } from '../../../shared/localResponse'
 import { resolveLlamaWindow } from '../../../shared/llamaLongContext'
+import { UsageDashboard } from './UsageDashboard'
+import type { UsageMetric } from '../../../shared/usage'
+import { useChat } from '../../store/chatStore'
+import { observedConversationUsage } from './observedUsage'
+
+const LOCAL_USAGE_CACHE_KEY = 'athena.usage.local.latest'
+function restoredLocalUsage(): NonNullable<LocalStatus['lastPromptUsage']> | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(LOCAL_USAGE_CACHE_KEY) ?? 'null') as Partial<NonNullable<LocalStatus['lastPromptUsage']>> | null
+    return value && typeof value.model === 'string' && typeof value.promptTokens === 'number' && typeof value.outputTokens === 'number' && typeof value.at === 'string'
+      ? value as NonNullable<LocalStatus['lastPromptUsage']> : null
+  } catch { return null }
+}
 
 const size = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`
 export function LocalAISettings() {
   const { snapshot, update } = useAthena()
+  const chat = useChat()
   const settings = snapshot?.settings
   const [status, setStatus] = useState<LocalStatus | null>(null)
   const [endpoint, setEndpoint] = useState('')
@@ -19,6 +33,7 @@ export function LocalAISettings() {
   const [progress, setProgress] = useState<LocalPullProgress | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [cachedPromptUsage, setCachedPromptUsage] = useState(restoredLocalUsage)
   useEffect(() => { if (settings) { setEndpoint(settings.localAI.endpoint); setSpeechPath(settings.localAI.speechModelPath) } }, [settings?.localAI.endpoint, settings?.localAI.speechModelPath])
   useEffect(() => {
     let live = true
@@ -26,6 +41,12 @@ export function LocalAISettings() {
     void desktop.getLocalStatus().then((result) => { if (live) setStatus(result) }).catch(() => {})
     return () => { live = false; off() }
   }, [settings?.localAI.endpoint])
+  useEffect(() => {
+    const usage = status?.lastPromptUsage
+    if (!usage) return
+    setCachedPromptUsage(usage)
+    try { window.localStorage.setItem(LOCAL_USAGE_CACHE_KEY, JSON.stringify(usage)) } catch { /* Keep the live runtime snapshot available if browser storage is unavailable. */ }
+  }, [status?.lastPromptUsage?.at, status?.lastPromptUsage?.model])
   const local = settings?.localAI
   const selected = status?.models.find((model) => model.name === local?.model)
   const trainedContext = selected?.contextLength
@@ -76,6 +97,21 @@ export function LocalAISettings() {
   const outputCeiling = Math.max(256, Math.min(generationLimit.tokens ?? outputLimit, Math.max(256, allocatedTokens - 256)))
   const effectiveOutput = Math.max(256, Math.min(local.maxOutputTokens, outputCeiling))
   const promptUsage = status?.lastPromptUsage && status.lastPromptUsage.model === selected?.name ? status.lastPromptUsage : null
+  const retainedPromptUsage = promptUsage ?? (cachedPromptUsage?.model === selected?.name ? cachedPromptUsage : null)
+  const conversationUsage = observedConversationUsage(chat.snapshot.messages, ['local-ai'])
+  const refreshUsage = async () => {
+    setBusy(true)
+    try { setStatus(await desktop.getLocalStatus()); setNotice('Local usage snapshot refreshed from the latest completed response.') }
+    catch { setNotice('Local usage snapshot could not be refreshed; the saved snapshot remains visible.') }
+    finally { setBusy(false) }
+  }
+  const localUsageMetrics: UsageMetric[] = [
+    ...conversationUsage.metrics,
+    ...(retainedPromptUsage?.loadDurationNs != null ? [{ id: 'local-load-duration', label: 'Latest model load time', value: retainedPromptUsage.loadDurationNs / 1_000_000, unit: 'duration' }] : []),
+    ...(retainedPromptUsage?.promptEvalDurationNs != null ? [{ id: 'local-prompt-duration', label: 'Latest prompt evaluation time', value: retainedPromptUsage.promptEvalDurationNs / 1_000_000, unit: 'duration' }] : []),
+    ...(retainedPromptUsage?.generationDurationNs != null ? [{ id: 'local-generation-duration', label: 'Latest generation time', value: retainedPromptUsage.generationDurationNs / 1_000_000, unit: 'duration' }] : []),
+    ...(retainedPromptUsage?.totalDurationNs != null ? [{ id: 'local-total-duration', label: 'Latest total request time', value: retainedPromptUsage.totalDurationNs / 1_000_000, unit: 'duration' }] : []),
+  ]
   const allocation = contextDecision ? allocationNotice(contextDecision) : null
   const runtimeName = (provider?: string) => provider === 'mlx' ? 'MLX' : provider === 'llama.cpp' ? 'llama.cpp' : 'Ollama'
   const usingLlama = selected?.provider === 'llama.cpp'
@@ -176,14 +212,6 @@ export function LocalAISettings() {
         </>}
         <p>{contextDecision.explanation}</p>
       </div>}
-      <div className="local-ai-usage" role="status">
-        <p>Actual input tokens: {promptUsage ? `${promptUsage.promptTokens.toLocaleString('en-US')} measured by the inference engine` : 'No measured reply yet'}</p>
-        <p>System prompt tokens: {promptUsage?.systemTokens != null ? `${promptUsage.systemTokens.toLocaleString('en-US')} measured by the GGUF tokenizer` : 'Not measured'}</p>
-        <p>Conversation history tokens: {promptUsage?.historyTokens != null ? `${promptUsage.historyTokens.toLocaleString('en-US')} measured by the GGUF tokenizer` : 'Not measured'}</p>
-        <p>Reserved maximum output tokens: {(promptUsage?.reservedOutputTokens ?? effectiveOutput).toLocaleString('en-US')}</p>
-        <p>Remaining available context: {promptUsage ? Math.max(0, promptUsage.contextWindow - promptUsage.promptTokens - promptUsage.reservedOutputTokens).toLocaleString('en-US') : 'Not measured until a reply reports input tokens'}</p>
-        <p>Actual generated output tokens: {promptUsage ? `${promptUsage.outputTokens.toLocaleString('en-US')} measured by the inference engine` : 'No measured reply yet'}</p>
-      </div>
       <div className="local-ai-measure">
         <button className="button secondary" disabled={!selected || usingLlama || !allocation?.measureAllowed || busy} onClick={() => void measureContext()}>Measure allocation</button>
         <p>{usingLlama ? 'This model uses the llama.cpp benchmark above. The button does not load an unvalidated window.' : allocation?.measureReason ?? 'Select a model to measure its trained context window.'}</p>
@@ -201,6 +229,7 @@ export function LocalAISettings() {
       {status?.longContextNote && <p className="local-ai-engine-note">{status.longContextNote}</p>}
       {status?.engineFindings?.map((finding) => <div className="local-ai-engine" key={finding.engine}><strong>{finding.engine}</strong><p>{finding.presence} {finding.chat}</p><p>YaRN: {finding.yarn}</p></div>)}
     </Section>
+    <UsageDashboard data={{ provider: 'Local AI', account: 'This device', usageType: 'Locally observed usage · current conversation and latest response performance', availability: localUsageMetrics.length ? 'available' : 'unavailable', source: selected?.provider === 'ollama' ? 'Persisted local response receipts and Ollama final response metadata' : 'Persisted local response receipts and local inference metadata', refreshedAt: Math.max(conversationUsage.updatedAt ?? 0, retainedPromptUsage ? Date.parse(retainedPromptUsage.at) : 0) || null, stale: Boolean(retainedPromptUsage && Date.now() - Date.parse(retainedPromptUsage.at) > 24 * 60 * 60_000), metrics: localUsageMetrics, officialUrl: selected?.provider === 'ollama' ? 'https://github.com/ollama/ollama/blob/main/docs/api/usage.mdx' : undefined, officialLabel: selected?.provider === 'ollama' ? 'Ollama usage fields' : undefined, explanation: 'Token and request totals cover completed local responses in the current conversation. Performance timings describe the latest completed response for the selected model. No subscription quota or paid API cost is shown.' }} refreshing={busy} onRefresh={refreshUsage} />
     <Section title="Local voice" description="Offline speech recognition needs whisper.cpp's whisper-cli and a model file installed on this Mac. Spoken replies use macOS built-in voices.">
       <SettingRow title="Offline voice availability" description={status?.whisperInstalled ? 'whisper.cpp CLI detected. Configure a local model file below.' : 'whisper.cpp CLI not found in standard Homebrew locations. Install it before using offline transcription.'}><span className={`ai-status ${status?.macSpeechAvailable ? 'ai-active' : ''}`}>{status?.macSpeechAvailable ? '● macOS speech ready' : '○ macOS speech unavailable'}</span></SettingRow>
       <SettingRow title="Speech recognition" description="whisper-cli runs locally; no audio is sent to OpenAI."><CustomSelect ariaLabel="Local speech recognition engine" value={local.speechEngine} options={[{ value: 'whisper-cli', label: 'whisper.cpp CLI' }, { value: 'unavailable', label: 'Disabled' }]} onChange={(speechEngine) => change({ speechEngine: speechEngine as LocalAISettings['speechEngine'] })} /></SettingRow>

@@ -22,6 +22,9 @@ export function readLlamaValidation(userData?: string | null): LlamaValidation |
 export function localCompanionProvider(service: OllamaService, settings: Settings, config: ConversationConfig,
   isolated = false, ready?: (model: LocalModel) => void, instructions?: (model: string) => string | ((request: string, projectAvailable: boolean) => string), userData?: string | null): Promise<AIProvider> {
   const local = structuredClone(settings.localAI)
+  const unsupportedEffort = config.effort === 'max' || config.effort === 'none' || config.effort === 'minimal'
+  const isolatedReasoning = config.effort === 'max' || config.effort === 'none' || config.effort === 'minimal' ? 'auto' : config.effort
+  if (isolated && unsupportedEffort) return Promise.reject(new ChatError('This reasoning level is not supported by the local agent. Choose one of its available levels.'))
   const model = isolated ? config.model : local.model
   if (!model) return Promise.reject(new ChatError('Choose an installed local model for Athena before starting a companion conversation.'))
   if (!isolated && config.model && config.model !== model) return Promise.reject(new ChatError('This companion conversation belongs to a different local model. Select that model or start a new companion conversation.'))
@@ -34,11 +37,11 @@ export function localCompanionProvider(service: OllamaService, settings: Setting
     if (localChatCompatibility(metadata) === 'unsupported') throw new ChatError('This installed Ollama model does not advertise chat completion. Choose a chat-capable model in My Athena → Local AI setup.')
     if (isolated) {
       if (!metadata.capabilities.includes('tools')) throw new ChatError('This local model has no verified tool-calling support for sub-agents.')
-      validateIsolatedLocalEffort(metadata, config.effort)
+      validateIsolatedLocalEffort(metadata, isolatedReasoning)
     }
     ready?.(metadata)
     const Provider = metadata.provider === 'mlx' ? MLXProvider : OllamaProvider
-    return new Provider(service, model, isolated ? { ...local, reasoning: config.effort, maxOutputTokens: Math.min(local.maxOutputTokens, 4096) } : local, metadata, instructions?.(model))
+    return new Provider(service, model, isolated ? { ...local, reasoning: isolatedReasoning, maxOutputTokens: Math.min(local.maxOutputTokens, 4096) } : local, metadata, instructions?.(model))
   })
 }
 
@@ -48,6 +51,9 @@ export function localChatProvider(service: OllamaService, settings: Settings, co
   const model = config.model
   if (!model) return Promise.reject(new ChatError('Choose an installed local model for this Athena Chat conversation.'))
   const local = structuredClone(settings.localAI)
+  const unsupportedEffort = config.effort === 'max' || config.effort === 'none' || config.effort === 'minimal'
+  const isolatedReasoning = config.effort === 'max' || config.effort === 'none' || config.effort === 'minimal' ? 'auto' : config.effort
+  if (isolated && unsupportedEffort) return Promise.reject(new ChatError('This reasoning level is not supported by the local agent. Choose one of its available levels.'))
   if (model === llamaLongModelId) {
     const metadata = llamaLongMetadata()
     ready?.(metadata)
@@ -57,11 +63,11 @@ export function localChatProvider(service: OllamaService, settings: Settings, co
     if (localChatCompatibility(metadata) === 'unsupported') throw new ChatError('This installed Ollama model does not advertise chat completion. Choose a chat-capable local model.')
     if (isolated) {
       if (!metadata.capabilities.includes('tools')) throw new ChatError('This local model has no verified tool-calling support for sub-agents.')
-      validateIsolatedLocalEffort(metadata, config.effort)
+      validateIsolatedLocalEffort(metadata, isolatedReasoning)
     }
     ready?.(metadata)
     const Provider = metadata.provider === 'mlx' ? MLXProvider : OllamaProvider
-    return new Provider(service, model, isolated ? { ...local, reasoning: config.effort, maxOutputTokens: Math.min(local.maxOutputTokens, 4096) } : local, metadata, instructions?.(model))
+    return new Provider(service, model, isolated ? { ...local, reasoning: isolatedReasoning, maxOutputTokens: Math.min(local.maxOutputTokens, 4096) } : local, metadata, instructions?.(model))
   })
 }
 

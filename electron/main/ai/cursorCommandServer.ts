@@ -6,8 +6,8 @@ import type { CursorTerminalBridge } from './cursorTerminal'
 const tools = [
   {
     name: 'run_command',
-    description: 'Run an authorized project command through Athena approval and the OS sandbox. Supply a direct executable and arguments. Set local_network=true for approved outbound localhost access; it does not grant internet or socket binding. Git add accepts explicit files only; git commit -m reviews staged files and configured author. Long commands return a terminalId; inspect with command_status.',
-    inputSchema: { type: 'object', properties: { command: { type: 'string', enum: ['echo', 'git', 'npm', 'pnpm', 'yarn', 'node', 'python3', 'go', 'cargo', 'curl'] }, args: { type: 'array', items: { type: 'string' } }, local_network: { type: 'boolean' } }, required: ['command', 'args'], additionalProperties: false },
+    description: 'Run an authorized project command through Athena approval and the OS sandbox. Supply a direct executable and arguments. Approved development commands can write project files and create nested directories. workspace_write overrides the default (validation commands keep source read-only). Set local_network=true for approved outbound localhost access; it does not grant internet or socket binding. Git add accepts explicit files only; git commit -m reviews staged files and configured author. Long commands return a terminalId; inspect with command_status.',
+    inputSchema: { type: 'object', properties: { command: { type: 'string', enum: ['echo', 'git', 'npm', 'pnpm', 'yarn', 'npx', 'node', 'python3', 'go', 'cargo', 'curl'] }, args: { type: 'array', items: { type: 'string' } }, local_network: { type: 'boolean' }, workspace_write: { type: 'boolean', description: 'Request writes within the authorized project. Development scripts default to writable; validation commands default to read-only source.' } }, required: ['command', 'args'], additionalProperties: false },
   },
   {
     name: 'command_status',
@@ -87,7 +87,7 @@ export class CursorCommandServer {
       const input = args as Record<string, unknown>
       let terminalId: string
       if (params.name === 'run_command') {
-        if (Object.keys(input).some((key) => key !== 'command' && key !== 'args' && key !== 'local_network')) throw new ChatError('Only a direct executable, argument array and local_network flag are accepted.')
+        if (Object.keys(input).some((key) => key !== 'command' && key !== 'args' && key !== 'local_network' && key !== 'workspace_write')) throw new ChatError('Only a direct executable, argument array, local_network and workspace_write flags are accepted.')
         ;({ terminalId } = await this.terminals.create({ ...input, cwd: this.root, sessionId: this.session }, this.session))
       } else if (params.name === 'command_status' && typeof input.terminalId === 'string') terminalId = input.terminalId
       else throw new ChatError('Unknown Athena command tool.')

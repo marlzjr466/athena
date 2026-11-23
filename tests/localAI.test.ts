@@ -66,7 +66,7 @@ describe('local settings and Ollama', () => {
     const provider = new OllamaProvider(new OllamaService(() => defaultSettings.localAI.endpoint, request), model.name, { ...defaultSettings.localAI, model: model.name }, model)
     const onModelResponse = vi.fn(), beforeModelRequest = vi.fn()
     expect(await collect(provider, { onModelResponse, beforeModelRequest })).toEqual([{ type: 'text', text: 'Hel' }, { type: 'text', text: 'lo' }, { type: 'done' }])
-    expect(onModelResponse).toHaveBeenCalledExactlyOnceWith({ inputTokens: 8, outputTokens: 2, estimated: false })
+    expect(onModelResponse).toHaveBeenCalledExactlyOnceWith({ inputTokens: 8, cachedInputTokens: 0, outputTokens: 2, estimated: false })
     expect(beforeModelRequest.mock.calls[0][2]).toMatchObject({ contextWindow: 16384, limitsVerified: true, outputLimitEnforced: true })
     expect(String(request.mock.calls[0][0])).toBe('http://127.0.0.1:11434/api/chat')
     const payload = JSON.parse(request.mock.calls[0][1]?.body as string)

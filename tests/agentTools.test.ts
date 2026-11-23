@@ -22,15 +22,33 @@ async function fixture(mode: AgentMode, run: (tools: ProjectTools, signal: Abort
   const workspaces = new WorkspaceService(() => true, undefined, () => typeof filesystemMode === 'function' ? filesystemMode() : filesystemMode), workspace = await workspaces.connect(root), agent = new AgentTools(workspaces, join(directory, 'storage'), undefined, gitIdentity)
   let tools: ProjectTools
   const repository = new ConversationRepository(join(directory, 'storage'))
-  const chat = new ChatController({ rememberedPermissions, provider: async () => ({ testConnection: async () => true, async *streamMessage(_messages, options) { if (rememberedPermissions) tools = agent.create(chat, chat.current().id, workspace.id, workspace.name, chat.current().config.agentMode ?? 'ask', [], () => true, chat.current().config.contextSettings); await run(tools, options!.signal!); yield { type: 'text', text: 'Finished from actual results.' }; yield { type: 'done' } } }), changed: vi.fn(), phase: vi.fn() }, repository)
+  const chat = new ChatController({ rememberedPermissions, provider: async () => ({ testConnection: async () => true, async *streamMessage(_messages, options) { if (rememberedPermissions) tools = agent.create(chat, chat.current().id, workspace.id, workspace.name, chat.current().config.agentMode ?? 'ask', [], () => true, chat.current().config.contextSettings); await run(tools, options!.signal!); yield { type: 'text', text: 'Finished from actual results.' }; yield { type: 'done' } } }), authorized: id => workspaces.authorized(id), workspaceOnly: () => workspaces.filesystemMode() === 'project-only', changed: vi.fn(), phase: vi.fn() }, repository)
   chat.addWorkspace(chat.current().id, workspace)
-  chat.command({ action: 'agent-mode', id: chat.current().id, mode })
+  chat.command({ action: 'agent-mode', id: chat.current().id, mode, ...(mode === 'full-access' ? { confirmed: true as const } : {}) })
   if (configure) await configure(chat, root, agent)
   tools = agent.create(chat, chat.current().id, workspace.id, workspace.name, mode, [], () => true, chat.current().config.contextSettings)
   chat.send({ text: 'Create Button.tsx in this project.' })
   return { chat, root, tools, repository }
 }
 describe('coding permission and conversation lifecycle', () => {
+  it('executes project file creation, editing, deletion, and a sandboxed command in Full Access without prompts', async () => {
+    const f = await fixture('full-access', async (tools, signal) => {
+      expect(JSON.parse(await tools.execute('create_file', { path: 'new.ts', content: 'export const created = true' }, signal)).result.ok).toBe(true)
+      const original = JSON.parse(await tools.execute('read_file', { path: 'app.ts', start_line: 1, end_line: 20 }, signal))
+      expect(JSON.parse(await tools.execute('write_file', { path: 'app.ts', expected_version: original.version, content: 'export const x = 2' }, signal)).result.ok).toBe(true)
+      const created = JSON.parse(await tools.execute('read_file', { path: 'new.ts', start_line: 1, end_line: 20 }, signal))
+      expect(JSON.parse(await tools.execute('delete_file', { path: 'new.ts', expected_version: created.version }, signal)).result.ok).toBe(true)
+      const command = JSON.parse(await tools.execute('execute_command', { executable: 'echo', args: ['full-access'], network: false, install_dependencies: false }, signal))
+      expect(JSON.stringify(command)).toContain('full-access')
+    })
+    try {
+      await vi.waitFor(() => expect(f.chat.snapshot().phase).toBe('idle'))
+      expect(await readFile(join(f.root, 'app.ts'), 'utf8')).toBe('export const x = 2')
+      expect(f.chat.snapshot().messages.at(-1)?.execution?.approval).toBeUndefined()
+      expect(f.chat.snapshot().messages.at(-1)?.execution?.permissionDecisions?.length).toBeGreaterThanOrEqual(4)
+      expect(f.chat.snapshot().messages.at(-1)?.execution?.permissionDecisions?.every(entry => entry.decision === 'automatic')).toBe(true)
+    } finally { f.chat.dispose() }
+  })
   it('remembers actual Ask-mode file edits but keeps different operations and Read Only blocked', async () => {
     const store = await mkdtemp(join(tmpdir(), 'athena-real-grant-'))
     const remembered = new RememberedPermissions(new PermissionRepository(store))

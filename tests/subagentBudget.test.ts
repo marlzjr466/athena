@@ -61,7 +61,7 @@ describe('child request reservation and consumption accounting', () => {
     const child = run(), budget = new SubagentBudgetLedger(child, { ...subagentDefaults(), tokenBudget: 60000 })
     budget.reserve(3000, 4096); budget.settle({ inputTokens: 1000, outputTokens: 500, estimated: false })
     const resumed = new SubagentBudgetLedger(child, subagentDefaults())
-    expect(resumed.state).toMatchObject({ configuredTokens: 250000, effectiveTokens: 60000, consumedTokens: 1500 })
+    expect(resumed.state).toMatchObject({ configuredTokens: 60000, effectiveTokens: 60000, consumedTokens: 1500 })
   })
   it('preserves unreconstructable legacy counters and does not claim they were measured', () => {
     const child = run(60000); child.inputTokens = 38419; child.outputTokens = 16384

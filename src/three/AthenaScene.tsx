@@ -101,11 +101,11 @@ export function AthenaScene({ preview = false, reaction }: { preview?: boolean; 
   const reduced = settings.reducedMotion || snapshot.reducedMotion || systemReduced || settings.doNotDisturb
   const economy = settings.reduceOnBattery && onBattery
   const fps = reduced ? 8 : snapshot.flight || snapshot.idleAction ? 60 : economy ? 15 : { performance: 20, balanced: 30, quality: 45 }[settings.renderQuality]
-  const state = reaction ?? snapshot.state
   const floatingVoiceActive = !preview && snapshot.floatingVoiceActive === true
+  const voicePhase = floatingVoiceActive ? snapshot.vroidActions?.voiceSession?.phase : undefined
+  const state = voicePhase === 'talking' ? 'speaking' : voicePhase === 'thinking' ? 'thinking' : voicePhase === 'listening' ? 'listening' : reaction ?? snapshot.state
   const taskMode = preview || floatingVoiceActive ? 'idle' : snapshot.taskVisual?.mode ?? 'idle'
-  // The main process gives local chat tasks priority. Direct floating voice
-  // gets its own screen-free presentation, including for non-VRM avatars.
+  // Direct floating voice owns the screen-free presentation until its lease ends.
   const voiceSession = floatingVoiceActive ? snapshot.vroidActions?.voiceSession ?? null : null
   // The task anchor is in desktop-window coordinates, while the companion
   // page renders Athena in a centered preview canvas. Never apply that screen

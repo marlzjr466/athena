@@ -29,6 +29,16 @@ function registerLocal(online: ChatController, companion: CompanionConversation,
   registerIPC(...args)
 }
 describe('AI IPC authority', () => {
+  it('only exposes the project editor to the trusted main conversation window', async () => {
+    const run = vi.fn(async () => ({ ok: true, available: true }))
+    registerIPC(controller, methods as unknown as AIConfiguration, {} as ChatController, {} as PermissionService, { editor: { run } } as unknown as ChatContextService)
+    expect(await handlers.get(IPC.projectEditor)!(event(), { action: 'status' })).toEqual({ ok: true, available: true })
+    expect(await handlers.get(IPC.projectEditor)!(event(3), { action: 'status' })).toMatchObject({ ok: false })
+    await expect(Promise.resolve().then(() => handlers.get(IPC.projectEditor)!(event(2), { action: 'status' }))).rejects.toThrow()
+    await expect(Promise.resolve().then(() => handlers.get(IPC.projectEditor)!(event(1, true), { action: 'status' }))).rejects.toThrow()
+    await expect(Promise.resolve().then(() => handlers.get(IPC.projectEditor)!(event(1, false, 'https://untrusted.test'), { action: 'status' }))).rejects.toThrow()
+    expect(run).toHaveBeenCalledOnce()
+  })
   it('does not reinstall or activate Sesame through legacy IPC', async () => {
     for (const channel of [IPC.localVoiceInstall, IPC.localVoiceManage, IPC.localVoiceProfile]) {
       expect(await handlers.get(channel)!(event(), { engine: 'sesame-csm', action: 'install' })).toMatchObject({ ok: false, message: expect.stringContaining('removed') })
@@ -266,6 +276,49 @@ describe('AI IPC authority', () => {
       expect(chat.current().config.model).toBeNull()
       await handlers.get(IPC.chatSession)!(event(), { action: 'switch', id: first })
       expect(chat.current().config.model).toBe('kimi-k2')
+    } finally { chat.dispose(); controller.settings = previous }
+  })
+  it('synchronizes third-party conversations to the active profile and validates model changes against its catalog', async () => {
+    const previous = controller.settings, connectionId = crypto.randomUUID(), profileModel = 'claude-opus-5-5'
+    controller.settings = { ...structuredClone(defaultSettings), aiMode: 'third-party', thirdPartyConnectionId: connectionId }
+    const chat = new ChatController({ provider: async () => ({ testConnection: async () => true, async *streamMessage() {} }), changed: vi.fn(), phase: vi.fn() })
+    const thirdParty = { status: vi.fn(async (id: string) => ({ ok: true, status: { active: true, model: profileModel, models: [profileModel] }, message: id })) }
+    chat.command({ action: 'configure-model', id: chat.current().id, model: 'model-from-another-provider' })
+    const args: Parameters<typeof registerIPC> = [controller, methods as unknown as AIConfiguration, chat, {} as PermissionService]
+    args[30] = thirdParty as never
+    registerIPC(...args)
+    try {
+      const sessionId = chat.current().id
+      await handlers.get(IPC.chatGet)!(event())
+      expect(chat.current().config.model).toBe(profileModel)
+      expect(await handlers.get(IPC.chatSession)!(event(), { action: 'configure-model', id: sessionId, model: profileModel })).toEqual({ ok: true })
+      expect(await handlers.get(IPC.chatSession)!(event(), { action: 'configure-model', id: sessionId, model: 'not-enabled' })).toMatchObject({ ok: false })
+      expect(thirdParty.status).toHaveBeenCalledWith(connectionId)
+    } finally { chat.dispose(); controller.settings = previous }
+  })
+  it('selects identical model IDs under distinct accounts and restores each conversation route', async () => {
+    const previous = controller.settings
+    controller.settings = { ...structuredClone(defaultSettings), aiMode: 'unconfigured' }
+    const chat = new ChatController({ provider: async () => ({ testConnection: async () => true, async *streamMessage() {} }), changed: vi.fn(), phase: vi.fn() })
+    const firstRoute = { provider: 'subscription' as const, accountId: 'chatgpt-one' }
+    const secondRoute = { provider: 'third-party' as const, accountId: crypto.randomUUID() }
+    const catalog = { accounts: [firstRoute, secondRoute].map(route => ({ route, enabled: true, state: 'connected', models: [{ id: 'shared-model', available: true }] })) }
+    const args: Parameters<typeof registerIPC> = [controller, methods as unknown as AIConfiguration, chat, {} as PermissionService]
+    args[31] = { list: vi.fn(async () => catalog) } as never
+    registerIPC(...args)
+    try {
+      const first = chat.current().id
+      expect(await handlers.get(IPC.chatSession)!(event(), { action: 'select-account-model', id: first, route: firstRoute, model: 'shared-model' })).toEqual({ ok: true })
+      expect(chat.current().config).toMatchObject({ accountRoute: firstRoute, model: 'shared-model' })
+      await handlers.get(IPC.chatSession)!(event(), { action: 'create' })
+      const second = chat.current().id
+      expect(await handlers.get(IPC.chatSession)!(event(), { action: 'select-account-model', id: second, route: secondRoute, model: 'shared-model' })).toEqual({ ok: true })
+      expect(chat.current().config.accountRoute).toEqual(secondRoute)
+      await handlers.get(IPC.chatSession)!(event(), { action: 'switch', id: first })
+      expect(chat.current().config.accountRoute).toEqual(firstRoute)
+      expect(await handlers.get(IPC.chatSession)!(event(), { action: 'select-account-model', id: first, route: firstRoute, model: 'missing-model' })).toMatchObject({ ok: false })
+      catalog.accounts[0].enabled = false
+      expect(await handlers.get(IPC.chatSession)!(event(), { action: 'select-account-model', id: first, route: firstRoute, model: 'shared-model' })).toMatchObject({ ok: false, message: expect.stringContaining('disabled') })
     } finally { chat.dispose(); controller.settings = previous }
   })
   it('validates and retains a parameterized Cursor selection through configure, reload and navigation', async () => {
