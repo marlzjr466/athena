@@ -11,7 +11,7 @@ import type { SpeechService } from './speechService'
 
 interface Pending { id: string; resolve(bytes: Uint8Array): void; reject(error: Error): void; cleanup(): void }
 
-/** Original Chatterbox voice, with the existing US Amy reference. No Sesame or system-voice fallback. */
+/** Original Chatterbox voice, with the existing US Amy reference. No implicit system-voice fallback. */
 export class ChatterboxSpeech implements SpeechService {
   readonly mimeType = 'audio/wav' as const
   private worker?: ChildProcessWithoutNullStreams

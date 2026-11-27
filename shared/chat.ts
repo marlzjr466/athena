@@ -21,6 +21,8 @@ export function stripTrailingSourcesSection(content: string): string {
 export const chatInputSchema = z.object({ text: z.string().trim().min(1).max(MAX_MESSAGE_LENGTH), sessionId: z.string().uuid().optional(), requestId: z.string().uuid().optional(), commandId: z.string().min(1).max(500).optional() }).strict()
 export const chatCopySchema = z.object({ text: z.string().max(MAX_RESPONSE_LENGTH) }).strict()
 export interface ChatMessage {
+  nativeTurnId?: string
+  nativeCodexQuestion?: import('./codex').NativeCodexQuestion
   ownership?: AIOwnership
   id: string
   role: 'user' | 'assistant'
@@ -29,6 +31,8 @@ export interface ChatMessage {
   createdAt: number
   error?: string
   attachments?: Attachment[]
+  mediaPreview?: GeneratedArtifact
+  mediaJob?: import('./mediaGeneration').MediaJob
   artifacts?: GeneratedArtifact[]
   interaction?: ChoiceInteraction
   sources?: SourceReference[]
@@ -43,6 +47,9 @@ export interface GeneratedArtifact {
   size: number
   createdAt: number
   /** Main-process managed identifier; no file bytes are persisted in chat history. */
+  parentId?: string
+  thumbnail?: Omit<GeneratedArtifact,'thumbnail'>
+  duration?: number
   storageKey: string
   /** An artifact is only exposed to the renderer after it reaches ready. */
   status?: 'generated' | 'saving' | 'ready' | 'failed' | 'cancelled'
@@ -52,11 +59,11 @@ export interface GeneratedArtifact {
   error?: string
 }
 export type ChatPhase = 'idle' | 'thinking' | 'speaking'
-export interface ChatSnapshot { ownership?: AIOwnership; revision: number; messages: ChatMessage[]; phase: ChatPhase; error: string | null; sessionId?: string; sessions?: ConversationSummary[]; config?: ConversationConfig; draft?: string; attachments?: Attachment[]; workspaces?: Array<WorkspaceReference & { authorized: boolean }>; hasMore?: boolean; contextNotice?: string; cursorModelNotice?: string; voiceSearchPreview?: ChatMessage; automationProgress?: AutomationProgress }
+export interface ChatSnapshot { codexAccess?: import('./codex').CodexAccessStatus; nativeCodex?: import('./codex').NativeCodexThread; mediaFocus?: { messageId:string; requestedAt:number }; ownership?: AIOwnership; revision: number; messages: ChatMessage[]; phase: ChatPhase; error: string | null; sessionId?: string; sessions?: ConversationSummary[]; config?: ConversationConfig; draft?: string; attachments?: Attachment[]; workspaces?: Array<WorkspaceReference & { authorized: boolean }>; hasMore?: boolean; contextNotice?: string; cursorModelNotice?: string; voiceSearchPreview?: ChatMessage; automationProgress?: AutomationProgress }
 export interface ChatResult { ok: boolean; message?: string }
 export type AIChunk =
   | { type: 'text'; text: string }
-  | { type: 'activity'; id: string; tool: string; label: string; status: 'running' | 'complete' | 'error' | 'cancelled'; changes?: ChangePreview[] }
+  | { type: 'activity'; id: string; tool: string; label: string; status: 'running' | 'complete' | 'error' | 'cancelled'; changes?: ChangePreview[]; summary?: string; fullOutput?: string }
   | { type: 'interaction'; interaction: ChoiceInteraction }
   | { type: 'artifact'; artifact: GeneratedArtifact }
   | { type: 'done' }

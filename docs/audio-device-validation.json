@@ -1,0 +1,248 @@
+{
+  "feature": "Universal audio device routing for Floating Athena",
+  "date": "2026-11-24",
+  "architecture": {
+    "discovery": "Chromium MediaDevices over native macOS Core Audio / Windows audio endpoints; one visible discovery broker: Floating Athena when shown, otherwise the control window. Event-driven device changes, without polling processes or extra dependencies.",
+    "authority": "Validated main-process IPC stores runtime inventory, resolves routing, gates microphone tests, and holds output after a route change. Preferences use the existing settings repository.",
+    "microphone": "Selected physical input, shared constraints with echo cancellation/noise suppression, serialized capture, late-open cleanup, bounded reconnect attempts, and event-triggered recovery when no microphone exists at startup. Existing Silero/Whisper pipeline and voice session remain in use.",
+    "output": "Each utterance pins HTMLAudioElement and the avatar Web Audio analyser to the same physical output. Changed/missing output stops playback and requires explicit confirmation; interrupted speech is not replayed.",
+    "privacy": "No raw microphone audio, transcript, device identifier or screen contents in this report. Microphone tests retain RMS only. OS permission, app opt-in and capture leases remain enforced."
+  },
+  "confirmed_previous_defects": [
+    "Wake capture always selected the system default; an ended track permanently stopped the listener.",
+    "Speech elements had no output selection; avatar amplitude processing separately routed sound to AudioContext default output.",
+    "Voice settings had no persistent device override or bounded microphone meter test."
+  ],
+  "live_tests": {
+    "devices": [
+      {
+        "kind": "audioinput",
+        "label": "Default - MacBook Pro Microphone (Built-in)"
+      },
+      {
+        "kind": "audioinput",
+        "label": "AB17X USB Audio (001f:0b23)"
+      },
+      {
+        "kind": "audioinput",
+        "label": "MacBook Pro Microphone (Built-in)"
+      },
+      {
+        "kind": "audioinput",
+        "label": "Microsoft Teams Audio Device (Virtual)"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "Default - AB17X USB Audio (001f:0b23)"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "ARZOPA (HDMI)"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "AB17X USB Audio (001f:0b23)"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "MacBook Pro Speakers (Built-in)"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "Microsoft Teams Audio Device (Virtual)"
+      }
+    ],
+    "initialInput": "MacBook Pro Microphone (Built-in)",
+    "initialOutput": "AB17X USB Audio (001f:0b23)",
+    "microphoneMeter": "Actual capture produced nonzero RMS",
+    "permissionDenial": "blocked by main process",
+    "tts": "Selected local TTS preview completed with a pinned physical output",
+    "unfocusedListener": "Real local VAD remained on while main window minimized",
+    "headsetInput": "AB17X USB Audio (001f:0b23)",
+    "headsetOutput": "AB17X USB Audio (001f:0b23)",
+    "singleCapture": "Only one live microphone track after switching to the USB headset",
+    "headsetRms": "Actual headset microphone produced nonzero RMS through the existing wake listener",
+    "disconnect": "Actual unplug stopped the pinned audio, held further speech, and recovered one built-in microphone stream",
+    "reconnect": "USB input recovered without duplicate capture; speech remained held until explicit confirmation",
+    "persistence": "Explicit input/output and auto-switch preference survived packaged app restart"
+  },
+  "spoken_wake_test": {
+    "states": [
+      "standby",
+      "processing",
+      "standby",
+      "processing",
+      "speaking",
+      "follow-up"
+    ],
+    "hardware": "AB17X USB Audio (001f:0b23)",
+    "recognition": "Real local Whisper, no transcript injection",
+    "response": "Actual hands-free TTS completed and entered follow-up"
+  },
+  "user_confirmation": [
+    "Heard the preview through the AB17X headset",
+    "Unplugged and reconnected the headset during the live test",
+    "Said Hey Athena and heard the acknowledgment through the headset"
+  ],
+  "automated_checks": {
+    "focused": "162 passing tests across 14 files, including startup recovery and existing voice/IPC regressions.",
+    "full_host_suite": "2179 passed, 52 skipped, 4 pre-existing failures before the final startup-recovery regression was added.",
+    "pre_existing_failures": [
+      "buildIsolation: outdated development script expectation",
+      "outputRecovery: legacy reasoning payload expectation",
+      "outputRecovery: old connection-error wording",
+      "systemVoiceRollback: old packaging-resource ordering expectation"
+    ],
+    "typecheck": "passed (npm run build includes tsc --noEmit)",
+    "production_build": "passed; existing bundle-size warnings remain",
+    "packaged_integration": "Three actual macOS ARM64 runs passed: USB unplug/reconnect, physical spoken wake-word, and final hidden-floating/control discovery with real microphone, routed TTS, permission denial, minimized listening and restart persistence. Final smoke: 1 passed in 22.7 seconds. Isolated profiles removed; production conversations unchanged.",
+    "mock_scope": "Endpoint changes, unknown/missing devices, duplicate opens, late cancellation, privacy hold, output mapping, permission denial, settings persistence, unsupported routing, startup recovery, echo classification.",
+    "package": "Final macOS ARM64 app and four helpers signed and verified with the existing persistent local certificate."
+  },
+  "limitations": [
+    "AirPods and other Bluetooth devices were not physically available; Bluetooth profile changes use the same endpoint lifecycle but are not hardware-verified here.",
+    "No Windows machine or macOS Intel hardware was available. The Chromium routing path is shared, but Windows/Intel production builds and hardware were not live-tested.",
+    "Microphone identities may be hidden until authorized capture. Voice Settings explains this and provides Test microphone; no automatic microphone capture is performed merely to reveal labels.",
+    "OS drivers control Bluetooth codec/profile quality; Athena does not force high-quality stereo while a hands-free microphone is active.",
+    "Hardware echo cancellation and noise suppression vary by device; a bounded recent-playback transcript guard supplements them.",
+    "Apple notarization requires deployment credentials and was not performed; local macOS packaging uses the existing persistent signing certificate."
+  ],
+  "changed_files": [
+    "shared/audioDevices.ts",
+    "shared/settings.ts",
+    "shared/contracts.ts",
+    "shared/ipcChannels.ts",
+    "shared/handsFree.ts",
+    "electron/main/voice/audioDeviceService.ts",
+    "electron/main/ipcHandlers.ts",
+    "electron/main/main.ts",
+    "electron/preload/preload.ts",
+    "src/services/speech/audioDevices.ts",
+    "src/services/speech/playbackAmplitude.ts",
+    "src/services/speech/speechPlayer.ts",
+    "src/services/speech/voiceCapture.ts",
+    "src/services/desktop.ts",
+    "src/store/athenaStore.ts",
+    "src/features/settings/AudioDeviceSettings.tsx",
+    "src/features/settings/VoiceSettings.tsx",
+    "src/features/settings/VoiceInteractionSettings.tsx",
+    "src/features/voice/HandsFreeAssistant.tsx",
+    "src/styles/audioDevices.css",
+    "tests/audioDevices.test.ts",
+    "tests/audioDeviceTransport.test.ts",
+    "tests/audioDeviceSettings.test.tsx",
+    "tests/desktop/audioDevicesLive.spec.ts",
+    "tests/playbackAmplitude.test.ts",
+    "tests/speechPlayer.test.ts",
+    "tests/voiceCapture.test.ts",
+    "tests/voiceChat.test.tsx",
+    "tests/handsFree.test.ts",
+    "tests/handsFreeAssistantLifecycle.test.tsx"
+  ],
+  "documentation": [
+    "https://www.electronjs.org/docs/latest/api/session",
+    "https://developer.chrome.com/blog/audiocontext-setsinkid"
+  ],
+  "app_restart": "Verified normal packaged Athena quit and restarted (PID 12726 \u2192 38529). Voice Settings displays Audio Devices, System Default input/output, automatic switching on and AB17X USB output. Existing hands-free-off preference retained; no other applications were stopped.",
+  "commands": [
+    "npm test -- --run tests/audioDeviceSettings.test.tsx tests/audioDevices.test.ts tests/audioDeviceTransport.test.ts tests/voiceCapture.test.ts tests/playbackAmplitude.test.ts tests/speechPlayer.test.ts tests/handsFreeAssistantLifecycle.test.tsx tests/handsFreeController.test.ts tests/handsFree.test.ts tests/settings.test.ts tests/voiceChat.test.tsx tests/aiIPC.test.ts",
+    "npm test",
+    "npm run build",
+    "npx electron-builder --mac --dir",
+    "ATHENA_AUDIO_LIVE=1 ATHENA_AUDIO_HOTPLUG=1 npx playwright test tests/desktop/audioDevicesLive.spec.ts",
+    "ATHENA_AUDIO_LIVE=1 ATHENA_AUDIO_HOTPLUG=1 ATHENA_AUDIO_WAKE=1 npx playwright test tests/desktop/audioDevicesLive.spec.ts",
+    "ATHENA_AUDIO_LIVE=1 npx playwright test tests/desktop/audioDevicesLive.spec.ts",
+    "git diff --check"
+  ],
+  "automaticRoutingUpdate": {
+    "date": "2026-11-24",
+    "policy": "Prefer newest compatible external input/output independently; use built-in audio on disconnect; preserve explicit manual choices while available.",
+    "liveHardware": {
+      "devices": [
+        {
+          "kind": "audioinput",
+          "label": "Default - MacBook Pro Microphone (Built-in)"
+        },
+        {
+          "kind": "audioinput",
+          "label": "AB17X USB Audio (001f:0b23)"
+        },
+        {
+          "kind": "audioinput",
+          "label": "MacBook Pro Microphone (Built-in)"
+        },
+        {
+          "kind": "audiooutput",
+          "label": "Default - AB17X USB Audio (001f:0b23)"
+        },
+        {
+          "kind": "audiooutput",
+          "label": "AB17X USB Audio (001f:0b23)"
+        },
+        {
+          "kind": "audiooutput",
+          "label": "MacBook Pro Speakers (Built-in)"
+        }
+      ],
+      "initialInput": "AB17X USB Audio (001f:0b23)",
+      "initialOutput": "AB17X USB Audio (001f:0b23)",
+      "microphoneMeter": "Actual capture produced nonzero RMS",
+      "permissionDenial": "blocked by main process",
+      "tts": "Selected local TTS preview completed with a pinned physical output",
+      "unfocusedListener": "Real local VAD remained on while main window minimized",
+      "headsetInput": "AB17X USB Audio (001f:0b23)",
+      "headsetOutput": "AB17X USB Audio (001f:0b23)",
+      "singleCapture": "Only one live microphone track after switching to the USB headset",
+      "headsetRms": "Actual headset microphone produced nonzero RMS through the existing wake listener",
+      "disconnect": "Actual unplug rerouted the existing playback to built-in speakers and recovered exactly one built-in microphone stream",
+      "reconnect": "USB input and existing playback recovered automatically without duplicate capture",
+      "persistence": "Explicit input/output and auto-switch preference survived packaged app restart"
+    },
+    "fixtures": {
+      "focusedTests": 156,
+      "files": 14,
+      "webRTC": "Actual local browser WebRTC fixture: microphone track replacements kept one session; interruption/delegation passed. No OpenAI calls."
+    },
+    "unverified": [
+      "Windows native endpoint discovery on Windows hardware",
+      "AirPods and other Bluetooth profile transitions",
+      "Analog wired output-only headphones",
+      "Physical multi-headset ordering",
+      "Live paid GPT-Live session device switching",
+      "Subjective audio quality across Bluetooth profiles"
+    ],
+    "preserved": "GPT-Live settings and custom voice IDs, Chatterbox, Whisper, references imported by the user, and shared caches.",
+    "retiredProvidersRemoved": [
+      "Sesame CSM 1B",
+      "Higgs TTS 3 4B"
+    ],
+    "sources": [
+      "https://developer.apple.com/documentation/coreaudio/kaudiodevicepropertytransporttype",
+      "https://learn.microsoft.com/en-us/windows/win32/coreaudio/mmdevice-api"
+    ],
+    "finalValidation": {
+      "fullSuite": {
+        "passed": 2222,
+        "failed": 6,
+        "skipped": 56,
+        "filesPassed": 236,
+        "filesFailed": 4,
+        "filesSkipped": 6
+      },
+      "remainingFailures": [
+        "athenaChatView: Full Access warning expectation",
+        "buildIsolation: development script expectation",
+        "contextSettingsLocation: two Full Access/project-grant expectations",
+        "outputRecovery: reasoning payload and connection-error wording expectations"
+      ],
+      "failureScope": "These six failures are outside the changed audio/provider-removal paths. The focused 156-test suite passed.",
+      "typecheck": "Passed",
+      "productionBuild": "Passed",
+      "packagedMacApp": "Signed and verified; installed and restarted at release/mac-arm64/Athena.app",
+      "normalProfileUI": "Verified GPT-Live selected, Athena Youthful selected, Chatterbox fallback retained. Automatic microphone and speaker both resolve to AB17X USB Audio. Bounded microphone test ended; no capture left running by the test.",
+      "paidUsage": "No paid OpenAI session or preview was started during this validation.",
+      "processCleanup": "Only the normal packaged Athena main process remained after testing."
+    }
+  },
+  "currentValidation": "automaticRoutingUpdate contains the current behavior and validation. Earlier fields record the previous implementation; its output privacy-hold policy was superseded by the explicitly requested automatic built-in fallback."
+}

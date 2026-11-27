@@ -1,0 +1,3 @@
+.audio-input-meter { width: min(220px, 32vw); height: 8px; overflow: hidden; border-radius: 6px; background: var(--border); }
+.audio-input-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--accent, #7dd9e8); transform-origin: left; transition: transform 80ms linear; }
+@media (prefers-reduced-motion: reduce) { .audio-input-meter > span { transition: none; } }

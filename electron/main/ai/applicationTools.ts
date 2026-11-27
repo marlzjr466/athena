@@ -70,7 +70,7 @@ export function combineTools(base: ProjectTools | undefined, application: Projec
     formatOutput: (result) => base.formatOutput?.(result) ?? application.formatOutput?.(result),
     hasEphemeralContext: () => Boolean(base.hasEphemeralContext?.() || application.hasEphemeralContext?.()),
     invalidate: () => { base.invalidate?.(); application.invalidate?.() },
-    continuation: () => { base.continuation?.(); application.continuation?.() },
+    continuation: files => { base.continuation?.(files); application.continuation?.(files) },
     dispose: async () => { await Promise.all([base.dispose?.(), application.dispose?.()]) },
     validateCompletion: async () => { await base.validateCompletion?.(); await application.validateCompletion?.() },
     additionalCostUsd: () => (base.additionalCostUsd?.() ?? 0) + (application.additionalCostUsd?.() ?? 0),

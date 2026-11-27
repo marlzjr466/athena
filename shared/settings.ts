@@ -1,3 +1,5 @@
+import { liveVoiceSchema, liveVoiceDefaults } from './liveVoice'
+import { audioDeviceSettingsSchema, audioDeviceDefaults } from './audioDevices'
 import { z } from 'zod'
 import { WANDER_POSITIONS } from './flight'
 import { IDLE_ACTIONS } from './idleActions'
@@ -21,7 +23,33 @@ export const MAX_WANDER_INTERVAL = 300
 export const MIN_MOVEMENT_SPEED = 0.5
 export const MAX_MOVEMENT_SPEED = 10
 export const pointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict()
+import { mediaDefaults, mediaSettingsSchema } from './mediaGeneration'
+import { applicationAutomationDefaults, applicationAutomationSchema } from './applicationAutomation'
 export const settingsSchema = z.object({
+  applicationAutomation: applicationAutomationSchema.default(applicationAutomationDefaults),
+  computerUse: z.object({
+    enabled: z.boolean().default(true),
+    voice: z.boolean().default(true),
+    handsFreeBrowserSearches: z.boolean().default(false),
+    planner: z.enum(['selected','local']).default('selected'),
+    browser: z.enum(['playwright','embedded']).default('playwright'),
+    applicationAwareness: z.boolean().default(true),
+    reuseBrowserWindows: z.boolean().default(true),
+    visibleCursor: z.boolean().default(true),
+    highlightTargets: z.boolean().default(true),
+    smoothCursor: z.boolean().default(true),
+    clickRipple: z.boolean().default(true),
+    pauseOnConflict: z.boolean().default(true),
+    animationSpeed: z.number().min(0.5).max(2).default(1),
+    browserDebugPort: z.number().int().min(0).max(65535).default(0),
+    vision:z.boolean().default(false),
+    input:z.boolean().default(true),
+    clipboard: z.boolean().default(false),
+    trustedInstalled:z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(100).default([]),
+    blockedApps: z.array(z.string().max(40)).max(100).default([]),
+  }).default({enabled:true,voice:true,handsFreeBrowserSearches:false,planner:'selected',browser:'playwright', applicationAwareness: true, reuseBrowserWindows: true, visibleCursor: true, highlightTargets: true, smoothCursor: true, clickRipple: true, pauseOnConflict: true, animationSpeed: 1, browserDebugPort: 0, vision:false,input:true,clipboard:false,trustedInstalled:[],blockedApps:[]}),
+  liveVoice: liveVoiceSchema.default(liveVoiceDefaults),
+  mediaGeneration: mediaSettingsSchema.default(mediaDefaults),
   version: z.literal(1).default(1),
   aiGeneration: generationSettingsSchema.default(generationDefaults),
   aiContext: contextSettingsSchema.default(contextDefaults),
@@ -40,7 +68,7 @@ export const settingsSchema = z.object({
   reviewLegacyLocalHistory: z.boolean().default(false),
   // Explicitly opts project conversations into the installed Codex CLI harness.
   // General, unscoped ChatGPT conversations continue to use Athena's provider.
-  chatGPTCodingBackend: z.enum(['athena', 'codex-cli']).default('athena'),
+  chatGPTCodingBackend: z.enum(['athena', 'codex-cli']).default('codex-cli'),
   strictOffline: z.boolean().default(false),
   webAccess: webAccessSettingsSchema.default(webAccessDefaults),
   automationPermissions: automationPermissionsSchema.default(automationPermissionDefaults),
@@ -59,6 +87,7 @@ export const settingsSchema = z.object({
   taskAnimationIntensity: z.number().min(0).max(1).default(0.65),
   taskCompletionNotification: z.boolean().default(true),
   pauseFloatingWhileWorking: z.boolean().default(true),
+  audioDevices: audioDeviceSettingsSchema.default(audioDeviceDefaults),
   voiceMuted: z.boolean().default(false),
   voiceName: speechVoiceSchema.default(DEFAULT_SPEECH_VOICE),
   voiceSpeed: z.number().finite().min(MIN_SPEECH_SPEED).max(MAX_SPEECH_SPEED).default(1),
@@ -116,7 +145,17 @@ export const defaultSettings = settingsSchema.parse({})
 
 export function restoreSettings(input: unknown): Settings {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { ...defaultSettings }
-  const raw = input as Record<string, unknown>
+  const raw = { ...input } as Record<string, unknown>
+  // Subscription text conversations now have a single authoritative native engine.
+  raw.chatGPTCodingBackend = 'codex-cli'
+  // Strip retired provider fields before strict validation; retain all shared
+  // preferences and custom GPT-Live voices. Never grant cloud consent here.
+  if (raw.localVoice && typeof raw.localVoice === 'object' && !Array.isArray(raw.localVoice)) {
+    const local = { ...raw.localVoice } as Record<string, unknown>
+    if (['sesame-csm', 'sesame-csm-official', 'higgs-tts-3-4b'].includes(String(local.engine))) local.engine = 'chatterbox-turbo'
+    delete local.sesame; delete local.officialCSM; delete local.higgs
+    raw.localVoice = local
+  }
   if (raw.version !== undefined && raw.version !== 1) return { ...defaultSettings }
   const restored = { ...defaultSettings }
   for (const key of Object.keys(defaultSettings) as (keyof Settings)[]) {

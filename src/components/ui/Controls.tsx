@@ -1,10 +1,18 @@
 import { useEffect, useId, useState, type ReactNode } from 'react'
+import { ChevronRight } from 'lucide-react'
 
 export function Toggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange(value: boolean): void; label: string; disabled?: boolean }) {
   return <button className={`toggle ${checked ? 'is-on' : ''}`} role="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)}><span /></button>
 }
 export function SettingRow({ title, description, children, icon }: { title: string; description?: string; children: ReactNode; icon?: ReactNode }) {
   return <div className="setting-row">{icon && <span className="setting-icon">{icon}</span>}<div className="setting-copy"><span>{title}</span>{description && <p>{description}</p>}</div>{children}</div>
+}
+/** Use the same label and row spacing for expandable settings as ordinary settings. */
+export function SettingsDisclosure({ title, children }: { title: string; children: ReactNode }) {
+  return <details className="settings-disclosure">
+    <summary className="setting-row"><ChevronRight size={14} aria-hidden="true" /><span className="setting-copy"><span>{title}</span></span></summary>
+    <div className="settings-disclosure-content">{children}</div>
+  </details>
 }
 export function Slider({ label, value, min, max, step = 1, unit = '', onChange, ends, disabled = false }: { label: string; value: number; min: number; max: number; step?: number; unit?: string; onChange(value: number): void; ends?: [string, string]; disabled?: boolean }) {
   const id = useId()

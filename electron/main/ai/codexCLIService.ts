@@ -1,8 +1,8 @@
 import { execFile as nodeExecFile, spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { access, chmod, mkdtemp, rm } from 'node:fs/promises'
+import { access, chmod, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { modelIdSchema } from '../../../shared/ai'
 import type { CodexCLIModel, CodexCLIStatus } from '../../../shared/codex'
@@ -11,7 +11,7 @@ import { log } from '../logger'
 
 const execFile = promisify(nodeExecFile)
 type RpcId = number | string
-type RpcReply = { id?: RpcId; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { code?: number | string; message?: string } }
+export type RpcReply = { id?: RpcId; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { code?: number | string; message?: string } }
 type Pending = { method: string; resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
 
 function safeRpcDetail(value: unknown): string {
@@ -24,11 +24,30 @@ function safeRpcDetail(value: unknown): string {
     .slice(0, 240)
 }
 
+type ThreadContext = {cwd?:string; threadSource?:string|null}
+
+async function canonicalDirectory(path:string):Promise<string> {
+  const absolute=resolve(path)
+  try { return await realpath(absolute) }
+  catch(error) {
+    // Historical workspaces may no longer exist. Resolve their existing parent
+    // so aliases such as /var and /private/var still refer to the same workspace.
+    if ((error as NodeJS.ErrnoException).code==='ENOENT' && dirname(absolute)!==absolute)
+      return join(await canonicalDirectory(dirname(absolute)),basename(absolute))
+    return absolute
+  }
+}
+
+function withinDirectory(root:string,path:string):boolean {
+  const rest=relative(root,path)
+  return rest==='' || (rest!=='..' && !rest.startsWith('..'+sep) && !isAbsolute(rest))
+}
+
 export class CodexAppServerError extends Error {
   constructor(message: string, readonly code?: string) { super(message); this.name = 'CodexAppServerError' }
 }
 
-/** Dynamic tools are app-server's capability-gated extension; no native tools are enabled. */
+/** User-input callbacks require the documented experimental opt-in. Tools remain Codex-owned. */
 export const codexAppServerCapabilities = { experimentalApi: true, requestAttestation: false } as const
 
 /** Small JSON-RPC transport for the official Codex app-server stdio protocol. */
@@ -51,6 +70,8 @@ export class CodexAppServerProcess {
       for (const listener of this.notificationListeners) listener({ method: 'server/closed', params: { code, signal } })
     })
   }
+
+  get isClosed(): boolean { return this.closed }
 
   onNotification(listener: (message: RpcReply) => void): () => void { this.notificationListeners.add(listener); return () => this.notificationListeners.delete(listener) }
   onServerRequest(listener: (message: RpcReply) => void): () => void { this.requestListeners.add(listener); return () => this.requestListeners.delete(listener) }
@@ -98,7 +119,7 @@ export class CodexAppServerProcess {
       let message: RpcReply
       try { message = JSON.parse(line) as RpcReply }
       catch { this.failAll(new CodexAppServerError('Codex app-server returned an unreadable protocol message.')); this.child.kill('SIGTERM'); return }
-      if (message.id !== undefined && this.pending.has(message.id)) {
+      if (message.id !== undefined && !message.method && this.pending.has(message.id)) {
         const pending = this.pending.get(message.id)!
         this.pending.delete(message.id); clearTimeout(pending.timer)
         if (message.error) {
@@ -124,15 +145,18 @@ export interface CodexAppServerSession {
   rpc: CodexAppServerProcess
   sandboxRoot: string
   accountEmail: string | null
+  accountId?: string | null
+  plan?: string | null
   models: CodexCLIModel[]
   version: string
+  executable?: string
   close(): Promise<void>
 }
 
 function mapEffort(value: unknown): ReasoningEffort | null {
   const normalized = String(value ?? '').toLowerCase().replaceAll('-', '_')
-  if (['auto', 'low', 'medium', 'high'].includes(normalized)) return normalized as ReasoningEffort
-  if (['xhigh', 'extra_high', 'extra high', 'ultra'].includes(normalized)) return 'xhigh'
+  if (['auto', 'none', 'minimal', 'low', 'medium', 'high', 'max'].includes(normalized)) return normalized as ReasoningEffort
+  if (['xhigh', 'extra_high', 'extra high'].includes(normalized)) return 'xhigh'
   return null
 }
 
@@ -170,14 +194,108 @@ function candidatePaths(): string[] {
   const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
   return [...new Set([
     '/opt/homebrew/bin/codex', '/usr/local/bin/codex', '/usr/bin/codex',
-    ...pathDirs.map((directory) => join(directory, 'codex')),
+    ...pathDirs.flatMap(directory => process.platform === 'win32' ? [join(directory, 'codex.exe'), join(directory, 'codex')] : [join(directory, 'codex')]),
   ])]
 }
 
 export class CodexCLIService {
   private cached?: { expiresAt: number; status: CodexCLIStatus }
   private executable?: string
-  constructor(private readonly appVersion = '0.1.0', private readonly spawn = nodeSpawn, private readonly command = execFile) {}
+  private shared?: Promise<CodexAppServerSession>
+  private readonly activeThreads = new Set<string>()
+  private readonly listedThreads = new Map<string, string>()
+  claimThread(id: string): () => void {
+    if (this.activeThreads.has(id)) throw new CodexAppServerError('This Codex thread already has an active Athena turn. Use its conversation or stop that turn first.')
+    this.activeThreads.add(id)
+    return () => this.activeThreads.delete(id)
+  }
+  async connection(): Promise<CodexAppServerSession> {
+    if (!this.shared) {
+      const pending = this.openSession(true)
+      this.shared = pending
+      pending.then(session => session.rpc.onNotification(event => {
+        if (event.method === 'server/closed' && this.shared === pending) { this.shared = undefined; this.cached = undefined; void session.close() }
+        if (event.method === 'account/updated' || event.method === 'account/login/completed') this.cached = undefined
+      }), () => { if (this.shared === pending) this.shared = undefined })
+    }
+    return this.shared
+  }
+  async shutdown(): Promise<void> {
+    const pending = this.shared; this.shared = undefined
+    await pending?.then(session => session.close(), () => {})
+  }
+  async login(): Promise<{ url: string }> {
+    if (this.activeThreads.size) throw new CodexAppServerError('Finish or stop active Codex turns before changing accounts.')
+    const session = await this.connection()
+    const result = await session.rpc.request('account/login/start', { type: 'chatgpt' }) as { type: string; authUrl?: string }
+    if (result.type !== 'chatgpt' || !result.authUrl) throw new CodexAppServerError('Codex did not return a ChatGPT sign-in URL.')
+    const url = new URL(result.authUrl)
+    if (url.protocol !== 'https:' || !['auth.openai.com', 'chatgpt.com'].includes(url.hostname)) throw new CodexAppServerError('Codex returned an unexpected sign-in host.')
+    return { url: url.href }
+  }
+  async account(session: CodexAppServerSession) {
+    const result = await session.rpc.request('account/read', { refreshToken: true }) as import('./codexProtocol/v2/GetAccountResponse').GetAccountResponse
+    if (result.account?.type !== 'chatgpt' || !result.account.email) throw new CodexAppServerError('Sign in to Codex with ChatGPT in Settings → AI. API-key billing is not used for subscription conversations.')
+    session.accountEmail = result.account.email
+    session.accountId = result.userId
+    session.plan = result.account.planType
+    return result.account
+  }
+  async listThreads(cursor?: string) {
+    const session = await this.connection(); await this.account(session)
+    const result = await session.rpc.request('thread/list', { currentAccountOnly: true, limit: 50, sortKey: 'updated_at', ...(cursor ? { cursor } : {}) }) as import('./codexProtocol/v2/ThreadListResponse').ThreadListResponse
+    if (!cursor) this.listedThreads.clear()
+    // The local server can omit threadSource in its persisted index.
+    const reserved=this.voiceWorkspace && await canonicalDirectory(this.voiceWorkspace)
+    const keep=await Promise.all(result.data.map(async thread=>{
+      const visible=!await this.isVoiceThread(thread,reserved)
+      if (!visible) {
+        this.listedThreads.delete(thread.id)
+        if (result.readStates) delete result.readStates[thread.id]
+      }
+      return visible
+    }))
+    result.data=result.data.filter((_thread,index)=>keep[index])
+    for (const thread of result.data) this.listedThreads.set(thread.id, `${session.accountId ?? session.accountEmail}:${session.accountEmail}`)
+    return result
+  }
+  async readThread(threadId: string) {
+    const session = await this.connection(); await this.account(session)
+    if (this.listedThreads.get(threadId) !== `${session.accountId ?? session.accountEmail}:${session.accountEmail}`) throw new CodexAppServerError('Refresh native history and choose a thread belonging to the active Codex account.')
+    return this.assertChatThread(threadId,session)
+  }
+  private async isVoiceThread(thread:ThreadContext, canonicalRoot?:string):Promise<boolean> {
+    if (thread.threadSource === 'athena_voice_automation') return true
+    if (!this.voiceWorkspace) return false
+    if (!thread.cwd || !isAbsolute(thread.cwd)) return true
+    if (withinDirectory(this.voiceWorkspace,thread.cwd)) return true
+    return withinDirectory(canonicalRoot ?? await canonicalDirectory(this.voiceWorkspace),await canonicalDirectory(thread.cwd))
+  }
+  async assertChatScope(thread:ThreadContext):Promise<void> {
+    if (await this.isVoiceThread(thread)) throw new CodexAppServerError('This thread is outside the normal Codex chat workspace. Its voice automation history stays separate.')
+  }
+  async assertChatThread(threadId:string,session?:CodexAppServerSession) {
+    const {rpc}=session ?? await this.connection()
+    const response=await rpc.request('thread/read',{threadId}) as import('./codexProtocol/v2/ThreadReadResponse').ThreadReadResponse
+    if (response.thread.id!==threadId) throw new CodexAppServerError('Codex returned a different thread.')
+    await this.assertChatScope(response.thread)
+    return response
+  }
+  async turns(threadId: string) {
+    const session = await this.connection()
+    return session.rpc.request('thread/turns/list', { threadId, limit: 100, sortDirection: 'desc' }) as Promise<import('./codexProtocol/v2/ThreadTurnsListResponse').ThreadTurnsListResponse>
+  }
+  async items(threadId: string, turnId: string) {
+    const session = await this.connection()
+    const items: import('./codexProtocol/v2/ThreadItemEntry').ThreadItemEntry[] = []
+    let cursor: string | null = null
+    do {
+      const page: import('./codexProtocol/v2/ThreadItemsListResponse').ThreadItemsListResponse = await session.rpc.request('thread/items/list', { threadId, turnId, limit: 100, ...(cursor ? {cursor} : {}) }) as import('./codexProtocol/v2/ThreadItemsListResponse').ThreadItemsListResponse
+      items.push(...page.data); cursor = page.nextCursor
+    } while (cursor)
+    return items
+  }
+  constructor(private readonly appVersion = '0.1.0', private readonly voiceWorkspace?:string, private readonly spawn = nodeSpawn, private readonly command = execFile) {}
 
   invalidate(): void { this.cached = undefined; this.executable = undefined }
 
@@ -194,35 +312,34 @@ export class CodexCLIService {
     } catch {
       return this.cache({ installed: true, authenticated: false, version: null, identity: null, models: [], defaultModel: null, checkedAt, message: 'Codex CLI is present but its version could not be verified.' })
     }
-    try {
-      const result = await this.command(executable, ['login', 'status'], { timeout: 12_000, encoding: 'utf8', env: environmentForCodex() })
-      if (!codexLoginUsesChatGPT(result.stdout, result.stderr)) return this.cache({ installed: true, authenticated: false, version, identity: null, models: [], defaultModel: null, checkedAt, message: 'Codex CLI is installed, but it is not signed in with a ChatGPT account. Athena will not use API-key authentication.' })
-    } catch {
-      return this.cache({ installed: true, authenticated: false, version, identity: null, models: [], defaultModel: null, checkedAt, message: 'Codex CLI is installed but its ChatGPT sign-in could not be verified. Sign in with `codex login` and refresh status.' })
-    }
     let session: CodexAppServerSession | undefined
     try {
-      session = await this.launchSession(executable, version)
+      session = await this.connection()
+      await this.account(session)
       if (!session.accountEmail) return this.cache({ installed: true, authenticated: false, version, identity: null, models: [], defaultModel: null, checkedAt, message: 'Codex CLI is signed in, but app-server did not provide a verifiable account identity. No request was routed.' })
-      const models = session.models
+      const catalog = await session.rpc.request('model/list', {limit:200,includeHidden:false}) as {data?:unknown[];nextCursor?:string|null}
+      const models = (catalog.data ?? []).map(normalizeCodexModel).filter((m):m is CodexCLIModel=>Boolean(m))
+      let cursor=catalog.nextCursor
+      while(cursor){const page=await session.rpc.request('model/list',{limit:200,includeHidden:false,cursor}) as {data?:unknown[];nextCursor?:string|null};models.push(...(page.data??[]).map(normalizeCodexModel).filter((m):m is CodexCLIModel=>Boolean(m)));cursor=page.nextCursor}
+      session.models=models
       const defaultModel = models.find((model) => model.isDefault)?.id ?? null
       if (!models.length) return this.cache({ installed: true, authenticated: true, version, identity: session.accountEmail, models, defaultModel: null, checkedAt, message: 'Codex CLI is signed in, but app-server returned no selectable models.' })
-      return this.cache({ installed: true, authenticated: true, version, identity: session.accountEmail, models, defaultModel, checkedAt,
+      return this.cache({ installed: true, authenticated: true, version, identity: session.accountEmail, plan: session.plan, models, defaultModel, checkedAt,
         message: `Codex CLI ${version} is signed in as ${session.accountEmail}. The model catalog is available; model listing does not guarantee usage entitlement.` })
     } catch (error) {
       const reason = error instanceof CodexAppServerError ? error.message : 'Codex app-server could not be queried.'
       return this.cache({ installed: true, authenticated: false, version, identity: null, models: [], defaultModel: null, checkedAt, message: reason })
-    } finally { await session?.close() }
+    }
   }
 
-  async openSession(): Promise<CodexAppServerSession> {
+  async openSession(allowSignedOut = false): Promise<CodexAppServerSession> {
     const executable = await this.findExecutable()
     if (!executable) throw new CodexAppServerError('Codex CLI was not found. Install or select the official Codex CLI in Settings → AI.')
     const versionResult = await this.command(executable, ['--version'], { timeout: 10_000, encoding: 'utf8', env: environmentForCodex() })
     const version = (/codex-cli\s+([^\s]+)/i.exec(String(versionResult.stdout))?.[1] ?? '').slice(0, 40)
     if (!version) throw new CodexAppServerError('Codex CLI version could not be verified.')
     const login = await this.command(executable, ['login', 'status'], { timeout: 12_000, encoding: 'utf8', env: environmentForCodex() }).catch(() => null)
-    if (!login || !codexLoginUsesChatGPT(login.stdout, login.stderr)) throw new CodexAppServerError('Codex CLI is not signed in with ChatGPT. Athena did not use API-key authentication.')
+    if (!allowSignedOut && (!login || !codexLoginUsesChatGPT(login.stdout, login.stderr))) throw new CodexAppServerError('Codex CLI is not signed in with ChatGPT. Athena did not use API-key authentication.')
     return this.launchSession(executable, version)
   }
 
@@ -241,8 +358,6 @@ export class CodexCLIService {
     await chmod(sandboxRoot, 0o700)
     const child = this.spawn(executable, [
       'app-server', '--listen', 'stdio://',
-      '--disable', 'shell_tool', '--disable', 'multi_agent', '--disable', 'browser_use', '--disable', 'computer_use',
-      '-c', 'mcp_servers={}',
     ], { cwd: sandboxRoot, env: environmentForCodex(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     const rpc = new CodexAppServerProcess(child)
     let closed = false
@@ -255,8 +370,7 @@ export class CodexCLIService {
     try {
       await rpc.request('initialize', { clientInfo: { name: 'athena', title: 'Athena', version: this.appVersion }, capabilities: codexAppServerCapabilities })
       rpc.notify('initialized', {})
-      const account = await rpc.request('account/read', {}) as { account?: { type?: string; email?: string | null } | null }
-      if (account.account?.type !== 'chatgpt') throw new CodexAppServerError('Codex app-server is not using a ChatGPT subscription account. API-key or other provider accounts are not used by this backend.')
+      const account = await rpc.request('account/read', {}) as import('./codexProtocol/v2/GetAccountResponse').GetAccountResponse
       const models: CodexCLIModel[] = []
       let cursor: string | null | undefined
       for (let page = 0; page < 10; page++) {
@@ -268,7 +382,7 @@ export class CodexCLIService {
         cursor = response.nextCursor
         if (!cursor) break
       }
-      return { rpc, sandboxRoot, accountEmail: typeof account.account.email === 'string' ? account.account.email : null, models, version, close }
+      return { rpc, executable, sandboxRoot, accountEmail: account.account?.type === 'chatgpt' ? account.account.email : null, accountId: account.userId, plan: account.account?.type === 'chatgpt' ? account.account.planType : null, models, version, close }
     } catch (error) {
       await close()
       if (error instanceof CodexAppServerError) throw error

@@ -17,6 +17,7 @@ export function ConversationControls({ config, catalog }: { config: AIStatus; ca
   const { snapshot, command, pending } = useChat()
   const [changingMode, setChangingMode] = useState(false)
   const settings = snapshot.config
+  const nativeCodex = settings?.accountRoute ? settings.accountRoute.provider === 'subscription' : config.provider === 'Codex CLI'
   const allCursorModels = config.provider === 'Cursor Subscription'
     ? cursorSelectableModels(config.models.map((id) => ({ id, label: config.modelLabels?.[id] ?? id })), config.modelCatalogAvailable !== false)
     : []
@@ -62,6 +63,15 @@ export function ConversationControls({ config, catalog }: { config: AIStatus; ca
   }, [command, config.active, config.inferenceProfile, config.model, executionStatus, models, pending, settings?.accountRoute, settings?.model, snapshot.phase, snapshot.sessionId])
   const changeMode = async (mode: AgentMode) => {
     if (!snapshot.sessionId) return
+    if (nativeCodex) {
+      if (mode === settings?.agentMode && (mode !== 'full-access' || settings.codexFullAccessConfirmed)) return
+      const confirm = mode === 'full-access' && !settings?.codexFullAccessConfirmed
+      if (confirm && !window.confirm('Enable unrestricted Codex Full Access for this conversation? Codex can modify or delete files, execute commands, and access the network outside your project without asking for approval (danger-full-access / never). Operating-system, organization, and server restrictions still apply. If a task is running, this applies only to the next turn.')) return
+      setChangingMode(true)
+      try { await command({action:'agent-mode',id:snapshot.sessionId,mode,...(confirm ? {confirmed:true as const} : {})}) }
+      finally { setChangingMode(false) }
+      return
+    }
     if (mode === settings?.agentMode) return
     if ((snapshot.phase !== 'idle' || executionStatus === 'running' || executionStatus === 'queued') && !window.confirm('Changing project permissions will stop the current request. Completed operations remain recorded. Continue?')) return
     if (mode !== 'full-access') { await command({ action: 'agent-mode', id: snapshot.sessionId, mode }); return }
@@ -89,7 +99,7 @@ export function ConversationControls({ config, catalog }: { config: AIStatus; ca
   // ACP validates the persisted conversation model. Never display another
   // model as selected until the user has actually changed the conversation.
   const unavailableOpenAIAPIModel = openAIAPI && Boolean(settings?.model && (!settings?.accountRoute || routedAccount) && !isAvailableOpenAIAPIGptModel(settings.model, models))
-  const selectedModel = antigravity || unavailableOpenAIAPIModel
+  const selectedModel = nativeCodex || antigravity || unavailableOpenAIAPIModel
     ? settings?.model ?? ''
     : settings?.model && models.includes(settings.model) ? settings.model : config.model && models.includes(config.model) ? config.model : models[0] ?? ''
   const routedModel = routedAccount?.models.find(model => model.id === settings?.model || Object.values(model.effortModelIds ?? {}).includes(settings?.model ?? '') || Object.values(model.fastModelIds ?? {}).some(pair => pair.enabled === settings?.model || pair.disabled === settings?.model))
@@ -117,8 +127,8 @@ export function ConversationControls({ config, catalog }: { config: AIStatus; ca
       : []),
     ...supportedEfforts.map((effort) => ({ value: effort, label: effortLabel(effort) })),
   ]
-  return <div className="conversation-selectors">
-    {!!snapshot.workspaces?.length && <CustomSelect ariaLabel="Coding agent permissions" value={settings?.agentMode ?? 'ask'} disabled={permissionsDisabled} options={Object.entries(agentModes).map(([value, label]) => ({ value, label, ...(value === 'full-access' ? { description: config.provider === 'Google Antigravity Subscription' ? 'Automatically approve Antigravity tool requests for this conversation.' : 'Automatically allow permission-controlled operations without asking for confirmation.' } : {}) }))} onChange={(mode) => void changeMode(mode as AgentMode)} menuPlacement="up" className={settings?.agentMode === 'full-access' ? 'full-access-active' : ''} />}
+  return <div className="conversation-access-controls"><div className="conversation-selectors">
+    {(!!snapshot.workspaces?.length || nativeCodex) && <CustomSelect ariaLabel="Coding agent permissions" value={settings?.agentMode ?? 'ask'} disabled={permissionsDisabled} options={Object.entries(agentModes).filter(([value]) => value !== 'full-access' || workspaceId || nativeCodex).map(([value, label]) => ({ value, label: nativeCodex && value === 'full-access' && settings?.agentMode === value ? !settings.codexFullAccessConfirmed ? `${label} · confirmation required` : snapshot.codexAccess?.status === 'rejected' && snapshot.codexAccess.mode === value ? `${label} · blocked` : snapshot.codexAccess?.status !== 'verified' || snapshot.codexAccess.mode !== value ? `${label} · next turn` : label : label, ...(value === 'full-access' ? { description: nativeCodex ? 'Codex unrestricted execution without approval prompts. OS and organization restrictions still apply.' : config.provider === 'Google Antigravity Subscription' ? 'Automatically approve Antigravity tool requests for this conversation.' : 'Automatically allow permission-controlled operations without asking for confirmation.' } : {}) }))} onChange={(mode) => void changeMode(mode as AgentMode)} menuPlacement="up" className={`conversation-access-selector ${settings?.agentMode === 'full-access' && (!nativeCodex || (snapshot.codexAccess?.status === 'verified' && snapshot.codexAccess.mode === 'full-access')) ? 'full-access-active' : ''}`} />}
     {catalog ? <UnifiedModelSelect catalog={catalog} value={settings?.accountRoute && settings.model ? { ...settings.accountRoute, model: settings.model } : undefined} disabled={disabled} onChange={selection => { if (snapshot.sessionId) void command({ action: 'select-account-model', id: snapshot.sessionId, route: { provider: selection.provider, accountId: selection.accountId }, model: selection.model }) }} /> : config.provider === 'Cursor Subscription'
       ? supportedCursorConfigurations.length ? <CursorConfiguredModelSelect value={cursorModelId} models={cursorModels} configurations={supportedCursorConfigurations}
         pending={Boolean(settings?.cursorPendingModel)} disabled={disabled}
@@ -140,5 +150,6 @@ export function ConversationControls({ config, catalog }: { config: AIStatus; ca
       if (!snapshot.sessionId || !settings.accountRoute || settings.accountRoute.provider !== 'cursor') return
       void command({ action: 'select-account-model', id: snapshot.sessionId, route: settings.accountRoute, model: cursorFastVariants[cursorFastEnabled ? 'disabled' : 'enabled'] })
     }}><span>Fast</span><span className="cursor-picker-switch" data-checked={cursorFastEnabled} /></button>}
+  </div>
   </div>
 }

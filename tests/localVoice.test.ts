@@ -6,7 +6,7 @@ import { speechChunks, speechText } from '../shared/speech'
 describe('local-only voice settings and speech preparation', () => {
   it('defaults to Chatterbox Turbo with local auto-speak and persists the selected engine', () => {
     expect(defaultSettings.localVoice).toMatchObject({ engine: 'chatterbox-turbo', profileId: 'athena-youthful', style: 'conversational', expressiveness: 0.65, autoSpeak: true })
-    const saved = mergeSettings(defaultSettings, { localVoice: { ...defaultSettings.localVoice, engine: 'sesame-csm', expressiveness: 0.8 } })
+    const saved = mergeSettings(defaultSettings, { localVoice: { ...defaultSettings.localVoice, engine: 'chatterbox-turbo', expressiveness: 0.8 } })
     expect(restoreSettings(JSON.parse(JSON.stringify(saved))).localVoice).toEqual(saved.localVoice)
   })
   it('rejects invalid engines and expressiveness', () => {
@@ -27,7 +27,6 @@ describe('local-only voice settings and speech preparation', () => {
   it('uses a restrained local chuckle only for already-amused text', () => {
     expect(prepareLocalSpeech('Haha, that was clever.', 'chatterbox-turbo')).toBe('[chuckle] that was clever.')
     expect(prepareLocalSpeech('The tests failed.', 'chatterbox-turbo')).toBe('The tests failed.')
-    expect(prepareLocalSpeech('[chuckle] That was clever.', 'sesame-csm')).toBe('That was clever.')
   })
   it('skips long code and raw URLs and bounds synthesis segments', () => {
     const prepared = speechText('See https://example.com/path.\n```ts\nconst secret = 42\n```')
@@ -35,18 +34,25 @@ describe('local-only voice settings and speech preparation', () => {
     expect(prepared).not.toContain('const secret')
     expect(speechChunks('A sentence. '.repeat(200)).every((chunk) => chunk.length <= 1100)).toBe(true)
   })
-  it('migrates existing voice preferences without enabling laughter or changing the engine', () => {
+  it('migrates existing voice preferences while migrating retired engines to the local fallback', () => {
     const old = restoreSettings({ localVoice: { engine: 'sesame-csm', profileId: 'athena-youthful', expressiveness: .4 } })
-    expect(old.localVoice).toMatchObject({ engine: 'sesame-csm', expressiveness: .4, sesame: { naturalLaughter: false, conversationContext: true, keepWarmSeconds: 120 } })
+    expect(old.localVoice).toMatchObject({ engine: 'chatterbox-turbo', expressiveness: .4 })
   })
   it('requires explicit reference authorization, bounded storage, and stable IDs', () => {
     expect(localVoiceCommandSchema.safeParse({ action: 'add-example', name: 'Warm', profileId: 'adult', text: 'Hello', kind: 'conversation', authorized: false }).success).toBe(false)
     expect(localVoiceCommandSchema.safeParse({ action: 'sample', id: '../../outside.wav' }).success).toBe(false)
     expect(voiceStudioSchema.parse({})).toEqual({ examples: [], samples: [] })
   })
-  it('never injects CSM laughter tags and excludes sensitive text from laughter conditioning', () => {
-    expect(prepareLocalSpeech('[chuckling] Hello [giggle]', 'sesame-csm')).toBe('Hello')
-    expect(prepareLocalSpeech('[soft chuckle] Hello [laugh softly]', 'sesame-csm')).toBe('Hello')
+  it.each(['sesame-csm', 'sesame-csm-official', 'higgs-tts-3-4b'])('removes retired configuration for %s without losing shared preferences or cloud consent', engine => {
+    const existing = structuredClone(defaultSettings)
+    existing.liveVoice.cloudAllowed = false
+    existing.localVoice.expressiveness = .3
+    const migrated = restoreSettings({ ...existing, localVoice: { ...existing.localVoice, engine, officialCSM: { device: 'cpu' }, higgs: { device: 'mps' }, sesame: {} } })
+    expect(migrated.localVoice).toEqual({ ...existing.localVoice, engine: 'chatterbox-turbo' })
+    expect(migrated.liveVoice).toEqual(existing.liveVoice)
+    expect(restoreSettings(JSON.parse(JSON.stringify(migrated)))).toEqual(migrated)
+  })
+  it('excludes sensitive text from laughter conditioning', () => {
     expect(mayUseLaughterContext("Oh, that's funny!")).toBe(true)
     for (const text of ['The tests passed.', 'A funny joke about grief.', 'Sorry, that was embarrassing.']) expect(mayUseLaughterContext(text)).toBe(false)
   })

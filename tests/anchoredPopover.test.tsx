@@ -1,7 +1,7 @@
 import { createRef, useState } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { AnchoredPopover, computePopoverPosition, type PopoverRect } from '../src/features/chat/AnchoredPopover'
+import { AnchoredPopover, computePopoverPosition, getPopoverBounds, type PopoverRect } from '../src/features/chat/AnchoredPopover'
 
 const rect = (top: number, right: number, bottom: number, left = right - 24): PopoverRect => ({ top, right, bottom, left, width: right - left, height: bottom - top })
 
@@ -33,6 +33,40 @@ describe('collision-aware session popover positioning', () => {
     const position = computePopoverPosition(rect(180, 300, 204), { width: 185, height: 500 }, { width: 800, height: 420 })
     expect(position.maxHeight).toBe(404)
     expect(position.scrollable).toBe(true)
+  })
+
+  it('keeps the menu within the nearest clipped settings panel', () => {
+    const position = computePopoverPosition(rect(250, 480, 286, 440), { width: 290, height: 400 }, { width: 800, height: 768 }, 8, 6, 'start', { top: 40, left: 100, right: 500, bottom: 550 })
+    expect(position.width).toBe(290)
+    expect(position.left).toBe(202)
+    expect(position.left + position.width).toBe(492)
+    expect(position.top).toBeGreaterThanOrEqual(48)
+    expect(position.top + position.maxHeight).toBeLessThanOrEqual(542)
+  })
+
+  it('uses overflow ancestors as bounds for fixed menus', () => {
+    const panel = document.createElement('div')
+    panel.style.overflowX = 'auto'
+    panel.style.overflowY = 'auto'
+    document.body.append(panel)
+    const anchor = document.createElement('button')
+    panel.append(anchor)
+    vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({ top: 40, left: 100, right: 500, bottom: 550, width: 400, height: 510 } as DOMRect)
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    expect(getPopoverBounds(anchor)).toEqual({ top: 40, left: 100, right: 500, bottom: 550 })
+    panel.remove()
+  })
+
+  it('can use viewport space for a portaled session menu without inheriting a short list height', () => {
+    const anchor = rect(500, 290, 530, 266)
+    const listBounds = { top: 490, left: 20, right: 300, bottom: 540 }
+    const constrained = computePopoverPosition(anchor, { width: 185, height: 120 }, { width: 800, height: 768 }, 8, 6, 'end', listBounds)
+    const viewport = computePopoverPosition(anchor, { width: 185, height: 120 }, { width: 800, height: 768 })
+    expect(constrained.maxHeight).toBeLessThan(120)
+    expect(constrained.scrollable).toBe(true)
+    expect(viewport.maxHeight).toBe(120)
+    expect(viewport.scrollable).toBe(false)
   })
 
   it('renders in a body portal, flips after resize, and closes when its trigger scrolls out of view', () => {

@@ -1,3 +1,4 @@
+import { emptyAudioDeviceState } from '../../shared/audioDevices'
 import type { AthenaAPI, Snapshot } from '../../shared/contracts'
 import { defaultSettings, mergeSettings } from '../../shared/settings'
 import { emptyAIStatus, type AIResult } from '../../shared/ai'
@@ -18,14 +19,15 @@ const publish = () => { for (const listener of listeners) listener(preview) }
 const unavailableAI = async (): Promise<AIResult> => ({ ok: false, status: emptyAIStatus(), message: 'Open the macOS desktop app to configure secure AI access.' })
 const unavailablePermissionResult = async (): Promise<PermissionResult> => ({ ok: false, snapshot: unavailablePermissions(), message: 'Open Athena on macOS to manage permissions.' })
 const previewApi: AthenaAPI = {
+  mediaGeneration: async () => ({routes:[],notices:['Media generation requires the desktop app.'],paidRequests:0}),
+  liveVoice: async () => ({credential:false, message:'GPT-Live requires the Athena desktop app.'}),
+  audioDevices: async () => emptyAudioDeviceState(), onAudioDevices: () => () => {},
   registerVroidAnimations: async () => preview,
   playVroidAction: async () => ({ ok: false, message: 'Synchronized VRoid actions require the Athena desktop app.' }),
   beginSpeech: async () => ({ ok: false, message: 'Speech output requires the desktop app.' }),
   nextSpeech: async () => ({ ok: false }), speechPlaying: async () => ({ ok: false }), stopSpeech: async () => ({ ok: true }), onSpeech: () => () => {},
   reportSpeechLevel: async () => ({ ok: true }), onSpeechLevel: () => () => {},
-  officialCSM: async () => ({ ok: false, message: 'Official CSM requires the desktop app.' }),
-  higgsTTS: async () => ({ ok: false, message: 'Higgs TTS 3 requires the desktop app.' }),
-  getLocalVoiceStatus: async () => ({ runtime: 'unavailable', engines: { 'chatterbox-turbo': { status: 'unavailable' }, 'sesame-csm': { status: 'unavailable' }, 'sesame-csm-official': { status: 'unavailable' }, 'higgs-tts-3-4b': { status: 'unavailable' } }, profiles: [] }),
+  getLocalVoiceStatus: async () => ({ runtime: 'unavailable', engines: { 'chatterbox-turbo': { status: 'unavailable' } }, profiles: [] }),
   installLocalVoice: async () => ({ ok: false, message: 'Local voice installation requires the desktop app.' }),
   cancelLocalVoiceInstall: async () => ({ ok: true }), manageVoiceProfile: async () => ({ ok: false }),
   previewLocalVoice: async () => ({ ok: false, message: 'Voice preview requires the desktop app.' }), manageLocalVoice: async () => ({ ok: false, message: 'Local voice management requires the desktop app.' }), stopAllSpeech: async () => ({ ok: true }), onLocalVoicePlaybackStopped: () => () => {}, onLocalVoiceProgress: () => () => {},
@@ -38,6 +40,10 @@ const previewApi: AthenaAPI = {
   cancelHandsFreeTranscription: async () => ({ ok: true }),
   answerHandsFree: async () => ({ ok: false, message: 'Hands-free voice requires the macOS desktop app.' }),
   onHandsFreeReplyProgress: () => () => {},
+  steerVoiceAutomation:async()=>false,
+  onVoiceSubmissionEnded:()=>()=>{},
+  onVoiceAutomationStopped:()=>()=>{},
+  computerUseCheck:async()=>({browser:'Desktop integration unavailable',locked:false,recent:[]}),
   cancelHandsFreeReply: async () => ({ ok: true }),
   clearHandsFreeContext: async () => ({ ok: true }),
   speakHandsFree: async () => ({ ok: false, message: 'Hands-free voice requires the macOS desktop app.' }),
@@ -97,6 +103,7 @@ const previewApi: AthenaAPI = {
   signOutCursor: async () => ({ installed: false, authenticated: false, identity: null, version: null, message: 'Cursor CLI requires the macOS desktop app.', models: [], modelCatalogAvailable: false }),
   antigravity: async () => ({ installed: false, version: null, authState: 'unknown', identity: null, models: [], modelEfforts: {}, modelEffortDefaults: {}, modelCatalogAvailable: false, usage: null, usageError: null, message: 'Antigravity ACP requires the desktop app.' }),
   getChatGPTStatus: async () => ({ ...emptyChatGPTStatus(), message: 'Desktop app unavailable.' }),
+  codexCommand: async () => ({ok:false,message:'Codex requires the desktop app.'}),
   getCodexCLIStatus: async () => ({ ...emptyCodexCLIStatus(), message: 'Codex CLI requires the macOS desktop app.' }),
   addChatGPTAccount: async () => ({ ...emptyChatGPTStatus(), message: 'Desktop app unavailable.' }), retryAddChatGPTAccount: async () => ({ ...emptyChatGPTStatus(), message: 'Desktop app unavailable.' }),
   confirmChatGPTAccount: async () => ({ ...emptyChatGPTStatus(), message: 'Desktop app unavailable.' }), cancelChatGPTAccount: async () => ({ ...emptyChatGPTStatus(), message: 'Desktop app unavailable.' }),

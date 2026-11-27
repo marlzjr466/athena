@@ -12,6 +12,19 @@ import { mutationFileSummary, normalizeActivityFileIdentity, timelineBlocks } fr
 afterEach(() => vi.useRealTimers())
 
 describe('inline live agent activity', () => {
+  it('shows the active run, provider-reported model, elapsed tool time, and exit status for an incomplete task', () => {
+    const execution: AgentExecution = {startedAt:1,updatedAt:2001,finishedAt:2001,status:'error',activities:[],providerId:'chatgpt-subscription',modelId:'fixture-model',
+      taskCheckpoint:{taskId:'run-two',model:'fixture-model',requestedModel:'fixture-model',responseModel:'fixture-model',effort:'high',originalRequest:'fixture',workspaceIds:[],instructionMessageIds:[],completedOperationIds:[],modifiedFiles:[],verificationOperationIds:[],pendingActions:['verify'],updatedAt:2001,continuationAttempts:0,verificationGates:{productionBuild:'not-run',developmentServer:'not-run',browserVerification:'not-run'},control:{continuations:0,compactions:0,transportRecoveries:0,toolCalls:1,toolRounds:1,status:'blocked',operations:[
+        {id:'prior-op',runId:'run-one',key:'0'.repeat(64),tool:'older_tool',status:'complete',readOnly:true,at:0},
+        {id:'selected-op',runId:'run-two',key:'1'.repeat(64),tool:'execute_command',status:'failed',readOnly:false,at:1,finishedAt:2001,outcome:'missing-input',exitCode:2},
+      ]}}}
+    render(<AgentActivity execution={execution}/>)
+    fireEvent.click(screen.getByText('Execution diagnostics'))
+    expect(screen.getByTitle('selected-op')).toHaveTextContent(/execute_command.*missing-input.*exit 2.*2.0s/)
+    expect(screen.getByText(/Provider reported fixture-model/)).toHaveTextContent('high effort')
+    expect(screen.queryByText('older_tool')).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent('unresolved operations')
+  })
   it('shows automatic, manual, and rejected permission decisions without adding tool operations', () => {
     const execution: AgentExecution = { startedAt: 1, updatedAt: 4, status: 'complete', activities: [], permissionDecisions: [
       { id: '11111111-1111-4111-8111-111111111111', title: 'Edit file', decision: 'automatic', at: 1 },

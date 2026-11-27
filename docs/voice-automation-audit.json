@@ -1,0 +1,346 @@
+{
+  "title": "Floating Athena voice automation capability audit",
+  "date": "2026-11-24",
+  "platform": "macOS ARM64",
+  "statusDefinitions": {
+    "WORKING": "The stated execution path completed in the tests identified below; this does not imply untested hardware or platforms passed.",
+    "PARTIAL": "Implemented with narrower target support or an incomplete live end-to-end verification chain.",
+    "BLOCKED": "A required environment permission, service, or platform was unavailable.",
+    "MISSING": "Requested behavior is not implemented."
+  },
+  "confirmedCauses": [
+    "Floating voice commands used renderer conversation IPC that rejected the Floating sender instead of using the shared native action registry.",
+    "Online dictation was coupled to ChatGPT/global selection instead of the target conversation's provider, account, model and workspace.",
+    "Native actions could enable disabled automation preferences instead of denying the operation.",
+    "Completed native action receipts were removed, allowing repeated tool events to repeat mutations.",
+    "Voice-only turns lacked a saved agent execution, so ordinary activity and approval code could reject otherwise authorized project tools.",
+    "macOS accessibility actions did not bind their observations to one verified window; the application also always selected the macOS desktop backend.",
+    "There was no authorized interactive public-browser session for Floating Athena.",
+    "A real Electron Git test exposed an in-flight watcher snapshot being returned after branch mutation; post-mutation verification now waits for it and obtains fresh state.",
+    "The enabled macOS Accessibility entry resolved to the signed development bundle under out-dev/.electron-dev, while the running process was release/mac-arm64/Athena.app. Adding the packaged copy without removing the stale entry did not update the grant. Replacing only that entry after explicit user consent made the real OS trust check and Athena capability gate Allowed.",
+    "Live Calculator inspection exposed System Events returning generic button descriptions and failing to bridge AXAttributedDescription. The macOS adapter now uses a bounded native Accessibility helper to read attributed labels and perform verified AX actions.",
+    "Project-folder creation accepted a generic create intent without requiring project/folder/directory intent. Execution now rejects that mismatch; common polite chat commands also resolve deterministically."
+  ],
+  "capabilities": [
+    {
+      "category": "Athena navigation",
+      "status": "WORKING",
+      "evidence": "Real Electron Floating transcript IPC opened Athena Academy and conversation views using the native registry. Disabled navigation is denied by the execution gate.",
+      "tests": [
+        "tests/desktop/voiceAutomation.spec.ts",
+        "tests/nativeActionRegistry.test.ts"
+      ]
+    },
+    {
+      "category": "Conversation management",
+      "status": "WORKING",
+      "evidence": "Real Electron created local and non-project online conversations, switched project/non-project sessions, and stopped generation. Real installed Whisper transcribed generated audio saying Athena, create a new chat, and the registry created a conversation. Microphone capture was not used.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/desktop/voiceAutomation.spec.ts"
+      ]
+    },
+    {
+      "category": "Public internet access",
+      "status": "PARTIAL",
+      "evidence": "Three live managed SearXNG runtime tests passed, including actual public search. Live YouTube navigation/playback passed through Floating transcript IPC. The full hardware-voice-to-search chain was not tested.",
+      "tests": [
+        "tests/searxngRuntime.test.ts",
+        "tests/desktop/voiceAutomation.spec.ts"
+      ]
+    },
+    {
+      "category": "Desktop application control",
+      "status": "PARTIAL",
+      "evidence": "A real native voice action launched the authorized disposable project in installed VS Code. Computer-use observation verified the Voice Project folder in a separate restricted-mode editor window, then closed only that window. Other allowlisted applications use tested adapters but were not all live-tested.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/macOSDesktopPlatform.test.ts",
+        "tests/windowsDesktopPlatform.test.ts"
+      ]
+    },
+    {
+      "category": "File reading",
+      "status": "WORKING",
+      "evidence": "Live installed qwen2.5-coder:3b planned a fixture read through the actual shared permission-controlled executor, used read_file, and answered the correct value without changes. Hardware microphone routing is tested separately.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/voiceToolIntegration.test.ts"
+      ]
+    },
+    {
+      "category": "File modification",
+      "status": "PARTIAL",
+      "evidence": "The actual shared executor created a temporary source file after approval. A permission revoked during approval prevented creation and prevented a false spoken success. This used a mocked inference provider, not microphone audio or a live local planning model.",
+      "tests": [
+        "tests/voiceAutomation.test.ts"
+      ]
+    },
+    {
+      "category": "Terminal execution",
+      "status": "PARTIAL",
+      "evidence": "A transient voice turn executed a real bounded echo command through the existing permission-controlled project executor. Commands that can write additionally require File modification. No arbitrary shell path was added to the native action registry.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/voiceToolIntegration.test.ts"
+      ]
+    },
+    {
+      "category": "External message submission",
+      "status": "PARTIAL",
+      "evidence": "Exact dictated content was submitted once to a real conversation service with a mocked provider. Model selection and project context were preserved; online response content was not spoken. No paid or subscription inference was issued for this test.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/nativeActionRegistry.test.ts"
+      ]
+    },
+    {
+      "category": "Destructive operations",
+      "status": "PARTIAL",
+      "evidence": "Native conversation deletion requires explicit intent and a separate confirmation; declined and cancelled operations were tested. Project deletion continues through existing executor restrictions. No real user data was deleted to test this feature.",
+      "tests": [
+        "tests/nativeActionRegistry.test.ts",
+        "tests/desktopTools.test.ts"
+      ]
+    },
+    {
+      "category": "Project management",
+      "status": "WORKING",
+      "evidence": "Real temporary projects were opened and created through existing authorization services. Unknown names do not grant access. Electron tests used a mocked native folder-picker selection and verified persisted project authorization after restart.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/desktop/voiceAutomation.spec.ts"
+      ]
+    },
+    {
+      "category": "Git operations",
+      "status": "WORKING",
+      "evidence": "Real temporary repositories verified current branch, branch listing, safe switch/create, staged/unstaged/untracked preservation, conflict rejection, header refresh and restart. Read Only and disabled permissions block mutations. No user repository branches were changed.",
+      "tests": [
+        "tests/voiceAutomation.test.ts",
+        "tests/projectGit.test.ts",
+        "tests/desktop/gitBranches.spec.ts",
+        "tests/desktop/voiceAutomation.spec.ts"
+      ]
+    },
+    {
+      "category": "Browser interaction",
+      "status": "PARTIAL",
+      "evidence": "Live YouTube open/title/search/first video/mute/play/pause passed. Real Chromium with fixture page content verified named input, click, missing-video failure and revocation cleanup. Only Athena-owned ephemeral browser sessions are supported; existing personal browser tabs and cookies are not accessed.",
+      "tests": [
+        "tests/desktop/voiceAutomation.spec.ts",
+        "tests/voiceBrowser.test.ts"
+      ]
+    },
+    {
+      "category": "Desktop UI interaction",
+      "status": "PARTIAL",
+      "evidence": "Real signed packaged Athena inspected Calculator, clicked its 7 control, verified the displayed state, and executed the same action through Floating transcript IPC. Revoking Desktop UI interaction blocked it. Other applications and Windows remain unverified live.",
+      "tests": [
+        "tests/macOSDesktopPlatform.test.ts",
+        "tests/windowsDesktopPlatform.test.ts",
+        "tests/macOSPermissionAdapter.test.ts",
+        "tests/permissionService.test.ts",
+        "tests/desktop/accessibilityRecovery.spec.ts",
+        "tests/desktop/voiceDesktopLive.spec.ts"
+      ]
+    },
+    {
+      "category": "Screen observation",
+      "status": "BLOCKED",
+      "evidence": "BLOCKED in isolated Electron test: actual OS screen status denied, no screenshot captured. The normal restarted packaged app visibly reports Screen Recording Allowed. System Settings entry still reveals the development bundle despite selecting the packaged copy. No permission bypass; the runtime discrepancy remains unresolved.",
+      "tests": [
+        "tests/macOSScreenCapture.test.ts",
+        "tests/screenCaptureTools.test.ts"
+      ]
+    }
+  ],
+  "permissionAudit": {
+    "migration": "All nine original choices are preserved. Project management, Git operations, Browser interaction, Desktop UI interaction and Screen observation default off.",
+    "persistence": "Unit migration round trips and real Electron restart passed. The restarted user app visibly retained all nine original enabled choices and showed the five new categories disabled.",
+    "execution": "Native actions recheck category and applicable OS permission at dispatch; asynchronous project actions revalidate after approvals. Shared project tools recheck workspace, mode and permission policy.",
+    "separation": "An Athena setting never grants macOS consent, target application access, project authorization or a wider conversation execution mode.",
+    "changesToUserGrants": "After initial blocked testing, the user explicitly authorized packaged Athena and completed macOS authentication. Only the stale Athena Accessibility entry was replaced. Other apps\u2019 OS grants and Athena automation category preferences were unchanged; hands-free was not enabled on the user\u2019s behalf.",
+    "recovery": "Privacy now displays the exact running app and offers Show this Athena app. The main process resolves the executable\u2019s bundle, including development builds. No renderer path or automatic OS grant is accepted. The existing meeting screen-permission recovery reuses this locator."
+  },
+  "safetyAndReliability": [
+    "Typed schemas and bounded plans: at most eight planned native steps and sixteen registry operations per turn.",
+    "Mutation receipts are retained per request, including uncertain outcomes, to prevent automatic replay.",
+    "Explicit dictated submission preserves exact content and the selected target conversation; webpage contents cannot authorize actions.",
+    "Voice project operations use the existing executor, canonical workspace, explicit scope, branch guard and approval policies.",
+    "Active coding tasks block voice branch changes. Git normal overwrite/worktree protections remain enabled.",
+    "Managed browser windows use sandboxed isolated sessions without personal profiles, Node access, downloads, popups or remote debugging. Public destinations are DNS-validated; private destinations are blocked.",
+    "Named desktop/browser actions require a recent matching target observation. Stale, replaced or ambiguous targets are rejected.",
+    "Sensitive native actions and generic browser form actions use confirmation. Cancellation remains available through speech and a visible Stop Automation control.",
+    "Tool-driven speech waits for verified execution results. A failed operation cannot produce an unverified success announcement.",
+    "Audit records retain action identifiers, status and timing without raw audio or private message and screen payloads."
+  ],
+  "verification": {
+    "build": "npm run build passed; npm run typecheck passed; git diff --check passed.",
+    "package": "npx electron-builder --mac --dir passed. Persistent local certificate signing and host codesign --verify --deep --strict passed. Distribution notarization was not configured.",
+    "fullSuite": {
+      "passed": 2159,
+      "failed": 4,
+      "skipped": 52,
+      "filesPassed": 232,
+      "filesFailed": 3,
+      "filesSkipped": 6,
+      "log": "/tmp/athena-voice-resume-full.log",
+      "note": "The four previously reproduced baseline failures remain. The formerly unavailable live Ollama context test now passes after starting the installed service."
+    },
+    "baselineFailures": [
+      "buildIsolation.test.ts expects the old development script form containing --entry out-dev.",
+      "outputRecovery.test.ts has two existing failures: legacy reasoning metadata fixture and an outdated network error text assertion.",
+      "systemVoiceRollback.test.ts assumes voice-service is the first extraResources entry."
+    ],
+    "baselineVerification": "The same five failures were reproduced from untouched HEAD in an isolated checkout; not counted as feature passes.",
+    "electronRegression": {
+      "passed": 3,
+      "log": "/tmp/athena-voice-desktop-regression.log",
+      "scope": "Real Electron registry/UI, real Git/filesystem, mocked microphone grant/transcripts/folder picker and fixture browser page; includes restart."
+    },
+    "liveWhisper": {
+      "passed": 1,
+      "log": "/tmp/athena-voice-whisper-live.log",
+      "scope": "Installed whisper-cli and model, generated WAV audio, actual native conversation creation. Not physical microphone input."
+    },
+    "liveSearxng": {
+      "passed": 3,
+      "log": "/tmp/athena-voice-searxng-live.log",
+      "scope": "Real managed local runtime and public search."
+    },
+    "liveYouTube": {
+      "successfulActions": 7,
+      "receipts": "/tmp/athena-voice-live-browser-results.json",
+      "scope": "Real YouTube in the isolated Athena browser; recognized text was injected at the voice transcript boundary."
+    },
+    "liveVSCode": {
+      "passed": 1,
+      "log": "/tmp/athena-voice-editor-live.log",
+      "scope": "Actual installed app launch via a native voice command, followed by visual confirmation of the disposable project and closing only that test window."
+    },
+    "appRestart": "Updated packaged Athena reopened through normal macOS launch. Privacy visibly shows Accessibility Allowed and Screen Capture Allowed with the exact release/mac-arm64/Athena.app location. Hands-free remains off in the user profile. Temporary test instances and Calculator were closed; existing browser, editor and terminal processes were preserved.",
+    "accessibilityFollowup": {
+      "unitPassed": 55,
+      "unitLog": "/tmp/athena-accessibility-tests-final.log",
+      "electronPassed": 1,
+      "electronLog": "/tmp/athena-accessibility-desktop.log",
+      "live": "Observed the actual macOS stale entry through Show in Finder, replaced it using System Settings after explicit user consent, and verified Athena reports Allowed. No TCC database modification or false trust override.",
+      "buildLog": "/tmp/athena-accessibility-build.log",
+      "grantSurvivedRebuildAndRestart": true
+    },
+    "resumedTesting": {
+      "focusedPassed": 41,
+      "focusedLog": "/tmp/athena-voice-resume-tests.log",
+      "localPlannerPassed": 1,
+      "localPlannerLog": "/tmp/athena-voice-planner-live.log",
+      "desktopPassed": 1,
+      "desktopLog": "/tmp/athena-desktop-live.log",
+      "desktopReceipts": "/tmp/athena-desktop-live-results.json",
+      "buildLog": "/tmp/athena-voice-resume-build.log",
+      "packageLog": "/tmp/athena-voice-resume-package.log",
+      "scope": "Real native Calculator control and Floating transcript IPC, actual local model and fixture file read. Screen capture was not passed: the isolated app still reports OS Screen Recording denied.",
+      "microphone": {
+        "status": "PARTIAL",
+        "log": "/tmp/athena-microphone-live.log",
+        "observed": "First physical-microphone run detected speech and completed Chatterbox playback, but requested chat creation did not complete. The action log showed a denied project-creation attempt. Exact transcription cause was not captured, so not claimed fixed. A subsequent retest was skipped at the user\u2019s explicit request; its listening timeout is not a functional pass. No raw audio was saved."
+      },
+      "screenCapture": "BLOCKED in isolated Electron test: actual OS screen status denied, no screenshot captured. The normal restarted packaged app visibly reports Screen Recording Allowed. System Settings entry still reveals the development bundle despite selecting the packaged copy. No permission bypass; the runtime discrepancy remains unresolved."
+    }
+  },
+  "remainingLimitations": [
+    {
+      "status": "BLOCKED",
+      "item": "Live Windows UI Automation and packaged Windows verification: no Windows host available."
+    },
+    {
+      "status": "PARTIAL",
+      "item": "Physical microphone capture and Chatterbox playback were observed. The chat-creation action did not complete in that run; the user explicitly skipped the updated end-to-end retest. Speech recognition versus routing remains unverified together."
+    },
+    {
+      "status": "BLOCKED",
+      "item": "BLOCKED in isolated Electron test: actual OS screen status denied, no screenshot captured. The normal restarted packaged app visibly reports Screen Recording Allowed. System Settings entry still reveals the development bundle despite selecting the packaged copy. No permission bypass; the runtime discrepancy remains unresolved."
+    },
+    {
+      "status": "PARTIAL",
+      "item": "Browser control is limited to Athena-owned sessions. Personal Chrome/Safari/Edge tabs require a separate explicit browser integration, which is not provided here."
+    },
+    {
+      "status": "PARTIAL",
+      "item": "Desktop control is limited to allowlisted applications and supported accessibility patterns. Not every application, menu or control exposes a usable pattern."
+    },
+    {
+      "status": "MISSING",
+      "item": "Screenshot-guided coordinate clicking fallback is not implemented. Unsupported inaccessible controls report a limitation instead of blind clicking."
+    },
+    {
+      "status": "PARTIAL",
+      "item": "Online message submission was tested with a mocked provider, not a billable live inference request."
+    }
+  ],
+  "changedFiles": [
+    ".gitignore",
+    "docs/voice-automation-audit.json",
+    "electron.vite.config.ts",
+    "electron/main/ai/AIProvider.ts",
+    "electron/main/ai/chatContextService.ts",
+    "electron/main/ai/chatController.ts",
+    "electron/main/ai/nativeActionRegistry.ts",
+    "electron/main/ai/projectGitService.ts",
+    "electron/main/ai/voiceActionPlan.ts",
+    "electron/main/ai/voiceDesktopActions.ts",
+    "electron/main/ai/voiceProjectActions.ts",
+    "electron/main/athenaController.ts",
+    "electron/main/desktop/desktopAccessibility.swift",
+    "electron/main/desktop/desktopPlatform.ts",
+    "electron/main/desktop/desktopTools.ts",
+    "electron/main/desktop/macOSDesktopPlatform.ts",
+    "electron/main/desktop/voiceBrowser.ts",
+    "electron/main/desktop/windowsDesktopPlatform.ts",
+    "electron/main/main.ts",
+    "electron/main/meetings/meetingScreenPermission.ts",
+    "electron/main/permissions/macOSPermissionAdapter.ts",
+    "electron/main/permissions/permissionService.ts",
+    "electron/main/permissions/runningApplication.ts",
+    "electron/main/screenCapture/macOSScreenCapture.ts",
+    "electron/main/screenCapture/screenCapturePlatform.ts",
+    "electron/main/screenCapture/screenCaptureTools.ts",
+    "electron/main/screenCapture/windowCapture.html",
+    "package.json",
+    "scripts/build-screen-ocr.mjs",
+    "shared/automation.ts",
+    "shared/contracts.ts",
+    "shared/desktopActions.ts",
+    "shared/handsFree.ts",
+    "shared/permissions.ts",
+    "shared/voiceBrowser.ts",
+    "shared/voiceIntent.ts",
+    "src/features/floating/FloatingAthena.tsx",
+    "src/features/floating/FloatingConversation.tsx",
+    "src/features/settings/AutomationPermissionsSettings.tsx",
+    "src/features/settings/PermissionSettings.tsx",
+    "src/features/voice/HandsFreeAssistant.tsx",
+    "src/store/permissionStore.ts",
+    "src/styles/permissions.css",
+    "src/styles/taskHolograms.css",
+    "tests/actionNarrator.test.ts",
+    "tests/desktop/accessibilityRecovery.spec.ts",
+    "tests/desktop/voiceAutomation.spec.ts",
+    "tests/desktop/voiceDesktopLive.spec.ts",
+    "tests/desktop/voiceMicrophoneLive.spec.ts",
+    "tests/macOSDesktopPlatform.test.ts",
+    "tests/macOSPermissionAdapter.test.ts",
+    "tests/macOSScreenCapture.test.ts",
+    "tests/meetingScreenCapture.test.ts",
+    "tests/nativeActionRegistry.test.ts",
+    "tests/permissionService.test.ts",
+    "tests/projectGit.test.ts",
+    "tests/voiceAutomation.test.ts",
+    "tests/voiceBrowser.test.ts",
+    "tests/voiceToolIntegration.test.ts",
+    "tests/windowsDesktopPlatform.test.ts"
+  ],
+  "implementationReferences": [
+    "https://developer.apple.com/documentation/applicationservices/1462085-axuielementcopyattributevalue"
+  ]
+}

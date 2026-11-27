@@ -1,15 +1,6 @@
 import { z } from 'zod'
-import { officialCSMSettingsSchema } from './officialCSM'
-import { higgsSettingsSchema } from './higgsTTS'
-
-export const voiceEngineSchema = z.enum(['chatterbox-turbo', 'sesame-csm', 'sesame-csm-official', 'higgs-tts-3-4b'])
+export const voiceEngineSchema = z.enum(['chatterbox-turbo'])
 export type VoiceEngine = z.infer<typeof voiceEngineSchema>
-export function isSesameEngine(engine: VoiceEngine): boolean {
-  return engine === 'sesame-csm' || engine === 'sesame-csm-official'
-}
-export function isHiggsEngine(engine: VoiceEngine): boolean {
-  return engine === 'higgs-tts-3-4b'
-}
 export const voiceStyleSchema = z.enum(['conversational', 'neutral', 'warm', 'happy', 'calm', 'concerned', 'excited'])
 export type VoiceStyle = z.infer<typeof voiceStyleSchema>
 export const localVoiceSettingsSchema = z.object({
@@ -24,15 +15,6 @@ export const localVoiceSettingsSchema = z.object({
   progressIntervalSeconds: z.number().int().min(30).max(300).default(60),
   completionAnnouncements: z.boolean().default(true),
   allowSpeechInterruption: z.boolean().default(true),
-  officialCSM: officialCSMSettingsSchema.default({ device: 'cpu', speaker: 0, context: true }),
-  higgs: higgsSettingsSchema.default({ device: 'mps', language: 'en', style: 'auto', emotionPreference: 'auto', laughterFrequency: 'contextual', profileName: 'Athena — Higgs Expressive' }),
-  sesame: z.object({
-    conversationContext: z.boolean().default(true),
-    naturalLaughter: z.boolean().default(false),
-    keepWarmSeconds: z.number().int().min(30).max(600).default(120),
-    personality: z.string().trim().max(1000).default('Warm, youthful adult feminine delivery; clear American English; gentle pauses and understated playfulness.'),
-    pacing: z.enum(['natural', 'gentle']).default('natural'),
-  }).default({ conversationContext: true, naturalLaughter: false, keepWarmSeconds: 120, personality: 'Warm, youthful adult feminine delivery; clear American English; gentle pauses and understated playfulness.', pacing: 'natural' }),
 }).strict()
 export type LocalVoiceSettings = z.infer<typeof localVoiceSettingsSchema>
 export const defaultLocalVoiceSettings = localVoiceSettingsSchema.parse({})
@@ -88,7 +70,7 @@ export const localVoicePreviewSchema = z.object({ text: z.string().trim().min(1)
 export interface VoiceInstallProgress { engine: VoiceEngine; progress: number; detail: string; done: boolean; error?: string }
 export const VOICE_PREVIEW_TEXT = "Hey, I'm Athena. I'm ready when you are. What would you like to do today?"
 export function emptyVoiceEngines(status: LocalVoiceEngineStatus): LocalVoiceStatus['engines'] {
-  return { 'chatterbox-turbo': { status }, 'sesame-csm': { status }, 'sesame-csm-official': { status }, 'higgs-tts-3-4b': { status } }
+  return { 'chatterbox-turbo': { status } }
 }
 
 export function deliveryStyle(text: string, configured: VoiceStyle): VoiceStyle {
@@ -99,10 +81,8 @@ export function deliveryStyle(text: string, configured: VoiceStyle): VoiceStyle 
   return 'conversational'
 }
 
-export function prepareLocalSpeech(text: string, engine: VoiceEngine): string {
+export function prepareLocalSpeech(text: string, _engine: VoiceEngine): string {
   const conversational = text.replace(/\s+/g, ' ').trim()
-  if (engine === 'higgs-tts-3-4b') return conversational.replace(/\[(?:(?:soft|light|gentle|natural)\s+)?(?:chuckl\w*|laugh\w*|giggl\w*|sigh\w*|gasp\w*)(?:\s+[^\]\r\n]{0,60})?\]/gi, '').replace(/\s+/g, ' ').trim()
-  if (engine !== 'chatterbox-turbo') return conversational.replace(/\[(?:(?:soft|light|gentle|natural)\s+)?(?:chuckl\w*|laugh\w*|giggl\w*|sigh\w*|gasp\w*)(?:\s+[^\]\r\n]{0,60})?\]/gi, '').replace(/\s+/g, ' ').trim()
   // Turbo supports paralinguistic tokens. Use one only when the reply itself
   // expresses amusement; never add laughter to a factual or sensitive answer.
   if (/\[(?:chuckle|laugh|sigh|gasp)\]/i.test(conversational)) return conversational

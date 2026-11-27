@@ -1,3 +1,4 @@
+import { isPlaybackEcho } from '../shared/handsFree'
 import { describe, expect, it } from 'vitest'
 import { AdaptiveNoiseFloor, chooseClarification, chooseWakeAcknowledgement, classifyHandsFreeTranscript, encodeHandsFreeWav, extractWakePhrase, handsFreeMicrophoneConstraints, isUsableSpeechSegment, isValidHandsFreeWav, isVoiceInterruption, negativeSpeechConfidenceThreshold, normalizeVoiceCommand, shouldFallbackFromAudioWorklet, silenceEndpointMs, speechConfidenceThreshold, voiceInteractionDefaults, WAKE_ACKNOWLEDGEMENTS } from '../shared/handsFree'
 
@@ -110,5 +111,15 @@ describe('hands-free wake phrase and endpointing', () => {
     const first = chooseClarification(undefined, () => 0)
     const second = chooseClarification(first, () => 0)
     expect(second).not.toBe(first)
+  })
+})
+
+
+describe('playback echo guard', () => {
+  it('recognizes a complete phrase from recent actual playback but preserves stop commands and different requests', () => {
+    expect(isPlaybackEcho('Athena is ready to help you', 'Hello. Athena is ready to help you.')).toBe(true)
+    expect(isPlaybackEcho('Athena stop', 'You can say Athena stop to interrupt me')).toBe(false)
+    expect(isPlaybackEcho('Athena open another project please', 'Athena is ready to help you')).toBe(false)
+    expect(isPlaybackEcho('', 'Hello')).toBe(false)
   })
 })

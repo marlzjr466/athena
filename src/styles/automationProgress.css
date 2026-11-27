@@ -1,6 +1,7 @@
 .automation-progress { padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--glass); font-size: 10px; }
 .automation-progress header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .automation-progress header strong { color: var(--accent); }
+.automation-task-controls { display: inline-flex; align-items: center; gap: 8px; }
 .automation-progress header button { display: grid; place-items: center; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
 .automation-progress > p { margin: 4px 0 6px; color: var(--muted); overflow-wrap: anywhere; }
 .automation-progress ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; max-height: 100px; overflow: auto; }

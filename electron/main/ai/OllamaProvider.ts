@@ -158,10 +158,11 @@ export class OllamaProvider implements AIProvider {
           { inputTokens: contextUsed(), inputEstimated: true, contextWindow, maxOutputTokens: outputBudget, limitsVerified: Boolean(this.metadata.contextLength), outputLimitEnforced: true })
         const body = {
           model: this.model, messages, stream: true,
+          ...(options.structuredOutput && !this.model.startsWith('mlx:') ? {format:options.structuredOutput} : {}),
           ...(tools?.length && !finalRound ? { tools } : {}),
           ...(think !== undefined ? { think } : {}),
           keep_alive: this.settings.autoUnload ? `${this.settings.keepAliveMinutes}m` : '-1',
-          options: { num_ctx: contextWindow, num_predict: outputBudget, temperature: this.settings.temperature },
+          options: { num_ctx: contextWindow, num_predict: outputBudget, temperature: options.structuredOutput ? 0 : this.settings.temperature },
         }
         const trace = (stage: 'request-start' | 'first-token' | 'complete', durationMs?: number, tokens?: { inputTokens: number; outputTokens?: number }) => {
           if (!options.traceId || !options.onLocalInferenceTrace) return

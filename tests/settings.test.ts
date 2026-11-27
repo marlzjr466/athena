@@ -3,6 +3,15 @@ import { defaultSettings, mergeSettings, restoreSettings, settingsPatchSchema } 
 import { automationPermissionDefaults } from '../shared/automation'
 
 describe('validated preferences', () => {
+  it('requires opt-in to hands-free browser searches and persists granting or withdrawing it',()=>{
+    expect(defaultSettings.computerUse.handsFreeBrowserSearches).toBe(false)
+    const legacy=restoreSettings({computerUse:{voice:true,reuseBrowserWindows:false}})
+    expect(legacy.computerUse).toMatchObject({voice:true,handsFreeBrowserSearches:false,reuseBrowserWindows:false})
+    const saved=mergeSettings(legacy,{computerUse:{...legacy.computerUse,handsFreeBrowserSearches:true}})
+    expect(restoreSettings(JSON.parse(JSON.stringify(saved))).computerUse).toEqual({...legacy.computerUse,handsFreeBrowserSearches:true})
+    const revoked=mergeSettings(saved,{computerUse:{...saved.computerUse,handsFreeBrowserSearches:false}})
+    expect(restoreSettings(JSON.parse(JSON.stringify(revoked))).computerUse).toEqual(legacy.computerUse)
+  })
   it('defaults every automation category to least privilege', () => {
     expect(Object.values(automationPermissionDefaults).every(value => value === false)).toBe(true)
   })

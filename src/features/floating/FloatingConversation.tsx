@@ -9,6 +9,7 @@ import { useAthena } from '../../store/athenaStore'
 import { desktop } from '../../services/desktop'
 import '../../styles/floatingConversation.css'
 import '../../styles/automationProgress.css'
+import { ApplicationAutomationProgress } from '../chat/ApplicationAutomationProgress'
 
 export function FloatingConversation() {
   const { snapshot, send, stop, command, pending, issue } = useChat()
@@ -88,9 +89,10 @@ export function FloatingConversation() {
       <span>{elapsedLabel(execution.startedAt, execution.finishedAt ?? now, Boolean(working))}</span>
       {activity && <span>{activity.label} · {activity.status}</span>}
     </div>}
-    {snapshot.automationProgress && <section className="automation-progress" role="status" aria-label="Athena automation progress">
-      <header><strong>{snapshot.automationProgress.phase === 'running' ? 'Working on your request' : snapshot.automationProgress.phase === 'complete' ? 'Request complete' : 'Request stopped'}</strong>{snapshot.automationProgress.phase === 'running' && snapshot.automationProgress.cancelTarget === 'voice' && <button type="button" aria-label="Cancel automation" onClick={() => void desktop.cancelHandsFreeReply()}><X size={13} /></button>}</header>
-      <p>{snapshot.automationProgress.task}</p>
+    {snapshot.automationProgress?.engine && <ApplicationAutomationProgress progress={snapshot.automationProgress}/>}
+    {snapshot.automationProgress && !snapshot.automationProgress.engine && <section className="automation-progress" role="status" aria-label="Athena automation progress">
+      <header><strong>{snapshot.automationProgress.phase === 'running' ? 'Working on your request' : snapshot.automationProgress.phase === 'complete' ? 'Request complete' : 'Request stopped'}</strong>{snapshot.automationProgress.phase === 'running' && snapshot.automationProgress.cancelTarget === 'voice' && <button type="button" aria-label="Stop Automation" onClick={() => void desktop.cancelHandsFreeReply(true)}><X size={13} /> Stop</button>}</header>
+      <p>{[snapshot.automationProgress.engine,snapshot.automationProgress.application,snapshot.automationProgress.task].filter(Boolean).join(' · ')}</p>
       <ol>{snapshot.automationProgress.steps.map(step => <li key={step.id} className={`automation-step ${step.status}`}>
         {step.status === 'complete' ? <Check size={12} /> : step.status === 'running' ? <LoaderCircle size={12} className="automation-spinner" /> : step.status === 'failed' || step.status === 'cancelled' ? <X size={12} /> : <Circle size={10} />}
         <span>{step.label}{step.message ? ` · ${step.message}` : ''}</span>

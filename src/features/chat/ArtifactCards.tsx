@@ -1,5 +1,7 @@
-import { Download, Edit3, ExternalLink, FileArchive, FileImage, FileText, Maximize2, Share2, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { Copy, Download, ExternalLink, FileArchive, FileImage, FileText, Maximize2, Share2, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { MediaRevision } from './MediaJobControls'
+import type { MediaJob } from '../../../shared/mediaGeneration'
 import type { GeneratedArtifact } from '../../../shared/chat'
 import { desktop } from '../../services/desktop'
 
@@ -16,7 +18,7 @@ type Pan = { x: number; y: number }
  * never placed in the chat record: the main process mints a short-lived,
  * ownership-checked athena://artifact capability for the renderer.
  */
-export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; artifacts: GeneratedArtifact[] }) {
+export function ArtifactCards({ sessionId, artifacts, job, context=desktop.chatContext }: { sessionId: string; artifacts: GeneratedArtifact[]; job?: MediaJob; context?:typeof desktop.chatContext }) {
   const [sources, setSources] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -40,13 +42,13 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
   }, [])
 
   useEffect(() => {
-    const images = artifacts.filter((artifact) => artifact.mimeType.startsWith('image/'))
+    const images = artifacts.flatMap(a=>a.thumbnail?[a.thumbnail,a]:[a]).filter((artifact) => /^(image|video)\//.test(artifact.mimeType))
     for (const artifact of images) {
       const key = `${sessionId}:${artifact.id}`
       if (requested.current.has(key)) continue
       requested.current.add(key)
       setLoading((current) => ({ ...current, [artifact.id]: true }))
-      void desktop.chatContext({ action: 'artifact-url', sessionId, id: artifact.id }).then(async (result) => {
+      void context({ action: 'artifact-url', sessionId, id: artifact.id }).then(async (result) => {
         if (!mounted.current || sessionRef.current !== sessionId) return
         if (result.ok && result.assetUrl) {
           setSources((current) => ({ ...current, [artifact.id]: result.assetUrl! }))
@@ -55,7 +57,7 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
         }
         // Browser previews and older packaged data remain compatible while the
         // secure asset capability is unavailable.
-        const fallback = await desktop.chatContext({ action: 'preview-artifact', sessionId, id: artifact.id })
+        const fallback = await context({ action: 'preview-artifact', sessionId, id: artifact.id })
         if (!mounted.current || sessionRef.current !== sessionId) return
         if (fallback.ok && fallback.preview) {
           setSources((current) => ({ ...current, [artifact.id]: fallback.preview! }))
@@ -85,7 +87,7 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
   const download = async (artifact: GeneratedArtifact) => {
     setNotice('')
     try {
-      const result = await desktop.chatContext({ action: 'download-artifact', sessionId, id: artifact.id })
+      const result = await context({ action: 'download-artifact', sessionId, id: artifact.id })
       if (!result.ok) setNotice(result.message ?? 'Could not save the generated file.')
       else if (result.saved) setNotice(`${artifact.name} saved.`)
     } catch { setNotice('Could not save the generated file.') }
@@ -93,14 +95,14 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
   const open = async (artifact: GeneratedArtifact) => {
     setNotice('')
     try {
-      const result = await desktop.chatContext({ action: 'open-artifact', sessionId, id: artifact.id })
+      const result = await context({ action: 'open-artifact', sessionId, id: artifact.id })
       if (!result.ok) setNotice(result.message ?? 'Could not open the generated file.')
     } catch { setNotice('Could not open the generated file.') }
   }
   const previewForShare = async (artifact: GeneratedArtifact): Promise<string | undefined> => {
     const existing = sources[artifact.id]
     if (existing?.startsWith('data:')) return existing
-    const result = await desktop.chatContext({ action: 'preview-artifact', sessionId, id: artifact.id })
+    const result = await context({ action: 'preview-artifact', sessionId, id: artifact.id })
     if (result.ok && result.preview) {
       setSources((current) => ({ ...current, [artifact.id]: result.preview! }))
       return result.preview
@@ -116,7 +118,7 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
     }
     fallbackTried.current.add(key)
     try {
-      const result = await desktop.chatContext({ action: 'preview-artifact', sessionId, id: artifact.id })
+      const result = await context({ action: 'preview-artifact', sessionId, id: artifact.id })
       if (result.ok && result.preview) setSources((current) => ({ ...current, [artifact.id]: result.preview! }))
       else {
         setSources((current) => { const next = { ...current }; delete next[artifact.id]; return next })
@@ -126,6 +128,25 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
       setSources((current) => { const next = { ...current }; delete next[artifact.id]; return next })
       setErrors((current) => ({ ...current, [artifact.id]: 'The generated image could not be loaded.' }))
     }
+  }
+  const copyImage = async (artifact:GeneratedArtifact) => {
+    try {
+      const source=sources[artifact.id]
+      if (!source) throw new Error()
+      const image=new Image()
+      image.crossOrigin='anonymous'
+      image.src=source
+      await image.decode()
+      const canvas=document.createElement('canvas')
+      canvas.width=image.naturalWidth
+      canvas.height=image.naturalHeight
+      const drawing=canvas.getContext('2d')
+      if (!drawing) throw new Error()
+      drawing.drawImage(image,0,0)
+      const png=await new Promise<Blob>((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error()),'image/png'))
+      await navigator.clipboard.write([new ClipboardItem({'image/png':png})])
+      setNotice('Image copied to the clipboard.')
+    } catch {setNotice('Could not copy this image. Check clipboard access or use Download.')}
   }
   const share = async (artifact: GeneratedArtifact) => {
     setNotice('')
@@ -150,6 +171,37 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
     if (!sources[artifact.id]) return
     setZoom(1); setPan({ x: 0, y: 0 }); setLightbox(artifact)
   }
+  const sentMetadata=useRef(new Set<string>())
+  async function inspectVideo(player:HTMLVideoElement,artifact:GeneratedArtifact) {
+    if (!player.videoWidth || sentMetadata.current.has(artifact.id) || artifact.thumbnail && artifact.duration) return
+    sentMetadata.current.add(artifact.id)
+    const scale=Math.min(1,320/Math.max(player.videoWidth,player.videoHeight))
+    const canvas=document.createElement('canvas')
+    canvas.width=Math.max(1,Math.round(player.videoWidth*scale))
+    canvas.height=Math.max(1,Math.round(player.videoHeight*scale))
+    let jpeg:Uint8Array<ArrayBuffer>|undefined
+    try{
+      canvas.getContext('2d')?.drawImage(player,0,0,canvas.width,canvas.height)
+      const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/jpeg',0.75))
+      if(blob&&blob.size<=256*1024)jpeg=new Uint8Array(await blob.arrayBuffer())
+    }catch{/* The video remains playable if the platform cannot snapshot its first frame. */}
+    try{await desktop.mediaGeneration({action:'video-metadata',id:artifact.id,sessionId,width:player.videoWidth,height:player.videoHeight,duration:Number.isFinite(player.duration)&&player.duration>0?player.duration:undefined,jpeg})}
+    catch{sentMetadata.current.delete(artifact.id)}
+  }
+  async function extractFrame(button:HTMLButtonElement,artifact:GeneratedArtifact) {
+    const player=button.closest('figure')?.querySelector('video')
+    if(!player?.videoWidth||player.readyState<2){setNotice('Play or seek to a frame first.');return}
+    try{
+      const canvas=document.createElement('canvas'),scale=Math.min(1,1920/Math.max(player.videoWidth,player.videoHeight))
+      canvas.width=Math.max(1,Math.round(player.videoWidth*scale));canvas.height=Math.max(1,Math.round(player.videoHeight*scale))
+      const ctx=canvas.getContext('2d');if(!ctx)throw new Error()
+      ctx.drawImage(player,0,0,canvas.width,canvas.height)
+      const blob=await new Promise<Blob>((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error()),'image/png'))
+      const r=await desktop.mediaGeneration({action:'frame',sessionId,parentId:artifact.id,bytes:new Uint8Array(await blob.arrayBuffer())})
+      if(!('ok'in r)||!r.ok)throw new Error()
+      setNotice('Frame saved to this conversation.')
+    }catch{setNotice('Could not save the selected video frame.')}
+  }
   const source = lightbox ? sources[lightbox.id] : undefined
 
   return <div className="chat-artifacts" aria-label="Generated files">
@@ -157,6 +209,11 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
       const image = artifact.mimeType.startsWith('image/')
       const imageSource = sources[artifact.id]
       const Icon = image ? FileImage : artifact.mimeType.includes('zip') ? FileArchive : FileText
+      if (artifact.mimeType.startsWith('video/')) return <figure className="chat-generated-image" key={artifact.id}>
+        {imageSource?<video className="media-video" crossOrigin="anonymous" controls playsInline preload={artifact.thumbnail?'metadata':'auto'} poster={artifact.thumbnail?sources[artifact.thumbnail.id]:undefined} src={imageSource} onLoadedData={e=>void inspectVideo(e.currentTarget,artifact)}/>:<p role="status">{errors[artifact.id]??'Loading video…'}</p>}
+        <figcaption><strong>{artifact.name}</strong> · {formatBytes(artifact.size)}{artifact.duration ? ` · ${Math.round(artifact.duration)}s` : ''} <button type="button" className="chat-action" onClick={()=>void download(artifact)}>Save As</button>
+        <button type="button" className="chat-action" onClick={e=>void extractFrame(e.currentTarget,artifact)}>Save frame</button>
+        <MediaRevision sessionId={sessionId} parentId={artifact.id} video job={job}/></figcaption></figure>
       if (image) return <figure className="chat-generated-image" key={artifact.id}>
         <div className="chat-generated-image-frame">
           {loading[artifact.id] && <div className="chat-generated-image-status" role="status">Processing image…</div>}
@@ -167,8 +224,9 @@ export function ArtifactCards({ sessionId, artifacts }: { sessionId: string; art
         <figcaption className="chat-generated-image-caption">
           <div className="chat-generated-image-meta"><strong title={artifact.name}>{artifact.name}</strong><small>{artifact.mimeType} · {formatBytes(artifact.size)}{artifact.width && artifact.height ? ` · ${artifact.width}×${artifact.height}` : ''}</small></div>
           <div className="chat-generated-image-actions">
-            <button type="button" className="chat-action chat-image-action" disabled title="Image editing is not exposed by the current provider" aria-label="Edit image unavailable"><Edit3 size={15} /> Edit</button>
+            {artifact.mimeType !== 'image/svg+xml' && <MediaRevision sessionId={sessionId} parentId={artifact.id} video={false} job={job}/>}
             <button type="button" className="chat-action chat-icon-action" aria-label={`Download ${artifact.name}`} title="Download" onClick={() => void download(artifact)}><Download size={16} /></button>
+            {imageSource && artifact.mimeType!=='image/svg+xml' && <button type="button" className="chat-action chat-icon-action" aria-label={`Copy ${artifact.name}`} title="Copy image" onClick={()=>void copyImage(artifact)}><Copy size={16}/></button>}
             <button type="button" className="chat-action chat-icon-action" aria-label={`Share ${artifact.name}`} title="Share or copy" onClick={() => void share(artifact)}><Share2 size={16} /></button>
             <button type="button" className="chat-action chat-icon-action" aria-label={`Open ${artifact.name}`} title="Open in default app" onClick={() => void open(artifact)}><ExternalLink size={16} /></button>
           </div>

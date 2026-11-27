@@ -1,64 +1,71 @@
 // @vitest-environment node
-/**
- * Opt-in account-backed smoke test. Run only on an installed, signed-in Codex
- * CLI with ATHENA_CODEX_LIVE_TEST=1; normal test suites never spend usage.
- */
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+/** Account-backed native harness parity. Only disposable fixture files are changed. */
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import type { ChatMessage } from '../shared/chat'
-import { CodexAppServerProvider } from '../electron/main/ai/CodexAppServerProvider'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import { CodexAppServerProvider, nativeCodexPolicy } from '../electron/main/ai/CodexAppServerProvider'
 import { CodexCLIService } from '../electron/main/ai/codexCLIService'
-
-const enabled = process.env.ATHENA_CODEX_LIVE_TEST === '1'
-let fixtureRoot: string | undefined
-
-describe.skipIf(!enabled)('Codex app-server live smoke test', () => {
-  afterAll(async () => { if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true }) })
-
-  it('streams a short coding turn and completes a bounded temporary-fixture edit through an Athena tool', async () => {
-    const service = new CodexCLIService('live-test')
-    const status = await service.status(true)
-    expect(status.authenticated, status.message).toBe(true)
-    expect(status.defaultModel, 'Codex app-server did not supply an authoritative default model').toBeTruthy()
-    const model = status.defaultModel!
-    fixtureRoot = await mkdtemp(join(tmpdir(), 'athena-codex-fixture-'))
-    const fixturePath = join(fixtureRoot, 'fixture.txt')
-    await writeFile(fixturePath, 'const target = 1\n', { encoding: 'utf8', mode: 0o600 })
-    const definitions = [
-      { name: 'read_fixture', description: 'Read the single temporary fixture file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } },
-      { name: 'edit_fixture', description: 'Replace the exact provided text in the single temporary fixture file.', parameters: { type: 'object', properties: { path: { type: 'string' }, old_text: { type: 'string' }, new_text: { type: 'string' } }, required: ['path', 'old_text', 'new_text'], additionalProperties: false } },
-    ]
-    const assertFixture = (input: unknown) => {
-      const path = input && typeof input === 'object' ? (input as Record<string, unknown>).path : undefined
-      if (typeof path !== 'string' || isAbsolute(path) || resolve(fixtureRoot!, path) !== fixturePath) throw new Error('Only fixture.txt inside the temporary test root is authorized.')
+import type { NativeCodexThread } from '../shared/codex'
+import type { AIChunk, ChatMessage } from '../shared/chat'
+import type { Turn } from '../electron/main/ai/codexProtocol/v2/Turn'
+const enabled=process.env.ATHENA_CODEX_LIVE_TEST==='1'
+describe.skipIf(!enabled)('native Codex harness parity',()=>{
+  it('compares direct app-server and Athena using identical root, model, effort and native tools, then resumes without replay',async()=>{
+    const service=new CodexCLIService('athena-native-parity')
+    const roots:string[]=[],threadIds:string[]=[]
+    try {
+      const status=await service.status(true);expect(status.authenticated,status.message).toBe(true)
+      const model=status.models.find(m=>m.id==='gpt-6-astra') ?? status.models.find(m=>m.isDefault)!
+      expect(model).toBeTruthy()
+      const effort=model.efforts.includes('high')?'high' as const:'auto' as const
+      const root=await mkdtemp(join(tmpdir(),'athena-native-parity-'));roots.push(root)
+      await writeFile(join(root,'AGENTS.md'),'Only edit result.txt for this isolated test. Preserve sentinel.txt. Do not access services or credentials.\n')
+      await writeFile(join(root,'sentinel.txt'),'preserve-user-change\n')
+      const prompt='Read AGENTS.md. Create result.txt containing exactly native-codex-ok followed by a newline. Read the file to verify it. Do not change any other file. Do not commit. Reply briefly with the verified result.'
+      const initial=()=>writeFile(join(root,'result.txt'),'starting-fixture\n')
+      const connection=await service.connection(),rpc=connection.rpc
+      const policy=nativeCodexPolicy('workspace-auto',[root])
+      await initial()
+      const direct=await rpc.request('thread/start',{cwd:root,model:model.id,modelProvider:'openai',sandbox:policy.sandbox,approvalPolicy:policy.approvalPolicy,approvalsReviewer:'user',ephemeral:false}) as {thread:{id:string};model:string;cwd:string}
+      threadIds.push(direct.thread.id)
+      const directEvents:string[]=[]
+      let resolve!:(turn:Turn)=>void
+      const completed=new Promise<Turn>(done=>{resolve=done})
+      const off=rpc.onNotification(e=>{if(e.params?.threadId===direct.thread.id){directEvents.push(e.method??'');if(e.method==='turn/completed')resolve(e.params.turn as Turn)}})
+      const deny=rpc.onServerRequest(e=>{if(e.params?.threadId===direct.thread.id && e.id!==undefined)rpc.rejectRequest(e.id,'The fixture does not authorize elevated access.')})
+      const directStart=performance.now()
+      await rpc.request('turn/start',{threadId:direct.thread.id,clientUserMessageId:randomUUID(),input:[{type:'text',text:prompt,text_elements:[]}],model:model.id,effort:effort==='auto'?null:effort,cwd:root,sandboxPolicy:policy.sandboxPolicy,approvalPolicy:policy.approvalPolicy,approvalsReviewer:'user'})
+      const directTurn=await completed;off();deny()
+      expect(directTurn.status,JSON.stringify(directTurn.error)).toBe('completed')
+      const directMs=Math.round(performance.now()-directStart),directResult=await readFile(join(root,'result.txt'),'utf8')
+      expect(directResult).toBe('native-codex-ok\n');expect(await readFile(join(root,'sentinel.txt'),'utf8')).toBe('preserve-user-change\n')
+      await initial()
+      let saved:NativeCodexThread|undefined
+      const provider=new CodexAppServerProvider(service,model.id,status.identity!)
+      const user:ChatMessage={id:randomUUID(),role:'user',content:prompt,status:'complete',createdAt:Date.now()}
+      const chunks:AIChunk[]=[],abort=new AbortController(),athenaStart=performance.now()
+      const options=()=>({signal:abort.signal,effort,permissionMode:'workspace-auto' as const,nativeCodex:{state:saved,cwd:root,writableRoots:[root],persist:(s:NativeCodexThread)=>{saved=s},requestUserInput:async()=>({})},requestApproval:async()=>false})
+      for await(const chunk of provider.streamMessage([user],options()))chunks.push(chunk)
+      const athenaMs=Math.round(performance.now()-athenaStart)
+      expect(saved?.submission).toBe('completed');threadIds.push(saved!.threadId)
+      expect(await readFile(join(root,'result.txt'),'utf8')).toBe(directResult)
+      expect(await readFile(join(root,'sentinel.txt'),'utf8')).toBe('preserve-user-change\n')
+      expect(chunks.some(c=>c.type==='activity' && c.tool==='codex.commandExecution')).toBe(true)
+      const before=(await service.turns(saved!.threadId)).data.length
+      for await(const _chunk of provider.streamMessage([user],options())) { /* same user ID: only reconcile */ }
+      expect((await service.turns(saved!.threadId)).data).toHaveLength(before)
+      await service.shutdown()
+      const followup={...user,id:randomUUID(),content:'Read result.txt without changing it and report its contents. Use the existing thread history.'}
+      for await(const _chunk of provider.streamMessage([followup],options())) { /* native resume after process restart */ }
+      expect(saved?.submission).toBe('completed');expect((await service.turns(saved!.threadId)).data).toHaveLength(before+1)
+      const report={model:model.id,effort,root,directMs,athenaMs,nativeCommandSeen:chunks.some(c=>c.type==='activity'&&c.tool==='codex.commandExecution'),directEvents:[...new Set(directEvents)],sameAccount:true,noReplay:true,restartResume:true,threadIds}
+      await writeFile('/private/tmp/athena-native-live-evidence.json',JSON.stringify(report,null,2))
+      console.log(JSON.stringify(report))
+    } finally {
+      for(const threadId of threadIds)try{await (await service.connection()).rpc.request('thread/archive',{threadId})}catch{/* preserve evidence if archive unavailable */}
+      await service.shutdown()
     }
-    const context = { attachments: [], repositoryText: '', sources: [], projectTools: {
-      definitions,
-      maxCalls: 2,
-      assertAccess: () => {},
-      execute: async (name: string, input: unknown) => {
-        assertFixture(input)
-        const values = input as Record<string, unknown>
-        if (name === 'read_fixture') return readFile(fixturePath, 'utf8')
-        if (name === 'edit_fixture') {
-          const current = await readFile(fixturePath, 'utf8')
-          const oldText = String(values.old_text ?? '')
-          if (!oldText || current.split(oldText).length !== 2) throw new Error('Expected text was not unique in the fixture.')
-          await writeFile(fixturePath, current.replace(oldText, String(values.new_text ?? '')), 'utf8')
-          return 'Edited fixture.txt; no other file is available.'
-        }
-        throw new Error('Tool not available.')
-      },
-    } }
-    const provider = new CodexAppServerProvider(service, model, status.identity ?? undefined)
-    const messages: ChatMessage[] = [{ id: 'live-user', role: 'user', status: 'complete', createdAt: Date.now(), content: 'In this temporary test only, use read_fixture on fixture.txt first. Then use edit_fixture exactly once to replace `const target = 1` with `const target = 2`. Do not call any other tool. After both tools finish, respond with the single word complete.' }]
-    let response = ''
-    for await (const chunk of provider.streamMessage(messages, { context, effort: 'auto' })) {
-      if (chunk.type === 'text') response += chunk.text
-    }
-    expect(response.trim().toLowerCase()).toContain('complete')
-    expect(await readFile(fixturePath, 'utf8')).toBe('const target = 2\n')
-  }, 180_000)
+  },240_000)
 })

@@ -12,7 +12,7 @@ interface PermissionStore {
   setEnabled(permission: AthenaPermission, enabled: boolean): Promise<boolean>
   setFilesystemAccess(mode: FilesystemAccessMode): Promise<boolean>
   request(permission: AthenaPermission): Promise<boolean>
-  openSettings(permission: AthenaPermission): Promise<boolean>
+  openSettings(permission: AthenaPermission, operation?: 'settings' | 'reveal-app'): Promise<boolean>
 }
 async function mutate(operation: () => Promise<PermissionResult>): Promise<boolean> {
   if (usePermissions.getState().pending) return false
@@ -37,5 +37,5 @@ export const usePermissions = create<PermissionStore>(() => ({
   setEnabled: (permission, enabled) => mutate(() => desktop.setPermissionEnabled({ permission, enabled })),
   setFilesystemAccess: (mode) => mutate(() => desktop.setFilesystemAccess({ mode })),
   request: (permission) => mutate(() => desktop.requestPermission({ permission })),
-  openSettings: (permission) => mutate(() => desktop.openPermissionSettings({ permission })),
+  openSettings: (permission, operation) => mutate(() => desktop.openPermissionSettings({ permission, ...(operation ? { operation } : {}) })),
 }))

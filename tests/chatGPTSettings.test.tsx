@@ -15,7 +15,7 @@ const longLabel = 'A deliberately long ChatGPT account name that should wrap wit
 beforeEach(() => {
   vi.clearAllMocks()
   api.chatSession.mockResolvedValue({ ok: true })
-  api.getCodexCLIStatus.mockResolvedValue({ installed: false, authenticated: false, version: null, identity: null, models: [], defaultModel: null, checkedAt: null, message: 'Codex CLI was not found.' })
+  api.getCodexCLIStatus.mockResolvedValue({ installed: false, authenticated: false, version: null, identity: null, models: [{id:'gpt-5.6-luna',displayName:'GPT',efforts:['low','medium','high','xhigh'],defaultEffort:'medium',isDefault:true}], defaultModel: null, checkedAt: null, message: 'Codex CLI was not found.' })
   api.getChatGPTStatus.mockResolvedValue({
     ...emptyChatGPTStatus(),
     connected: true,

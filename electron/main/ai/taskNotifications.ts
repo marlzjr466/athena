@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path'
 import type { Settings } from '../../../shared/settings'
 
 export type ApprovalRoute = { sessionId: string; title: string; approvalId: string; action: 'required' | 'resolved'; source?: 'online' | 'local' | 'companion'; projectId?: string; projectName?: string; taskId?: string; agentId?: string; summary?: string }
-export interface TaskNotice { sessionId: string; title: string; executionId: string; status: 'complete' | 'failed'; unreadCount: number }
-type PendingApproval = { approvalId: string; source: 'online' | 'local' | 'companion'; sessionId: string; title: string; summary: string; projectId?: string; projectName?: string; taskId?: string; agentId?: string; presentedAt?: number }
+export interface TaskNotice { mediaMessageId?:string; sessionId: string; title: string; executionId: string; status: 'complete' | 'failed'; unreadCount: number }
+type PendingApproval = { mediaMessageId?:string; approvalId: string; source: 'online' | 'local' | 'companion'; sessionId: string; title: string; summary: string; projectId?: string; projectName?: string; taskId?: string; agentId?: string; presentedAt?: number }
 type Ledger = { version: 1; approvals: PendingApproval[]; resolved?: string[] }
 
 /** Central native notifications and app badge; approval truth is reconciled from chat executions. */
@@ -120,6 +120,6 @@ export class TaskNotifications {
     this.shown.add(event.executionId); if (this.shown.size > 500) this.shown.delete(this.shown.values().next().value!)
     const prefs = this.settings().backgroundTasks
     if (!prefs.nativeNotifications || (event.status === 'complete' ? !prefs.notifyComplete : !prefs.notifyFailed) || !Notification.isSupported()) return
-    try { const notice = new Notification({ title: event.status === 'complete' ? 'Athena — Task completed' : 'Athena — Task needs attention', body: `A background conversation ${event.status === 'complete' ? 'finished' : 'needs your attention'}.`, silent: true }); notice.on('click', () => this.open({ source: 'online', sessionId: event.sessionId, title: event.title, approvalId: '', summary: '' })); notice.show() } catch { /* Notification delivery cannot fail task completion. */ }
+    try { const notice = new Notification({ title: event.status === 'complete' ? 'Athena — Task completed' : 'Athena — Task needs attention', body: `A background conversation ${event.status === 'complete' ? 'finished' : 'needs your attention'}.`, silent: true }); notice.on('click', () => this.open({ source: 'online', sessionId: event.sessionId, title: event.title, approvalId: '', summary: '',mediaMessageId:event.mediaMessageId })); notice.show() } catch { /* Notification delivery cannot fail task completion. */ }
   }
 }

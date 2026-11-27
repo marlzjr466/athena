@@ -36,6 +36,11 @@ export class AIConfiguration {
   getStatus(): Promise<AIResult> {
     return this.run(async () => { await this.load(); return this.result(true, '') })
   }
+  async mediaCredential(): Promise<string | undefined> {
+    await this.queue
+    await this.load()
+    return this.credential?.verifiedAt ? this.credential.apiKey : undefined
+  }
   async usageAccountId(): Promise<string | null> {
     await this.queue; await this.load()
     return this.credential ? apiUsageAccount(this.credential.apiKey) : null

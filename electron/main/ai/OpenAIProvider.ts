@@ -40,7 +40,7 @@ export function providerError(error: unknown): ChatError {
   const transport = transportFailureMessage(error)
   if (transport) return new ChatError(transport)
   if (classifyStreamFailure(error) === 'request_timeout') return new ChatError('OpenAI took too long to respond. Completed tool results are preserved; resume from the checkpoint.')
-  if (['connection_reset', 'connection_interrupted'].includes(classifyStreamFailure(error))) return new ChatError('The OpenAI response connection was interrupted. Completed tool results are preserved; resume the unfinished task from its checkpoint.')
+  if (['connection_reset', 'connection_interrupted'].includes(classifyStreamFailure(error))) return new ChatError('The OpenAI response connection was interrupted. Check your internet connection. Completed tool results are preserved; resume the unfinished task from its checkpoint.')
   if (error instanceof OpenAI.APIConnectionTimeoutError) return new ChatError('OpenAI took too long to respond. Please retry.')
   if (error instanceof OpenAI.APIConnectionError) return new ChatError('Could not reach OpenAI. Check your internet connection and retry.')
   if (error instanceof OpenAI.APIError) {
@@ -136,6 +136,7 @@ export class OpenAIProvider implements AIProvider {
       let recoveries = 0
       let textlessRecoveries = 0
       let taskStreamRecoveries = 0
+      const displayedBeforeRetry = new Map<number, string>()
       const recoveriesByRound = new Map<number, number>()
       let recovery: RecoveryState | undefined
       const registry = options.context?.projectTools
@@ -322,6 +323,17 @@ export class OpenAIProvider implements AIProvider {
         options.onStreamPhase?.('streaming')
         let receivedText = false, completed = false
         let incomplete = false, streamedText = ''
+        // Retransmitted text is already visible. Compare only the interrupted
+        // round, across delta boundaries; a revised reply is shown separately.
+        let priorDisplay = displayedBeforeRetry.get(round)
+        const visibleDelta = (delta: string) => {
+          streamedText += delta; receivedText = true
+          if (!priorDisplay) return delta
+          if (priorDisplay.startsWith(streamedText)) return ''
+          const visible = streamedText.startsWith(priorDisplay) ? streamedText.slice(priorDisplay.length) : '\n\n' + streamedText
+          priorDisplay = undefined
+          return visible
+        }
         const accumulator = new ResponseAccumulator()
         const doneItems = accumulator.doneIds
         let output: ResponseOutputItem[] = []
@@ -335,8 +347,9 @@ export class OpenAIProvider implements AIProvider {
             if (options.signal?.aborted) return
             if (project?.hasEphemeralContext?.()) project.assertAccess()
             const delta = accumulator.accept(event)
-            if (delta) { receivedText = true; streamedText += delta; yield { type: 'text', text: delta } }
+            if (delta) { const text = visibleDelta(delta); if (text) yield { type: 'text', text } }
             if (event.type === 'response.completed') {
+              if (responseMetadata.responseModel) options.onResponseModel?.(responseMetadata.responseModel)
               output = accumulator.output
               manager.record(event.response.usage, input, output, undefined, event.response)
               completed = true; break
@@ -358,7 +371,7 @@ export class OpenAIProvider implements AIProvider {
             failureEventType: known.failureEventType ?? (error instanceof OpenAI.APIError ? 'sdk_stream_error' : undefined) })
           response.controller.abort(); stream = undefined
           if (await retryAttempt(error, 'response_stream', streamedText)) {
-            if (receivedText) yield { type: 'text', text: '\n\n' }
+            if (streamedText && !priorDisplay) displayedBeforeRetry.set(round, streamedText)
             round-- // No call from this unfinished response was executed.
             continue
           }
@@ -390,7 +403,7 @@ export class OpenAIProvider implements AIProvider {
           const error = new StreamFault('unexpected_eof', 'ChatGPT ended the response stream before a completion event. Completed actions are preserved; the unfinished response was not treated as success.')
           if (await retryAttempt(error, 'response_stream', streamedText)) {
             stream = undefined
-            if (receivedText) yield { type: 'text', text: '\n\n' }
+            if (streamedText && !priorDisplay) displayedBeforeRetry.set(round, streamedText)
             round--
             continue
           }
@@ -400,10 +413,11 @@ export class OpenAIProvider implements AIProvider {
         recoveriesByRound.delete(round)
         if (streamRecoveryAttempts) options.onRecovery?.({ attempts: streamRecoveryAttempts, continuing: false, reason: 'stream_interrupted', outputBudget: manager.outputLimit, effort, pendingTools: [] })
         if (recovery) { recovery = { ...recovery, continuing: false }; options.onRecovery?.(recovery) }
+        displayedBeforeRetry.delete(round)
         const remainder = accumulator.remainingText()
         if (remainder) {
-          streamedText += remainder; receivedText = true
-          yield { type: 'text', text: remainder }
+          const text = visibleDelta(remainder)
+          if (text) yield { type: 'text', text }
         }
         const calls = output.filter((item): item is ResponseFunctionToolCall => item.type === 'function_call')
         if (!calls.length) {

@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<style>
+:root{color-scheme:dark;font:600 12px system-ui}*{box-sizing:border-box}body{margin:0;overflow:hidden;background:transparent;pointer-events:none}
+#frame,#pointer,#activity,#pulse{position:absolute;pointer-events:none}#frame{border:2px solid #78deeb;border-radius:7px;background:#71dbea10;box-shadow:inset 0 0 0 1px #152831}
+#pointer{top:0;left:0;display:flex;align-items:flex-start;gap:3px;color:white;filter:drop-shadow(0 1px 3px #091018)}#pointer svg{width:24px;height:28px;fill:#78deeb;stroke:#e3fbff;stroke-width:1.2}#pointer span{position:absolute;color:#082833;background:#78deeb;font-size:12px;padding:3px 8px}
+span,#activity{border-radius:9px;background:#122430f5;color:#c5f6fb;padding:3px 8px;white-space:nowrap}#activity{bottom:24px;left:50%;transform:translateX(-50%);border:1px solid #78deeb80;padding:8px 14px;max-width:calc(100% - 32px);overflow:hidden;text-overflow:ellipsis}
+#pulse{width:28px;height:28px;border:2px solid #89e5f0;border-radius:100%;opacity:0}
+</style></head><body><div hidden id="frame"></div><div hidden id="pointer" style="display:none"><svg width="18" height="21" viewBox="0 0 18 21"><path d="m2 2 13 10-6 .6-2.6 5.7z"/></svg><span>Athena</span></div><div hidden id="pulse"></div><div hidden id="activity"></div></body></html>

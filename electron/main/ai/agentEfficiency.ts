@@ -1,3 +1,4 @@
+import { operationOutcome } from './toolOutcome'
 import { createHash } from 'node:crypto'
 
 export type AgentPhase = 'exploration' | 'implementation' | 'verification' | 'other'
@@ -48,7 +49,7 @@ export class AgentEfficiencyTracker {
     let result: Record<string, unknown> = {}
     try { const parsed = JSON.parse(output); if (parsed && typeof parsed === 'object') result = parsed } catch { /* Count unparseable results as failures. */ }
     const inner = result.result && typeof result.result === 'object' ? result.result as Record<string, unknown> : result
-    const failed = Boolean(result.error || inner.error || inner.ok === false || (typeof inner.exitCode === 'number' && inner.exitCode !== 0))
+    const failed = operationOutcome(output).outcome !== 'success'
     if (failed) this.statistics.failedOperations++
     const changes = Array.isArray(inner.changes) ? inner.changes as Array<{ status?: string }> : []
     const changed = phase === 'implementation' && !failed && (changes.some(change => change.status === 'applied') || inner.ok === true)

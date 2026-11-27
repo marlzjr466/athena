@@ -1,3 +1,4 @@
+import { CodexHistory } from './CodexHistory'
 import { useEffect, useState } from 'react'
 import { Section, SettingRow } from '../../components/ui/Controls'
 import { CustomSelect } from '../../components/ui/CustomSelect'
@@ -5,7 +6,6 @@ import { desktop } from '../../services/desktop'
 import { emptyChatGPTStatus, type ChatGPTAccountStatus, type ChatGPTStatus } from '../../../shared/chatgpt'
 import { modelCapabilities, type ReasoningEffort } from '../../../shared/conversations'
 import { useChat } from '../../store/chatStore'
-import { useAthena } from '../../store/athenaStore'
 import { emptyCodexCLIStatus, type CodexCLIStatus } from '../../../shared/codex'
 import '../../styles/ai.css'
 import { UsageDashboard } from './UsageDashboard'
@@ -14,8 +14,6 @@ import { observedConversationUsage } from './observedUsage'
 
 export function ChatGPTSettings({ onAccountsChanged }: { onAccountsChanged?: () => void } = {}) {
   const chat = useChat()
-  const savedSettings = useAthena((state) => state.snapshot?.settings)
-  const updateSettings = useAthena((state) => state.update)
   const [status, setStatus] = useState<ChatGPTStatus>(emptyChatGPTStatus)
   const [codexStatus, setCodexStatus] = useState<CodexCLIStatus>(emptyCodexCLIStatus)
   const [busy, setBusy] = useState(false)
@@ -37,14 +35,14 @@ export function ChatGPTSettings({ onAccountsChanged }: { onAccountsChanged?: () 
   const updateAccount = (accountId: string, update: Partial<ChatGPTAccountStatus>) => setStatus((current) => ({ ...current, accounts: current.accounts.map((account) => account.id === accountId ? { ...account, ...update } : account) }))
   const active = status.accounts.find((account) => account.active)
   const chatBusy = chat.snapshot.phase !== 'idle'
-  const codingBackend = savedSettings?.chatGPTCodingBackend ?? 'athena'
+  const codingBackend = 'codex-cli'
   // Keep Settings in lockstep with the reasoning selector in the conversation.
   // Existing sessions can retain their own model even if the account default differs.
   const reasoningModel = chat.snapshot.config?.model ?? active?.model ?? null
   const codexEfforts = codexStatus.models.find((model) => model.id === reasoningModel)?.efforts ?? []
-  const codexUsageActive = codingBackend === 'codex-cli' && Boolean(chat.snapshot.workspaces?.length)
+  const codexUsageActive = codingBackend === 'codex-cli'
   const observed = observedConversationUsage(chat.snapshot.messages, codexUsageActive ? ['codex-subscription'] : ['chatgpt-subscription'], codexUsageActive ? null : active?.id ?? 'no-active-chatgpt-account')
-  const offeredEfforts = codingBackend === 'codex-cli' && chat.snapshot.workspaces?.length
+  const offeredEfforts = codingBackend === 'codex-cli'
     ? [...new Set<ReasoningEffort>(['auto', ...codexEfforts])]
     : reasoningModel ? modelCapabilities(reasoningModel).efforts : []
   const refreshCodex = async () => {
@@ -61,17 +59,13 @@ export function ChatGPTSettings({ onAccountsChanged }: { onAccountsChanged?: () 
     </SettingRow>
     {active && <p className="card-description">Request account reference: {active.id.slice(0, 8)}. Conversation model: {chat.snapshot.config?.model ?? 'account default'}; account default: {active.model ?? 'not selected'}. An existing conversation keeps its own model. Workspace access is bound to this OAuth registration; Athena does not infer a workspace from your email or report a remaining-quota percentage.</p>}
 
-    <SettingRow title="Coding execution backend" description="Only project-linked coding conversations use this selection. General ChatGPT conversation remains on Athena’s existing subscription connection. Codex uses the account already signed in to the official CLI; it is not an automatic fallback or an API key.">
-      <CustomSelect ariaLabel="ChatGPT coding execution backend" value={codingBackend} disabled={busy || chatBusy} options={[
-        { value: 'athena', label: 'Athena agent · ChatGPT Subscription' },
-        { value: 'codex-cli', label: 'Official Codex CLI' },
-      ]} onChange={(value) => { void updateSettings({ chatGPTCodingBackend: value as 'athena' | 'codex-cli' }) }} />
-    </SettingRow>
+    <SettingRow title="Execution engine" description="All ChatGPT subscription conversations use native Codex threads, tools, sandboxing, approvals, and context management. Historical Athena messages are preserved without replaying old tasks."><span>Codex App Server</span></SettingRow>
     <SettingRow title="Codex CLI status" description={codexStatus.authenticated ? `${codexStatus.version ?? 'Version unknown'} · ${codexStatus.identity ?? 'Account identity unavailable'} · ${codexStatus.models.length} models. This is a separate signed-in Codex connection; Athena never reads or copies its credential files.` : codexStatus.message}>
-      <button className="button secondary" disabled={checkingCodex} onClick={() => void refreshCodex()}>{checkingCodex ? 'Checking…' : 'Refresh Codex status'}</button>
+      <button className="button secondary" disabled={checkingCodex || chatBusy} onClick={() => void desktop.codexCommand({action:'login'}).then(r=>setNotice(r.message ?? 'Sign-in opened.')).catch(()=>setNotice('Could not start Codex sign-in.'))}>Sign in to Codex</button><button className="button secondary" disabled={checkingCodex} onClick={() => void refreshCodex()}>{checkingCodex ? 'Checking…' : 'Refresh Codex status'}</button>
     </SettingRow>
-    {codingBackend === 'codex-cli' && <p className="card-description">Codex usage is enforced by OpenAI. Athena displays the CLI model catalog, not a guaranteed entitlement or fabricated remaining-usage estimate. Provider limits may still apply. The permission-preserving dynamic-tool bridge is currently capability-gated by Codex app-server; Athena reports incompatibility instead of falling back. Codex child sub-agents stay unavailable until Athena can enforce their independent iteration and output-token budgets.</p>}
+    {codingBackend === 'codex-cli' && <p className="card-description">Codex usage is enforced by OpenAI. Athena displays the CLI model catalog, not a guaranteed entitlement or fabricated remaining-usage estimate. Provider limits may still apply. Codex owns native tools and sub-agents. Local CLI configuration, project instructions, and skills apply. Athena forwards approval requests without overriding your decision. No API-key fallback is used.</p>}
 
+    <CodexHistory />
     {status.accounts.length > 0 && <div className="chatgpt-account-list" aria-label="Connected ChatGPT accounts">
       {status.accounts.map((account) => <article key={account.id} className={`chatgpt-account-card${account.active ? ' is-active' : ''}`}>
         <div className="chatgpt-account-card__heading">

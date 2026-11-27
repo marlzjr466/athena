@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, extname, relative, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { GeneratedArtifact } from '../../../shared/chat'
@@ -65,6 +65,11 @@ export class ArtifactService {
     await this.ready(); await writeFile(this.path(storageKey), bytes, { mode: 0o600 })
     return { id, name: safeName, mimeType: normalizedMime, size: bytes.byteLength, createdAt: Date.now(), storageKey, status: 'ready', ...(metadata?.provider ? { provider: metadata.provider.slice(0, 80) } : {}), ...image }
   }
+  async remove(artifact: GeneratedArtifact): Promise<void> {
+    await unlink(this.path(artifact.storageKey))
+    if(artifact.thumbnail)await this.remove(artifact.thumbnail)
+    for (const [token, entry] of this.assetTokens) if (entry.storageKey === artifact.storageKey) this.assetTokens.delete(token)
+  }
   async read(artifact: GeneratedArtifact): Promise<Buffer> {
     const file = this.path(artifact.storageKey), link = await lstat(file)
     if (link.isSymbolicLink()) throw new Error('Generated artifact is unavailable or invalid.')
@@ -74,7 +79,8 @@ export class ArtifactService {
   }
   /** Mint a short-lived, opaque capability for the renderer's app asset origin. */
   async createAssetToken(artifact: GeneratedArtifact, ttlMs = 5 * 60_000): Promise<string> {
-    await this.read(artifact)
+    const info=await lstat(this.path(artifact.storageKey))
+    if(!info.isFile()||info.size>MAX_ARTIFACT_BYTES)throw new Error('Generated artifact is unavailable or invalid.')
     const now = Date.now()
     for (const [token, entry] of this.assetTokens) if (entry.expiresAt <= now) this.assetTokens.delete(token)
     const token = randomUUID()

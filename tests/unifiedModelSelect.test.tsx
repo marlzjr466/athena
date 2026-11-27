@@ -10,6 +10,18 @@ const catalog: UnifiedAccountCatalog = { refreshedAt: 1, accounts: [
 ] }
 
 describe('unified model selector', () => {
+  it('shows only the model name in the closed trigger while retaining provider context', () => {
+    const codexCatalog: UnifiedAccountCatalog = { refreshedAt: 1, accounts: [{
+      route: { provider: 'subscription', accountId: 'codex-local' }, name: 'Codex · ChatGPT', enabled: true, state: 'connected',
+      models: [{ id: 'gpt-6.2-sol', label: 'GPT-6.2-Sol · Codex', available: true }],
+    }] }
+    render(<UnifiedModelSelect catalog={codexCatalog} value={{ provider: 'subscription', accountId: 'codex-local', model: 'gpt-6.2-sol' }} onChange={vi.fn()} />)
+    const trigger = screen.getByRole('button', { name: 'Conversation model' })
+    expect(trigger).toHaveTextContent('GPT-6.2-Sol')
+    expect(trigger).not.toHaveTextContent('Codex')
+    expect(trigger).not.toHaveTextContent('ChatGPT')
+    expect(trigger).toHaveAttribute('title', 'GPT-6.2-Sol · Codex · ChatGPT')
+  })
   it('keeps identical model IDs distinct by account and filters local catalog by account name', () => {
     const choose = vi.fn()
     render(<UnifiedModelSelect catalog={catalog} onChange={choose} />)

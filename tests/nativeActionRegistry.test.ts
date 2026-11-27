@@ -25,7 +25,7 @@ function setup(models = [{ slug: 'gpt-6', displayName: 'GPT-6' }], userText = "C
   }
   const controller = {
     settings,
-    windows: { showControl: vi.fn() },
+    windows: { showControl: vi.fn(), async navigateVoice(page:string) { this.showControl(page); return 'Opened Athena '+page+'.' } },
     setAutomationActivity: vi.fn(),
     updateSettings: vi.fn((patch: { aiMode?: typeof settings.aiMode }) => { Object.assign(settings, patch); return {} }),
   }
@@ -48,6 +48,19 @@ function setup(models = [{ slug: 'gpt-6', displayName: 'GPT-6' }], userText = "C
 afterEach(() => vi.restoreAllMocks())
 
 describe('local Athena native action registry', () => {
+  it.each([
+    'Open a new tab inside Google Chrome.',
+    'Open Chrome and search for relaxing piano music.',
+    'Please open another tab inside my running Chrome window.',
+  ])('does not reduce a browser objective to application activation: %s', async text => {
+    const app = setup(undefined, text)
+    try {
+      const result = await app.tools.resolveDeterministicAction!(text, new AbortController().signal)
+      expect(result).toEqual({ handled: false })
+      expect(app.desktop.openApplicationByVoice).not.toHaveBeenCalled()
+    } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
+  })
+
   it('creates a private local chat, validates its Ollama model, and sends only to Athena Chat', async () => {
     const app = setup(undefined, "Create a new local Athena Chat conversation, select local model qwen3:8b, and ask Athena Chat 'Explain React hooks'.")
     try {
@@ -206,31 +219,31 @@ describe('local Athena native action registry', () => {
     } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
   })
 
-  it('resolves YouTube directly, requests Browser Access, and opens via the OS URL handler without Brave Search', async () => {
-    const app = setup(undefined, 'Open YouTube in my current browser.', { browserAccess: false })
+  it('resolves YouTube directly with granted Browser Access, and opens via the OS URL handler without Brave Search', async () => {
+    const app = setup(undefined, 'Open YouTube in my default browser.', { browserAccess: true })
     try {
       app.controller.settings.webAccess.webSearchEnabled = false
       const names = app.tools.definitions.map(definition => definition.name)
       expect(names).toContain('browser_open_url')
-      const action = await app.tools.resolveDeterministicAction!('Open YouTube in my current browser.', new AbortController().signal)
+      const action = await app.tools.resolveDeterministicAction!('Open YouTube in my default browser.', new AbortController().signal)
       expect(action).toMatchObject({ handled: true, action: 'browser-open-url' })
       expect(app.openExternalURL).toHaveBeenCalledWith('https://www.youtube.com/', expect.any(AbortSignal))
-      expect(app.requestAutomationPermission).toHaveBeenCalledWith('browserAccess', 'browser.openUrl')
+      expect(app.requestAutomationPermission).not.toHaveBeenCalled()
       expect(action.text).toContain('macOS accepted www.youtube.com')
       expect(action.text).not.toMatch(/loaded successfully/i)
       expect(app.audit.record).toHaveBeenCalledWith(expect.objectContaining({ actionId: 'browser.openUrl', permission: 'browserAccess', status: 'completed' }))
     } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
   })
 
-  it('creates and selects a new online chat from a voice command after Conversation Management approval', async () => {
-    const app = setup(undefined, 'Open a new chat in Online AI Chat.', { conversationManagement: false })
+  it('creates and selects a new online chat from a voice command with Conversation Management enabled', async () => {
+    const app = setup(undefined, 'Open a new chat in Online AI Chat.', { conversationManagement: true })
     try {
       const action = await app.tools.resolveDeterministicAction!('Open a new chat in Online AI Chat.', new AbortController().signal)
       const sessionId = app.onlineChat.snapshot().sessionId!
       expect(action).toMatchObject({ handled: true, action: 'online-conversation-create' })
       expect(app.onlineChat.getSession(sessionId)).toBeTruthy()
       expect(app.controller.windows.showControl).toHaveBeenCalledWith('conversation')
-      expect(app.requestAutomationPermission).toHaveBeenCalledWith('conversationManagement', 'athena.chat.createSession')
+      expect(app.requestAutomationPermission).not.toHaveBeenCalled()
       expect(action.text).toContain('Created an online conversation')
     } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
   })
@@ -268,13 +281,13 @@ describe('local Athena native action registry', () => {
   })
 
   it('does not run a denied permission request and keeps the action registered for clear execution feedback', async () => {
-    const app = setup(undefined, 'Open YouTube.', { browserAccess: false }, false)
+    const app = setup(undefined, 'Open YouTube in my default browser.', { browserAccess: false }, false)
     try {
       const names = app.tools.definitions.map(definition => definition.name)
       expect(names).toContain('browser_open_url')
-      const action = await app.tools.resolveDeterministicAction!('Open YouTube.', new AbortController().signal)
+      const action = await app.tools.resolveDeterministicAction!('Open YouTube in my default browser.', new AbortController().signal)
       expect(action).toMatchObject({ handled: true })
-      expect(action.text).toContain('was not approved')
+      expect(action.text).toContain('is off')
       expect(app.openExternalURL).not.toHaveBeenCalled()
     } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
   })
@@ -289,6 +302,25 @@ describe('local Athena native action registry', () => {
       app.controller.settings.automationPermissions.externalMessageSubmission = false
       const restricted = app.registry.createTools({ localChat: app.localChat, userText: 'send a message', requestId: crypto.randomUUID(), voiceOnly: true })
       expect(restricted.definitions.map(definition => definition.name)).toContain('athena_chat_send_message')
+    } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
+  })
+})
+
+describe('Codex contextual computer steps', () => {
+  it('asks for the exact proposed contextual action and keeps native permissions authoritative', async () => {
+    const app = setup()
+    const approve = vi.fn(async () => true)
+    try {
+      const tools = () => app.registry.createTools({ localChat: app.localChat, requestId: crypto.randomUUID(), userText: 'Continue the current workflow.', voiceOnly: true, reviewComputerStep: approve })
+      const run = () => tools().execute('athena_desktop_open_application', { app: 'chrome' }, new AbortController().signal)
+      expect(JSON.parse(await run())).toMatchObject({ ok: true, verified: true })
+      expect(approve.mock.calls[0]).toEqual([expect.stringContaining('"app": "chrome"'), expect.any(AbortSignal)])
+      approve.mockResolvedValue(false)
+      expect(JSON.parse(await run())).toMatchObject({ ok: false, code: 'permission-denied' })
+      app.permissions.isCapabilityAllowed.mockReturnValue(false)
+      expect(JSON.parse(await run())).toMatchObject({ ok: false })
+      expect(approve).toHaveBeenCalledTimes(2)
+      expect(app.desktop.openApplicationByVoice).toHaveBeenCalledTimes(1)
     } finally { app.onlineChat.dispose(); app.localChat.dispose(); app.localAthenaChat.dispose() }
   })
 })

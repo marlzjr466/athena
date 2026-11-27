@@ -47,21 +47,30 @@ describe('output budgets and safe automatic continuation', () => {
     expect(effectiveEffort('gpt-5.6-luna', 'auto', 1)).toBe('low')
     expect(effectiveEffort('gpt-5.6-luna', 'xhigh', 3)).toBe('xhigh')
   })
-  it('continues reasoning-heavy incomplete responses, records actual usage, and lowers only Auto effort', async () => {
+  it('continues reasoning-heavy API responses, records actual usage, and preserves provider-managed Auto effort', async () => {
     const onUsage = vi.fn(), onRecovery = vi.fn(), onCheckpoint = vi.fn()
     const bodies: any[] = []
     const request = vi.fn<typeof fetch>(async (_url, init) => { bodies.push(JSON.parse(init!.body as string)); return bodies.length === 1 ? incomplete() : answer() })
     const chunks = await collect(request, { onUsage, onRecovery, onCheckpoint })
     expect(bodies.map((body) => body.max_output_tokens)).toEqual([32768, 65536])
-    expect(bodies.map((body) => body.reasoning.effort)).toEqual(['medium', 'low'])
+    expect(bodies.map((body) => body.reasoning)).toEqual([undefined, undefined])
     expect(bodies[1].instructions).toContain('Do not repeat completed or denied operations')
     expect(bodies[1].input[0].content).toBe(message.content)
     expect(bodies[1].store).toBe(false); expect(bodies[1].max_tokens).toBeUndefined(); expect(bodies[1].max_completion_tokens).toBeUndefined()
     expect(onUsage.mock.calls.some(([usage]) => usage.lastResponse?.reasoningTokens === 31000 && usage.lastResponse?.incompleteReason === 'max_output_tokens')).toBe(true)
     expect(onUsage.mock.lastCall![0]).toMatchObject({ reasoningTokens: 31010, inputTokens: 200, outputTokens: 32050 })
-    expect(onRecovery.mock.calls[0][0]).toMatchObject({ attempts: 1, continuing: true, effort: 'low' })
+    expect(onRecovery.mock.calls[0][0]).toMatchObject({ attempts: 1, continuing: true, effort: 'auto' })
     expect(onRecovery.mock.lastCall![0].continuing).toBe(false)
     expect(onCheckpoint).toHaveBeenCalled(); expect(chunks.at(-1)).toEqual({ type: 'done' })
+  })
+  it('uses the subscription-specific Auto reasoning policy for an output continuation', async () => {
+    const efforts: string[] = []
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      efforts.push(JSON.parse(init!.body as string).reasoning.effort)
+      return efforts.length === 1 ? incomplete() : answer()
+    })
+    for await (const _chunk of new OpenAIProvider('oauth-test','gpt-5.6-luna',request,undefined,true).streamMessage([message])) { /* consume both responses */ }
+    expect(efforts).toEqual(['medium','low'])
   })
   it.each(['medium', 'high', 'xhigh'] as const)('retains explicit %s reasoning and an explicit output cap during recovery', async (effort) => {
     const request = vi.fn<typeof fetch>(async (_url, init): Promise<Response> => {

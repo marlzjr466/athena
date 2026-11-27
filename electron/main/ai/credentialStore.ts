@@ -22,7 +22,11 @@ export function credentialServiceName(): string {
 }
 export class KeychainCredentialStore implements CredentialStore {
   private async entry() {
-    if (process.platform !== 'darwin') throw new Error('Credential storage is currently supported on macOS only.')
+    if (process.platform === 'win32' && process.type === 'browser') {
+      const { AsyncEntry } = await import('@napi-rs/keyring')
+      return new AsyncEntry(credentialServiceName(), 'openai-configuration')
+    }
+    if (process.platform !== 'darwin') throw new Error('OpenAI credential storage requires macOS Keychain or Windows Credential Manager.')
     return credentialEntry(credentialServiceName(), 'openai-configuration')
   }
   async read(): Promise<AICredential | null> {

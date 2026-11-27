@@ -1,0 +1,110 @@
+import {test,expect,_electron as electron} from '@playwright/test'
+import {mkdtemp,writeFile,readFile,realpath} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join,resolve} from 'node:path'
+
+test('real native Codex in Athena: background approval, independent normal chat, file verification and restart history',async()=>{
+  test.skip(process.env.ATHENA_NATIVE_CODEX_E2E!=='1','Uses the installed authenticated ChatGPT subscription and a disposable workspace.')
+  test.setTimeout(240000)
+  const profile=await mkdtemp(join(tmpdir(),'athena-native-ui-profile-')),root=await realpath(await mkdtemp(join(tmpdir(),'athena-native-ui-project-')))
+  await writeFile(join(profile,'settings.json'),JSON.stringify({aiMode:'subscription',voiceEnabled:false,floatingEnabled:false,randomMovement:false,randomActions:false,webAccess:{enabled:false,searxngAutoStart:false}}))
+  await writeFile(join(root,'AGENTS.md'),'Only create native-ui-result.txt for this fixture. Preserve sentinel.txt. Do not access services or credentials.\n')
+  await writeFile(join(root,'sentinel.txt'),'keep-this\n')
+  const binary=process.env.ATHENA_VOICE_TEST_BINARY??resolve('release/mac-arm64/Athena.app/Contents/MacOS/Athena')
+  const launch=()=>electron.launch({executablePath:binary,args:[...(process.env.ATHENA_NATIVE_CODEX_DEV==='1'?['.']:[]),'--mute-audio','--user-data-dir='+profile],env:{...process.env,ATHENA_TEST_DATA:profile},timeout:40000})
+  let app=await launch();console.info('Native UI: launched')
+  const control=async()=>{await expect.poll(()=>app.windows().some(p=>p.url().includes('surface=control'))).toBe(true);return app.windows().find(p=>p.url().includes('surface=control'))!}
+  try{
+    let page=await control();console.info('Native UI: control ready')
+    expect(await realpath(await app.evaluate(({app})=>app.getPath('userData')))).toBe(await realpath(profile))
+    await app.evaluate(({dialog},root)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[root]})},root)
+    const first=await page.evaluate(async()=>{
+      const api=window.athena!,status=await api.getCodexCLIStatus({refresh:true})
+      if(!status.authenticated || !status.models.some(m=>m.id==='gpt-6-astra'))throw Error(status.message)
+      await api.setPermissionEnabled({permission:'personalFiles',enabled:true})
+      const c=await api.getChat()
+      const attached=await api.chatContext({action:'connect',sessionId:c.sessionId!});if(!attached.ok)throw Error(attached.message)
+      const selected=await api.chatSession({action:'select-account-model',id:c.sessionId!,route:{provider:'subscription',accountId:'codex-local'},model:'gpt-6-astra'});if(!selected.ok)throw Error(selected.message)
+      await api.chatSession({action:'configure-effort',id:c.sessionId!,effort:'high'})
+      await api.chatSession({action:'agent-mode',id:c.sessionId!,mode:'ask'})
+      const sent=await api.sendChat({sessionId:c.sessionId!,text:'Read AGENTS.md. Create native-ui-result.txt containing exactly verified-native-ui followed by a newline. Read it to verify the contents. For this isolated approval integration test, use exec_command with sandbox_permissions="require_escalated" and justification="May I create the disposable test file?" for the single write command, even if sandbox writing would be possible. Do not use apply_patch. No other changes. Do not use the network or commit.'});if(!sent.ok)throw Error(sent.message)
+      return c.sessionId!
+    })
+    await expect.poll(async()=>await page.evaluate(()=>window.athena!.getChat().then(c=>c.nativeCodex?.threadId)),{timeout:45000}).toBeTruthy()
+    const thread=await page.evaluate(()=>window.athena!.getChat().then(c=>c.nativeCodex!.threadId))
+    console.info('Native UI: first native thread created')
+    await expect.poll(()=>page.evaluate(()=>window.athena!.getChat().then(c=>Boolean(c.messages.at(-1)?.execution?.approval))),{timeout:60000}).toBe(true)
+    await page.getByRole('button',{name:'Conversation',exact:true}).click()
+    const dialogs:string[]=[]
+    page.on('dialog',async dialog=>{dialogs.push(dialog.message());await dialog.accept()})
+    await page.getByRole('combobox',{name:'Coding agent permissions'}).hover()
+    await page.getByRole('option',{name:/^Full Access/}).click()
+    await expect.poll(()=>page.evaluate(()=>window.athena!.getChat().then(c=>c.config?.agentMode))).toBe('full-access')
+    expect(dialogs).toHaveLength(1);expect(dialogs[0]).toContain('danger-full-access / never')
+    const pending=await page.evaluate(()=>window.athena!.getChat())
+    expect(pending.config?.codexFullAccessConfirmed).toBe(true)
+    expect(pending.codexAccess?.mode).toBe('ask')
+    expect(pending.messages.at(-1)?.execution?.approval).toBeTruthy()
+    await expect(page.getByRole('status').filter({hasText:'Access changes apply next turn'})).toHaveCount(0)
+    const effortBox=await page.getByRole('combobox',{name:'Reasoning effort'}).boundingBox()
+    const accessBox=await page.getByRole('combobox',{name:'Coding agent permissions'}).boundingBox()
+    expect(Math.abs(effortBox!.y-accessBox!.y)).toBeLessThan(3)
+    await expect(page.getByRole('button',{name:'Send follow-up',exact:true})).toHaveCount(0)
+    await page.screenshot({path:'/private/tmp/athena-codex-access-pending.png'})
+
+    const second=await page.evaluate(async()=>{const api=window.athena!;await api.chatSession({action:'create'});const c=await api.getChat();if(c.config?.codexFullAccessConfirmed)throw Error('Full Access leaked into new conversation');await api.chatSession({action:'agent-mode',id:c.sessionId!,mode:'read-only'});const r=await api.sendChat({sessionId:c.sessionId!,text:'Reply with the word ready. Do not use tools.'});if(!r.ok)throw Error(r.message);return c.sessionId!})
+    const approvals=new Set<string>(),start=Date.now()
+    for(;;){
+      const state=await page.evaluate(()=>window.athena!.getChat())
+      for(const s of state.sessions??[])if(s.pendingApprovalId && !approvals.has(s.pendingApprovalId)){
+        await page.evaluate(id=>window.athena!.chatSession({action:'switch',id}),s.id)
+        const request=await page.evaluate(()=>window.athena!.getChat().then(c=>c.messages.findLast(m=>m.execution?.approval)?.execution?.approval))
+        if(!request)continue
+        // Only the native change to this disposable fixture is authorized.
+        const allow=s.id===first && (request.changes?.every(c=>c.path.endsWith('/native-ui-result.txt')||c.path==='native-ui-result.txt')===true || request.description.includes(root))
+        expect(allow,JSON.stringify(request)).toBe(true)
+        expect((await page.evaluate(({id,approvalId,allow})=>window.athena!.chatSession({action:'agent-approval',id,approvalId,allow}),{id:s.id,approvalId:request.id,allow})).ok).toBe(true)
+        approvals.add(request.id)
+        await page.evaluate(id=>window.athena!.chatSession({action:'switch',id}),second)
+      }
+      if(state.sessions?.filter(s=>[first,second].includes(s.id)).every(s=>s.executionStatus!=='running' && s.executionStatus!=='waiting-approval' && s.executionStatus!=='queued'))break
+      if(Date.now()-start>150000)throw Error('Native fixture did not finish within test deadline')
+      await page.waitForTimeout(250)
+    }
+    expect(await readFile(join(root,'native-ui-result.txt'),'utf8')).toBe('verified-native-ui\n')
+    expect(await readFile(join(root,'sentinel.txt'),'utf8')).toBe('keep-this\n')
+    const normal=await page.evaluate(()=>window.athena!.getChat())
+    expect(approvals.size).toBeGreaterThan(0)
+    expect(normal.config?.agentMode).toBe('read-only');expect(normal.codexAccess?.mode).toBe('read-only')
+    expect(normal.workspaces).toHaveLength(0);expect(normal.nativeCodex?.threadId).not.toBe(thread)
+    expect(normal.nativeCodex?.cwd).not.toBe(root)
+    expect(normal.nativeCodex?.cwd).toContain('codex-workspaces')
+    expect(normal.messages.at(-1)?.status).toBe('complete')
+    await page.evaluate(id=>window.athena!.chatSession({action:'switch',id}),first)
+    const project=await page.evaluate(()=>window.athena!.getChat())
+    expect(project.messages.at(-1)?.status,project.messages.at(-1)?.error).toBe('complete')
+    expect(project.messages.at(-1)?.execution?.providerId).toBe('codex-subscription')
+    expect(project.nativeCodex).toMatchObject({cwd:root,model:'gpt-6-astra',effort:'high'})
+    await expect(page.getByRole('textbox',{name:'Message Athena',exact:true})).toBeVisible()
+    await expect(page.getByText('Native Codex execution',{exact:true})).toHaveCount(0)
+    await page.screenshot({path:'/private/tmp/athena-native-chat.png'})
+    await app.close()
+    app=await launch();page=await control()
+    const restored=await page.evaluate(()=>window.athena!.getChat())
+    expect(restored.nativeCodex?.threadId).toBe(thread)
+    expect(restored.messages.at(-1)?.status).toBe('complete')
+    expect(restored.config).toMatchObject({agentMode:'full-access',codexFullAccessConfirmed:true})
+    expect(restored.sessions?.find(s=>s.id===second)?.config.agentMode).toBe('read-only')
+    expect((await page.evaluate(id=>window.athena!.sendChat({sessionId:id,text:'Read native-ui-result.txt and sentinel.txt using native tools. Do not change any file. Report the contents briefly.'}),first)).ok).toBe(true)
+    await expect.poll(()=>page.evaluate(()=>window.athena!.getChat().then(c=>c.messages.at(-1)?.status)),{timeout:60000}).toBe('complete')
+    const full=await page.evaluate(()=>window.athena!.getChat())
+    expect(full.nativeCodex?.threadId).toBe(thread)
+    expect(full.codexAccess).toMatchObject({mode:'full-access',status:'verified',sandbox:'{"type":"dangerFullAccess"}',approvalPolicy:'"never"'})
+    expect(full.messages.at(-1)?.execution?.permissionDecisions??[]).toHaveLength(0)
+    await page.getByRole('button',{name:'Conversation',exact:true}).click()
+    await expect(page.getByRole('status').filter({hasText:'Codex access verified: Full Access'})).toHaveCount(0)
+    await page.screenshot({path:'/private/tmp/athena-codex-access-verified.png'})
+
+    await writeFile('/private/tmp/athena-native-ui-evidence.json',JSON.stringify({profile,root,first,second,thread,approvalCount:approvals.size,provider:project.messages.at(-1)?.execution?.providerId,model:project.nativeCodex?.model,effort:project.nativeCodex?.effort,cwd:project.nativeCodex?.cwd,restarted:true,independentThreads:true,accessChangeKeptApproval:true,fullAccess:full.codexAccess,readOnly:normal.codexAccess},null,2))
+  }finally{await app.close()}
+})

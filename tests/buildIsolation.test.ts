@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import config from '../electron.vite.config'
 import { developmentUserDataPath } from '../electron/main/developmentPaths'
@@ -21,7 +22,9 @@ describe('development and production process isolation', () => {
     expect(production.main.build.watch).toBeUndefined()
     expect(dev.renderer.server.watch.ignored).toEqual(expect.arrayContaining(['**/out/**', '**/out-dev/**', '**/release/**']))
     expect(packageJson.main).toBe('out/main/main.js')
-    expect(packageJson.scripts.dev).toContain('--entry out-dev')
+    expect(packageJson.scripts.dev).toBe('node scripts/start-dev.mjs')
+    const launcher = readFileSync(new URL('../scripts/start-dev.mjs', import.meta.url), 'utf8')
+    expect(launcher).toMatch(/spawn\(process\.execPath, \[viteCli, 'dev', '--entry', 'out-dev'\]/)
     expect(packageJson.build.files).toContain('out/**/*')
   })
   it('uses a persistent development lock and profile distinct from packaged data', () => {

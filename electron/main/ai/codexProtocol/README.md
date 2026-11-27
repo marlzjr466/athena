@@ -1,0 +1,1 @@
+Generated from the installed official Codex CLI 0.171.0 using `codex app-server generate-ts`. Only the transitive type dependencies consumed by Athena are included. These files are types, not an agent implementation. Regenerate and validate when changing the supported protocol.

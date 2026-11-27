@@ -1,0 +1,18 @@
+{
+  "version": "0.171.0",
+  "firstModel": "gpt-6.2-astra",
+  "resumedModel": "gpt-6-astra",
+  "effort": "high",
+  "sameThread": true,
+  "turns": [
+    {
+      "status": "completed",
+      "error": null
+    },
+    {
+      "status": "interrupted",
+      "error": null
+    }
+  ],
+  "noReplay": true
+}

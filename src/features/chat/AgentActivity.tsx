@@ -20,7 +20,10 @@ function StreamDiagnostics({ items }: { items?: StreamDiagnostic[] }) {
   </details>
 }
 
+function isComputerActivity(activity:Operation){return /^codex\.(?:cua_repl|computer_use)\./.test(activity.tool) || activity.tool==='codex.mcpToolCall' && /^cua_repl · /.test(activity.label)}
+
 function operationKind(activity: Operation): { label: string; icon: typeof Wrench } {
+  if(isComputerActivity(activity))return {label:'Computer use',icon:Monitor}
   if (activity.subagent || /sub.?agent|spawn_agent|delegate/i.test(activity.tool)) return { label: 'Sub-agent', icon: Bot }
   if (/browser|open_url|navigate|verify_local_app/i.test(activity.tool)) return { label: 'Browser', icon: Globe }
   if (/computer_use|desktop|screenshot|mouse|keyboard/i.test(activity.tool)) return { label: 'Desktop', icon: Monitor }
@@ -202,6 +205,12 @@ function ActivityGroup({ id, progressId, activities, execution, permissionDecisi
   const topLevel = [...new Map(activities.filter((activity) => !activity.parentActivityId).map((activity) => [activity.id, activity])).values()]
   const childrenByParent = new Map<string, Operation[]>()
   for (const activity of new Map(execution.activities.map((activity) => [activity.id, activity])).values()) if (activity.parentActivityId) childrenByParent.set(activity.parentActivityId, [...(childrenByParent.get(activity.parentActivityId) ?? []), activity])
+  const visibleGroups:Operation[][]=[]
+  for(const operation of topLevel.slice(0,visibleCount)){
+    const group=visibleGroups.at(-1)
+    if(group && isComputerActivity(operation) && isComputerActivity(group[0]))group.push(operation)
+    else visibleGroups.push([operation])
+  }
   const allActivities = [...topLevel]
   const includedIds = new Set(allActivities.map((activity) => activity.id))
   for (let index = 0; index < allActivities.length; index++) {
@@ -251,7 +260,10 @@ function ActivityGroup({ id, progressId, activities, execution, permissionDecisi
     </summary>
     {expanded && sessionId && pendingSubagents.length > 0 && <button className="chat-action" disabled={pending} onClick={() => void command({ action: 'cancel-subagent', id: sessionId })}>Cancel sub-agents</button>}
     {expanded && <ol id={detailsId} className="agent-inline-activity-operations" aria-label="Operations in chronological order">
-      {topLevel.slice(0, visibleCount).map((activity) => <li key={activity.id}><ActivityRow activity={activity} children={childrenByParent.get(activity.id)} detailsPrefix={id} sessionId={sessionId} canRevert={canRevert} /></li>)}
+      {visibleGroups.map(group=>{
+        const rows=group.map(activity=><li key={activity.id}><ActivityRow activity={activity} children={childrenByParent.get(activity.id)} detailsPrefix={id} sessionId={sessionId} canRevert={canRevert}/></li>)
+        return isComputerActivity(group[0]) && group.length>1?<li key={group[0].id}><details className="agent-stream-diagnostics"><summary>Computer use · {group.length} operations</summary><ol>{rows}</ol></details></li>:rows
+      })}
       {permissionDecisions?.length ? <li><PermissionDecisionRow decisions={permissionDecisions} id={id} /></li> : null}
       {topLevel.length > visibleCount && <li><button className="chat-action" onClick={() => setVisibleCount((value) => value + 100)}>Show more operations ({topLevel.length - visibleCount} remaining)</button></li>}
     </ol>}
@@ -369,6 +381,13 @@ export function AgentActivity({ execution, executionId }: { execution: AgentExec
     {execution.budgetNotice && <p className="chat-context-notice" role="status">{execution.budgetNotice}</p>}
     {execution.recovery && <p className="chat-context-notice" role="status">{working && execution.recovery.continuing ? 'Continuing task…' : `${execution.recovery.attempts} automatic ${execution.recovery.reason === 'stream_interrupted' ? 'connection recovery' : 'output continuation'}${execution.recovery.attempts === 1 ? '' : 's'}`}{working && execution.recovery.continuing ? ` · attempt ${execution.recovery.attempts}` : ''}</p>}
     {working && execution.streamPhase === 'recovering' && <p className="chat-context-notice" role="status">Reconnecting to ChatGPT from the last checkpoint…</p>}
+    {execution.taskCheckpoint?.control?.status === 'blocked' && <p className="chat-context-notice" role="status">Execution ended with unresolved operations. Review their outcomes before continuing.</p>}
+    {execution.taskCheckpoint?.control?.operations.length ? <details className="agent-stream-diagnostics"><summary>Execution diagnostics</summary>
+      <p>{execution.providerId} · Requested {execution.taskCheckpoint.requestedModel ?? execution.modelId ?? execution.taskCheckpoint.model}{execution.taskCheckpoint.requestedModel && execution.modelId && execution.taskCheckpoint.requestedModel !== execution.modelId && ` · Resolved ${execution.modelId}`} · {execution.taskCheckpoint.effort ?? 'auto'} effort{execution.taskCheckpoint.responseModel && ` · Provider reported ${execution.taskCheckpoint.responseModel}`}</p>
+      <p>Run <code>{execution.taskCheckpoint.taskId}</code></p>
+      <ol>{execution.taskCheckpoint.control.operations.filter(op => !op.runId || op.runId === execution.taskCheckpoint?.taskId).map((op, i) =>
+        <li key={op.id ?? i} title={op.id}><code>{op.tool}</code>{op.risk && ` · ${op.risk}`} · {op.outcome ?? (op.status === 'started' && execution.finishedAt ? 'unconfirmed' : op.status)}{typeof op.exitCode === 'number' && ` · exit ${op.exitCode}`} · {new Date(op.at).toLocaleTimeString()}{op.finishedAt !== undefined && ` · ${((op.finishedAt - op.at) / 1000).toFixed(1)}s`}</li>)}</ol>
+    </details> : null}
     <StreamDiagnostics items={execution.streamDiagnostics} />
     {!!savedLogs.length && <details><summary>Saved Command Log · {savedLogs.length} {savedLogs.length === 1 ? 'command' : 'commands'}</summary>{savedLogs.map((activity) => <details key={activity.id}><summary>{operationLabel(activity)}</summary><pre>{activity.fullOutput}</pre></details>)}</details>}
   </section>

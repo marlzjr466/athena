@@ -22,29 +22,48 @@ export class PlaybackAmplitude {
   private timer?: ReturnType<typeof setInterval>
   private generation = 0
 
+  async setSinkId(sinkId: string): Promise<void> {
+    const generation = this.generation
+    this.onLevel(0)
+    const context = this.context as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | undefined
+    if (!context?.setSinkId) throw new Error('Audio output routing is unavailable.')
+    await context.suspend()
+    if (generation !== this.generation) return
+    await context.setSinkId(sinkId)
+    if (generation === this.generation) await context.resume()
+  }
+
   constructor(private readonly onLevel: (level: number) => void) {}
 
-  start(audio: HTMLAudioElement): void {
+  async prepare(audio: HTMLAudioElement, sinkId: string): Promise<void> {
     this.stop()
-    if (typeof AudioContext === 'undefined') return
-    try {
-      this.context ??= new AudioContext()
-      this.analyser ??= this.context.createAnalyser()
-      this.analyser.fftSize = 512
-      this.samples ??= new Uint8Array(this.analyser.fftSize)
-      this.source = this.context.createMediaElementSource(audio)
-      this.source.connect(this.analyser)
-      this.analyser.connect(this.context.destination)
-      const generation = this.generation
-      void this.context.resume().catch(() => { if (generation === this.generation) this.stop() })
-      this.timer = setInterval(() => {
-        if (generation !== this.generation || !this.analyser || !this.samples) return
-        this.analyser.getByteTimeDomainData(this.samples)
-        this.onLevel(speechLevel(audioRms(this.samples)))
-      }, 40)
-    } catch {
-      this.stop()
-    }
+    const generation = this.generation
+    const check = () => { if (generation !== this.generation) throw new Error('Audio playback was cancelled.') }
+    if (typeof AudioContext === 'undefined') throw new Error('Audio processing is unavailable.')
+    this.context ??= new AudioContext()
+    await this.context.suspend()
+    check()
+    const routable = this.context as AudioContext & { setSinkId?: (id: string) => Promise<void> }
+    if (typeof routable.setSinkId !== 'function') throw new Error('This runtime cannot route Web Audio to the selected speaker.')
+    await routable.setSinkId(sinkId)
+    check()
+    this.analyser ??= this.context.createAnalyser()
+    this.analyser.fftSize = 512
+    this.samples ??= new Uint8Array(this.analyser.fftSize)
+    this.source = this.context.createMediaElementSource(audio)
+    this.source.connect(this.analyser)
+    this.analyser.connect(this.context.destination)
+    await this.context.resume()
+  }
+
+  start(_audio?: HTMLAudioElement): void {
+    const generation = this.generation
+    clearInterval(this.timer)
+    this.timer = setInterval(() => {
+      if (generation !== this.generation || !this.analyser || !this.samples) return
+      this.analyser.getByteTimeDomainData(this.samples)
+      this.onLevel(this.context?.state === 'running' ? speechLevel(audioRms(this.samples)) : 0)
+    }, 40)
   }
 
   stop(): void {

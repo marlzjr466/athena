@@ -3,6 +3,12 @@ import { Bot, Check, ChevronDown, Cloud, Code2, Github, Search, Sparkles, X } fr
 import { accountKey, type ModelSelection, type UnifiedAccountCatalog } from '../../../shared/unifiedAccounts'
 
 interface Props { catalog: UnifiedAccountCatalog; value?: ModelSelection; disabled?: boolean; onChange(selection: ModelSelection): void }
+const modelOnlyLabel = (label: string, provider: string) => {
+  const providerParts = new Set(provider.split(/\s*·\s*/).map(part => part.toLocaleLowerCase()))
+  const labelParts = label.split(/\s*·\s*/)
+  while (labelParts.length > 1 && providerParts.has(labelParts.at(-1)!.toLocaleLowerCase())) labelParts.pop()
+  return labelParts.join(' · ')
+}
 export function UnifiedModelSelect({ catalog, value, disabled, onChange }: Props) {
   const [open, setOpen] = useState(false), [query, setQuery] = useState(''), [highlight, setHighlight] = useState(0)
   const search = useRef<HTMLInputElement>(null), root = useRef<HTMLDivElement>(null)
@@ -32,9 +38,10 @@ export function UnifiedModelSelect({ catalog, value, disabled, onChange }: Props
     if (event.key === 'ArrowUp') { event.preventDefault(); setHighlight(index => Math.max(0, index - 1)) }
     if (event.key === 'Enter' && choices[highlight]) { event.preventDefault(); choose(choices[highlight]) }
   }
+  const selectedLabel = selected ? modelOnlyLabel(selected.model.label, selected.account.name) : undefined
   return <div ref={root} className="unified-model-select" onKeyDown={keyboard}>
-    <button type="button" className="unified-model-trigger" aria-label="Conversation model" aria-expanded={open} aria-haspopup="listbox" disabled={disabled} onClick={() => setOpen(value => !value)}>
-      <span>{selected ? `${selected.model.label} · ${selected.account.name}${selected.account.enabled ? '' : ' · account disabled'}` : value ? 'Selected model unavailable' : 'Choose model'}</span><ChevronDown size={15} />
+    <button type="button" className="unified-model-trigger" aria-label="Conversation model" aria-expanded={open} aria-haspopup="listbox" disabled={disabled} title={selected ? `${selectedLabel} · ${selected.account.name}${selected.account.enabled ? '' : ' · account disabled'}` : undefined} onClick={() => setOpen(value => !value)}>
+      <span>{selected ? `${selectedLabel}${selected.account.enabled ? '' : ' · account disabled'}` : value ? 'Selected model unavailable' : 'Choose model'}</span><ChevronDown size={15} />
     </button>
     {open && <div className="unified-model-menu" role="listbox" aria-label="Models from connected accounts">
       <div className="unified-model-search"><Search size={15} /><input ref={search} aria-label="Search models" placeholder="Search models..." value={query} onChange={event => { setQuery(event.target.value); setHighlight(0) }} />{query && <button type="button" aria-label="Clear model search" onClick={() => { setQuery(''); search.current?.focus() }}><X size={14} /></button>}</div>

@@ -38,7 +38,7 @@ async function exercise(input: 'text' | 'voice', outcome: 'success' | 'declined'
   let requests = 0, observedReceipt = ''
   const request = vi.fn<typeof fetch>(async (_url, init) => {
     const body = JSON.parse(init!.body as string)
-    expect(body.model).toBe('gpt-5.2'); expect(body.reasoning.effort).toBe('medium')
+    expect(body.model).toBe('gpt-5.6-sol'); expect(body.reasoning.effort).toBe('medium')
     if (++requests === 1) {
       expect(body.tools.some((tool: { name: string }) => tool.name === 'open_application')).toBe(true)
       return sse(completed([{ type: 'function_call', name: 'open_application', arguments: JSON.stringify({ app: 'chrome' }), call_id: 'open-chrome', id: 'fc_open', status: 'completed' }]))
@@ -50,7 +50,7 @@ async function exercise(input: 'text' | 'voice', outcome: 'success' | 'declined'
   })
   const chat = new ChatController({ provider: async (config) => new OpenAIProvider('sk-fixture', config.model!, request), prepare: (...args) => context.prepare(...args), changed: () => { voice?.reconcile(); speech?.reconcile() }, phase: (phase) => phases.push(phase) })
   context = new ChatContextService(chat, new AttachmentService('/tmp/athena-phase11-unused', () => false, () => { throw new Error('unused') }), new WorkspaceService(() => false), { files: async () => [], folder: async () => undefined }, () => false, undefined, undefined, actions)
-  chat.command({ action: 'configure', id: chat.current().id, config: { provider: 'OpenAI', model: 'gpt-5.2', effort: 'medium', agentMode: 'ask' } })
+  chat.command({ action: 'configure', id: chat.current().id, config: { provider: 'OpenAI', model: 'gpt-5.6-sol', effort: 'medium', agentMode: 'ask' } })
   const transcribe = vi.fn(async () => 'Open Chrome.')
   voice = new VoiceController({ transcribe }, {
     context: () => ({ sessionId: chat.current().id, idle: chat.snapshot().phase === 'idle', fingerprint: JSON.stringify(chat.current().config) }),
@@ -76,7 +76,7 @@ async function exercise(input: 'text' | 'voice', outcome: 'success' | 'declined'
     }
     expect(chat.send({ text, sessionId, requestId: randomUUID() }).ok).toBe(true)
     const approval = () => chat.snapshot().messages.at(-1)?.execution?.approval
-    await vi.waitFor(() => expect(approval()).toBeDefined())
+    await vi.waitFor(() => expect(approval(), chat.current().messages.at(-1)?.error).toBeDefined())
     const pending = chat.current().messages.at(-1)!, started = pending.execution!.startedAt
     expect(platform.openApplication).not.toHaveBeenCalled()
     expect((await speech.begin({ sessionId, messageId: pending.id })).ok).toBe(false)

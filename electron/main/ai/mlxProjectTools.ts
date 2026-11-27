@@ -19,7 +19,7 @@ export function guardProjectTools(base: ProjectTools): ProjectTools {
   const clearReads = () => { evidence.clear(); for (const key of attempts.keys()) if (reads.has(key.split(':', 1)[0])) attempts.delete(key) }
   return { ...base, [LOCAL_TOOL_GUARD]: true,
     invalidate: () => { clearReads(); base.invalidate?.() },
-    continuation: () => { clearReads(); base.continuation?.() },
+    continuation: files => { clearReads(); base.continuation?.(files) },
     async execute(name, input, signal) {
       signal.throwIfAborted(); base.assertAccess()
       const key = name + ':' + JSON.stringify(canonical(input)), count = (attempts.get(key) ?? 0) + 1

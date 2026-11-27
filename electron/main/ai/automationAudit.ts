@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
+import { redactOutput } from './agentCommands'
+
+export function safeAutomationDiagnostic(message:string):string {
+  return redactOutput(message)
+    .replace(/https?:\/\/[^\s]+/gi,'[address]')
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi,'[account]')
+    .replace(/[“"].*?[”"]/g,'[label]')
+    .replace(/(?:\/Users\/|[A-Z]:\\Users\\)[^\s]+/g,'[local path]').slice(0,1000)
+}
 
 const auditEntrySchema = z.object({
   id: z.string().uuid(),
@@ -10,6 +19,7 @@ const auditEntrySchema = z.object({
   permission: z.string().max(80),
   status: z.enum(['started', 'completed', 'failed', 'denied', 'cancelled']),
   durationMs: z.number().int().nonnegative().optional(),
+  diagnostics:z.record(z.string().max(60),z.string().max(1000)).optional(),
 }).strict()
 const auditFileSchema = z.object({ version: z.literal(1), entries: z.array(auditEntrySchema).max(2000) }).strict()
 export type AutomationAuditEntry = z.infer<typeof auditEntrySchema>
@@ -18,6 +28,17 @@ export type AutomationAuditEntry = z.infer<typeof auditEntrySchema>
 export class AutomationAuditLog {
   private queue: Promise<void> = Promise.resolve()
   constructor(private directory: string) {}
+
+  async recent() {
+    await this.queue
+    try {
+      const data=auditFileSchema.parse(JSON.parse(await readFile(join(this.directory,'audit.json'),'utf8')))
+      return data.entries.slice(-30).reverse()
+    } catch(error) {
+      if ((error as NodeJS.ErrnoException).code==='ENOENT') return []
+      throw new Error('Automation history is unreadable.')
+    }
+  }
 
   record(entry: Omit<AutomationAuditEntry, 'id' | 'createdAt'>): Promise<void> {
     const validated = auditEntrySchema.parse({ ...entry, id: randomUUID(), createdAt: new Date().toISOString() })

@@ -114,6 +114,14 @@ export class SubagentCoordinator {
     let request = subagentRequestSchema.parse(input)
     const existing = [...this.workers.values()].find((worker) => worker.run.request.taskKey === request.taskKey)
     if (existing) return this.view(existing)
+    const ancestors = new Set<string>()
+    let parentId = this.parent?.execution?.taskCheckpoint?.parentTaskId
+    while (parentId && !ancestors.has(parentId)) {
+      ancestors.add(parentId)
+      parentId = this.session.messages.find(message => message.id === parentId)?.execution?.taskCheckpoint?.parentTaskId
+    }
+    const retained = ancestors.size && this.chat.subagentRecords(this.session.id).findLast(({ run }) => ancestors.has(run.parentExecutionId) && run.request.taskKey === request.taskKey)
+    if (retained) return { id: retained.run.id, status: retained.run.status, instruction: 'This task already has this child assignment. Use resume_subagent with this id to validate its saved state.' }
     if (this.workers.size >= 12) throw new ChatError('This execution has reached its 12-sub-agent limit. Use existing results.')
     const gate = request.gateId ? this.requirements.find((entry) => entry.id === request.gateId) : undefined
     if (request.gateId && !gate) throw new ChatError('Unknown workflow review gate. Use the declared gate ID.')
@@ -350,6 +358,7 @@ export class SubagentCoordinator {
   tools(base: ProjectTools): ProjectTools {
     const managed: ProjectTools = {
       policy: `Real isolated sub-agents are available. Use spawn_subagent with a stable taskKey, explicit files and criteria; choose cold_read for independent review, never pass parent history to it. Spawn independent read-only tasks before wait_subagents to run them concurrently. Always await results and reconcile each required review using reconcile_subagent. Discuss agreement/disagreement and remaining blockers; do not accept findings blindly. Required gates: ${JSON.stringify(this.requirements)}. Maximum concurrency ${this.settings.maxConcurrent}. Child budgets are separate; API cost is shared with the parent cap. Token allocation: inherit Settings (${this.settings.tokenBudget} total input+output tokens across all requests, ${this.settings.contextTokens} per-request context) by OMITTING tokenBudget and contextTokens. Do not invent lower token caps unless the task explicitly requires a reduced allocation. A supplied cap lowers the entire child lifetime budget, not just response length. Check the returned effective budget. Exhaustion does not authorize bypassing a review gate or automatically raising a cap.`,
+      operationRisk: name => ['get_subagent', 'wait_subagents'].includes(name) ? 'read-only' : name === 'spawn_subagent' ? 'idempotent' : 'unknown',
       definitions: [
         definition('spawn_subagent', 'Start a real isolated worker. Returns its stable id; use wait_subagents for results. Cold Read receives only task, criteria, project identity and explicit files. Reusing taskKey returns the existing worker.', subagentRequestSchema),
         definition('wait_subagents', 'Wait for one or more child results, preserving other running workers. Results are structured evidence; the parent must reconcile findings before accepting a required gate.', waitSchema),

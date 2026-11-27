@@ -1,4 +1,7 @@
 .task-holograms { position: absolute; inset: 0; z-index: 2; overflow: hidden; pointer-events: none; }
+.floating-automation-stop { position: absolute; z-index: 6; bottom: 4px; left: 50%; transform: translateX(-50%); padding: 5px 10px; border: 1px solid #73d0e366; border-radius: 12px; background: #10212eef; color: #b2effa; font-size: 11px; cursor: pointer; pointer-events: auto; }
+.floating-automation-stop:hover { background: #183848; }
+.floating-automation-stop:focus-visible { outline: 2px solid #81d4e4; outline-offset: 2px; }
 .task-holo-orbit { position: absolute; width: 46px; height: 18px; border: 1px solid #58ebffb3; border-radius: 50%; opacity: 0; transform: translate(-50%, -50%); }
 .task-holograms-completed .task-holo-orbit { animation: holo-ring 1300ms ease-out both; border-color: #91ffd0; }
 .task-holograms-failed .task-holo-orbit { animation: holo-ring 1300ms ease-out both; border-color: #ffb175; }

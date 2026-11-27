@@ -22,7 +22,7 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
 
 describe('speech from completed replies', () => {
   it('routes incremental local audio in order, consumes text once, and closes on interruption', async () => {
-    const settings = structuredClone(defaultSettings); settings.voiceEnabled = true; settings.localVoice.engine = 'sesame-csm'
+    const settings = structuredClone(defaultSettings); settings.voiceEnabled = true; settings.localVoice.engine = 'chatterbox-turbo'
     const generated: string[] = [], closed = vi.fn()
     const stream = vi.fn(async function* (text: string) { generated.push(text); try { yield new Uint8Array([1]); yield new Uint8Array([2]) } finally { closed() } })
     const context = { sessionId, idle: true, lastMessage: { ...assistant } }
@@ -36,7 +36,7 @@ describe('speech from completed replies', () => {
     expect(stream.mock.calls[0]).toHaveLength(5)
     controller.dispose()
   })
-  it('waits for an intact thought with CSM rather than marking a first-word request spoken', () => {
+  it('waits for an intact thought with local speech rather than marking a first-word request spoken', () => {
     expect(nextStreamSpeechPart('Hello from', 0, false, true)).toBeUndefined()
     expect(nextStreamSpeechPart('Hello from Athena.', 0, false, true)?.text).toBe('Hello from Athena.')
     expect(nextStreamSpeechPart('Hello from', 0, true, true)?.text).toBe('Hello from')

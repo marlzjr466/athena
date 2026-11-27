@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-24",
+  "scope": "Shared permission-controlled macOS command runner; no provider, account or project permission changes.",
+  "confirmed_causes": [
+    "Saved pip failure occurred in _create_truststore_ssl_context -> load_verify_locations(certifi.where()), before a database connection.",
+    "The blanket .pem read denial included the installed public CA bundle. Homebrew follows cacert.pem through its Cellar to /opt/homebrew/etc/ca-certificates/cert.pem.",
+    "Once certificate reads worked, a live public-index test showed that external-network permission omitted native DNS service access.",
+    "After DNS worked, native certificate evaluation failed with OSStatus -26276 until the approved network profile could reach com.apple.trustd and com.apple.trustd.agent."
+  ],
+  "changes": [
+    "Discover public certificate bundles from supported installation paths and isolated standard-library Python metadata. No project Python imports or inherited credential environment.",
+    "Validate bounded X.509 certificate-only PEM contents and every trusted symlink target. Grant exact read paths only. Reject user/project lookalikes and preserve private-key and keychain denials.",
+    "Permit DNS and native trust evaluation only when an existing external-network or loopback/local-server authorization applies.",
+    "Return structured certificate initialization vs TLS verification diagnostics. Shared tool guidance no longer recommends broader filesystem permissions or disabling TLS for protected certificate reads."
+  ],
+  "verification": {
+    "before": "Actual sandbox test reproduced the same PermissionError without installation or network access.",
+    "after": "Installed pip trust-store initialization succeeds and retains CERT_REQUIRED.",
+    "real_https": "pip index versions pg8000 against https://pypi.org/simple succeeded inside the actual sandbox; no package installation.",
+    "local_tls": "A disposable HTTPS fixture rejected an untrusted certificate and accepted a test leaf certificate only with its explicitly supplied CA. The test did not modify system trust.",
+    "restrictions": "Private PEMs, project PEMs, symlink escapes, writes to the public bundle, and offline network requests remain denied.",
+    "focused_tests": "53 passed, 2 optional tests skipped across command, permission, project-write and Full Access suites.",
+    "agent_regressions": "67 passed, 1 optional test skipped across agent tools and replay protection.",
+    "optional_legacy_failure": "An additional ATHENA_SANDBOX_TEST Git-commit fixture fails because it externally pre-stages files, while the pre-existing HEAD implementation requires staging by the current execution. This restriction and test were not changed.",
+    "build": "TypeScript check and production build passed; existing bundle-size warnings only.",
+    "diff_check": "Passed",
+    "package": "macOS ARM64 package succeeded; app and four helpers signed and verified with the persistent local certificate. Packaged main-process code contains the new policy and diagnostics. Apple notarization was unavailable without deployment credentials.",
+    "restart": "Verified normal Athena restarted from PID 38529 to 69140. Companion ready and saved conversations visible. No other applications were stopped."
+  },
+  "changed_files": [
+    "electron/main/ai/commandCertificates.ts",
+    "electron/main/ai/agentCommands.ts",
+    "electron/main/ai/agentTools.ts",
+    "tests/commandCertificates.test.ts",
+    "docs/command-certificate-validation.json"
+  ],
+  "not_performed": [
+    "Original dependency installation was not retried.",
+    "No live database access or credential use.",
+    "No changes to user permissions, TLS verification, project files, Git state or provider selection.",
+    "No Windows live test; the existing command sandbox is macOS-specific."
+  ],
+  "references": [
+    "https://pip.pypa.io/en/stable/topics/https-certificates/",
+    "/System/Library/Sandbox/Profiles/system.sb",
+    "/System/Library/Sandbox/Profiles/com.apple.audio.AudioConverterService.Hardened.sb"
+  ],
+  "commands": [
+    "ATHENA_SANDBOX_TEST=1 ATHENA_PIP_INDEX_TEST=1 npm test -- --run tests/commandCertificates.test.ts tests/agentCommands.test.ts tests/sandboxCommandPermission.test.ts tests/projectCommandWrites.test.ts tests/fullAccess.test.ts",
+    "npm test -- --run tests/agentTools.test.ts tests/operationReplay.test.ts",
+    "npm run build",
+    "npm run typecheck",
+    "npx electron-builder --mac --dir",
+    "git diff --check"
+  ]
+}

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { z } from 'zod'
@@ -60,13 +60,13 @@ export class AgentEdits {
       if (versionOf(current.text) !== edit.expected) throw new ChatError(`File version changed: ${edit.path}. Read it again before editing.`)
       if (current.text === edit.content) continue
       const record: Record = { id: randomUUID(), session, workspace, path: edit.path, kind: 'file', before: current.text, after: edit.content, mode: current.mode, status: 'proposed' }
-      prepared.push({ record, target, preview: { id: record.id, path: edit.path, diff: fileDiff(edit.path, current.text, edit.content), status: 'proposed' } })
+      prepared.push({ record, target, preview: { id: record.id, path: edit.path, beforeHash: edit.expected ?? undefined, afterHash: versionOf(edit.content) ?? undefined, diff: fileDiff(edit.path, current.text, edit.content), status: 'proposed' } })
     }
     return prepared
   }
   async contents(workspace: string, path: string, expected: string): Promise<string> {
     const current = this.snapshot(await this.workspaces.editTarget(workspace, path))
-    if (current.text === null || versionOf(current.text) !== expected) throw new ChatError('File changed; read_file again and use its version.')
+    if (current.text === null || versionOf(current.text) !== expected) throw new ChatError(`File ${current.text === null ? 'missing since the prior observation' : 'changed'}: ${path}. Read the current target before editing.`)
     return current.text
   }
   private directoryContents(target: PreparedEdit['target']): string | null {
@@ -157,15 +157,16 @@ export class AgentEdits {
     } else this.replace(target, versionOf(before), after, record.mode)
   }
   private replace(target: PreparedEdit['target'], expected: string | null, next: string | null, mode: number): void {
-    if (versionOf(this.snapshot(target).text) !== expected) throw new ChatError('External modification detected. Nothing was overwritten.')
+    if (versionOf(this.snapshot(target).text) !== expected) throw new ChatError(`External modification: file changed at ${relative(target.root, target.absolute)}. Nothing was overwritten.`)
     if (next === null) { this.verify(target); unlinkSync(target.absolute); return }
     const temporary = join(dirname(target.absolute), `.athena-${randomUUID()}.tmp`)
     const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode)
     try { writeFileSync(fd, next); fsyncSync(fd) } finally { closeSync(fd) }
     try {
       this.verify(target)
-      if (versionOf(this.snapshot(target).text) !== expected) throw new ChatError('File changed before applying the edit.')
-      renameSync(temporary, target.absolute)
+      if (versionOf(this.snapshot(target).text) !== expected) throw new ChatError(`File changed before applying the edit: ${relative(target.root, target.absolute)}.`)
+      if (expected === null) linkSync(temporary, target.absolute) // Atomic create-if-absent, even against another process.
+      else renameSync(temporary, target.absolute)
     } finally { if (existsSync(temporary)) unlinkSync(temporary) }
   }
   async apply(prepared: PreparedEdit[], signal: AbortSignal): Promise<ChangePreview[]> {

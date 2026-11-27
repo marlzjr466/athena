@@ -117,12 +117,13 @@ export class ToolCallSession {
       this.checkAccess()
       result = await this.tools.execute(call.name, args, this.signal)
     } catch (error) {
+      if (receipt) this.control?.operationFinished(receipt, failure('execution_failed', this.signal.aborted ? 'Cancelled' : error instanceof ChatError ? error.userMessage : 'Unverified result'))
       this.checkAccess()
       if (error instanceof ChatError) { log('automation.tool_dispatch', { stage: 'handler-failed', toolName: call.name, classification: /permission|denied|not approved/i.test(error.userMessage) ? 'permission-denied' : 'action-error' }); throw error }
       result = failure('execution_failed', 'The tool failed without a confirmed result. Do not claim success or blindly repeat an action that may have taken effect.')
     }
-    this.checkAccess()
     if (receipt) this.control?.operationFinished(receipt, result)
+    this.checkAccess()
     return finish(result)
   }
 }

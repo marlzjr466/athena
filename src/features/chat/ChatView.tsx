@@ -1,5 +1,7 @@
+import { ComposerActions } from './ComposerActions'
+import { mediaIntent } from '../../../shared/mediaGeneration'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, Code2, FolderOpen, Lightbulb, PanelRight, Paperclip, RefreshCw, Sparkles, Square, VolumeX } from 'lucide-react'
+import { ImagePlus, Film, Mic, X, ArrowDown, ArrowUp, Code2, FolderOpen, Lightbulb, PanelRight, Paperclip, RefreshCw, Sparkles, Square, VolumeX } from 'lucide-react'
 import { connectChat, useChat } from '../../store/chatStore'
 import { useAthena } from '../../store/athenaStore'
 import { desktop, isDesktop } from '../../services/desktop'
@@ -8,6 +10,7 @@ import { voiceControlIntent } from '../../../shared/voiceIntent'
 import { emptyAIStatus } from '../../../shared/ai'
 import type { UnifiedAccountCatalog } from '../../../shared/unifiedAccounts'
 import { ChatMessage } from './ChatMessage'
+import { ApplicationAutomationProgress } from './ApplicationAutomationProgress'
 import { clipboardHtmlToMarkdown } from './richPaste'
 import { ConversationSidebar } from './ConversationSidebar'
 import { ConversationControls } from './ConversationControls'
@@ -66,7 +69,17 @@ export function ChatView() {
   const openAIModels = snapshot.config?.accountRoute ? routedAccount?.models.map(entry => entry.id) : config.models
   const unavailableOpenAIAPIModel = Boolean(openAIAPI && model && openAIModels && !isAvailableOpenAIAPIGptModel(model, openAIModels))
   const configured = snapshot.config?.accountRoute ? routedAccount?.enabled === true && (routedAccount.state === 'connected' || routedAccount.state === 'limited') && routedModel?.available === true && !unavailableOpenAIAPIModel : !selectionRequired && config.active && !unavailableAntigravityModel && !unavailableOpenAIAPIModel && Boolean(config.provider === 'ChatGPT Subscription' ? config.model : model)
-  const available = configured && online
+  const latestMedia = snapshot.messages.flatMap(m => m.artifacts ?? []).at(-1)
+  const previousMedia = snapshot.attachments?.some(a => a.kind === 'image') ? 'image' : latestMedia?.mimeType.startsWith('video/') ? 'video' : latestMedia?.mimeType.startsWith('image/') ? 'image' : undefined
+  const [voiceActivation, setVoiceActivation] = useState(0)
+  const mediaMode = snapshot.config?.mediaMode
+  const mediaRequest = mediaMode || mediaIntent(input, previousMedia)
+  const setMediaMode = async (mode: 'image' | 'video' | null) => {
+    if (!snapshot.sessionId) return
+    try { const r = await desktop.mediaGeneration({action:'compose',sessionId:snapshot.sessionId,mode}); if ('ok' in r && !r.ok) setContextIssue(r.message ?? 'Could not change generation mode.') } catch { setContextIssue('Could not change generation mode.') }
+    setSelectedSlash(null); setSlashOpen(false); composer.current?.focus()
+  }
+  const available = configured && online || !!mediaRequest
   const sessionRef = useRef(snapshot.sessionId)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const unsavedDraft = useRef<{ id: string; text: string } | undefined>(undefined)
@@ -308,6 +321,15 @@ export function ChatView() {
       if (follow.current) scrollToLatest()
     })
   }, [scrollKey, snapshot.sessionId])
+  useLayoutEffect(() => {
+    if (!snapshot.mediaFocus) return
+    const target=document.getElementById('chat-message-'+snapshot.mediaFocus.messageId)
+    if (target) {
+      cancelAutoScroll()
+      follow.current=false
+      target.scrollIntoView({block:'center'})
+    }
+  }, [snapshot.mediaFocus?.requestedAt, snapshot.sessionId])
   useEffect(() => {
     const element = transcript.current
     if (!element) return
@@ -360,8 +382,12 @@ export function ChatView() {
   }
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if(busy && snapshot.messages.some(m=>m.status==='streaming' && m.execution?.providerId==='codex-subscription') && input.trim() && snapshot.sessionId) {
+      const result=await desktop.codexCommand({action:'steer',sessionId:snapshot.sessionId,text:input.trim()})
+      if(result.ok)changeInput('');else setSlashNotice(result.message??'Could not send follow-up.');return
+    }
     if ((!input.trim() && !hasAttachments) || busy || voiceActive || pending || uploading || !available) return
-    const resolution = input.trim() ? resolveSlashCommand(input, slashCatalog.commands) : undefined
+    const resolution = !mediaMode && input.trim() ? resolveSlashCommand(input, slashCatalog.commands) : undefined
     if (resolution?.status === 'unknown') { setSelectedSlash(null); setSlashOpen(false); setSlashNotice(`${resolution.parsed.name} is not registered in this conversation. Refresh project commands or send it as ordinary text without a leading slash.`); return }
     if (resolution?.status === 'ambiguous' && !resolution.matches.some(entry => entry.id === selectedSlash?.id)) { setSlashText(resolution.parsed.name); setSlashIndex(0); setSlashOpen(true); setSlashNotice(`Choose which ${resolution.parsed.name} definition to use.`); return }
     const resolved = selectedSlash && resolution?.matches.some(entry => entry.id === selectedSlash.id) ? selectedSlash : resolution?.matches[0]
@@ -489,6 +515,7 @@ export function ChatView() {
       {snapshot.voiceSearchPreview && <div><p className="chat-message-note">Voice search result · temporary, not saved to this chat</p><ChatMessage message={snapshot.voiceSearchPreview} sessionId={snapshot.sessionId} canRetry={false} retryDisabled onRetry={() => {}} /></div>}
     </div>{showLatest && <button className="chat-jump" aria-label="Jump to latest message" title="Jump to latest message" onClick={scrollToLatest}><ArrowDown size={17} /></button>}</div>
     <div className="chat-composer-shell">
+      {snapshot.automationProgress?.engine && <ApplicationAutomationProgress progress={snapshot.automationProgress}/>}
       {snapshot.sessionId && <HeldPermissionPrompt messages={snapshot.messages} sessionId={snapshot.sessionId} phase={snapshot.phase} decide={(approvalId, allow, remember) => command({ action: 'agent-approval', id: snapshot.sessionId!, approvalId, allow, remember })} />}
       {slashOpen && !selectedSlash && <div className="chat-slash-menu" role="listbox" id="athena-slash-list" aria-label="Slash command suggestions">
         <div className="chat-slash-menu-heading"><span>Commands</span><button type="button" className="chat-action" aria-label="Refresh commands" onMouseDown={(event) => event.preventDefault()} onClick={() => void refreshSlash()}><RefreshCw size={13} /> Refresh</button></div>
@@ -496,13 +523,14 @@ export function ChatView() {
         <button type="button" className="chat-slash-global" onMouseDown={(event) => event.preventDefault()} onClick={() => void refreshSlash(slashCatalog.globalEnabled ? 'revoke-global' : 'authorize-global')}>{slashCatalog.globalEnabled ? 'Stop including global commands' : 'Include global Claude/Codex commands…'}</button>
       </div>}
     <form className="ai-chat-composer" onSubmit={submit}>
+      {mediaMode && <div className="composer-mode"><span className="chat-command-chip">{mediaMode === 'image' ? <ImagePlus size={14}/> : <Film size={14}/>}Create {mediaMode}<button type="button" className="chat-action" aria-label="Remove generation mode" onClick={() => void setMediaMode(null)}><X size={13}/></button></span>{snapshot.config?.mediaParentId && <small>Using selected media reference</small>}</div>}
       {!!snapshot.attachments?.length && snapshot.sessionId && <AttachmentCards sessionId={snapshot.sessionId} attachments={snapshot.attachments} restoreText={restoreTextAttachment} remove={(id) => void contextRequest({ action: 'remove', sessionId: snapshot.sessionId!, id })} />}
       {contextIssue && <div className="chat-context-notice" role="status">{contextIssue}<button className="chat-action" onClick={() => useAthena.getState().setPage('privacy')}>Privacy settings</button><button className="chat-action" aria-label="Dismiss file notice" onClick={() => setContextIssue('')}>×</button></div>}
       {issue && <p className="chat-context-notice" role="status">{issue}</p>}
       {config.provider === 'Cursor Subscription' && snapshot.cursorModelNotice && <p className="chat-message-note" role="status">{snapshot.cursorModelNotice}</p>}
       {slashNotice && <p className="chat-message-note chat-slash-notice" role="status">{slashNotice}</p>}
       <div className="chat-command-input" role="combobox" aria-label="Slash command suggestions" aria-haspopup="listbox" aria-expanded={slashOpen && !selectedSlash} aria-controls={slashOpen && !selectedSlash ? 'athena-slash-list' : undefined} aria-activedescendant={slashOpen && !selectedSlash && suggestions.length ? `athena-slash-option-${Math.min(slashIndex, suggestions.length - 1)}` : undefined}>{selectedSlash && <span className="chat-command-chip" title={selectedSlash.source}>{selectedSlash.name}</span>}
-      <textarea ref={composer} aria-label="Message Athena" aria-autocomplete="list" placeholder={selectedSlash ? 'Add arguments…' : 'Ask Athena...'} rows={1} maxLength={MAX_DRAFT_LENGTH} value={selectedSlash ? (commandAtStart(input)?.arguments ?? input) : input} disabled={loading || !available || !isDesktop} onFocus={(event) => { const query = selectedSlash ? null : slashQuery(input, event.currentTarget.selectionStart); if (query) { setSlashText(query); setSlashIndex(0); setSlashOpen(true); void refreshSlash() } }} onPaste={(event) => {
+      <textarea ref={composer} aria-label="Message Athena" aria-autocomplete="list" placeholder={mediaMode ? `Describe the ${mediaMode} you want to create...` : selectedSlash ? 'Add arguments…' : 'Ask Athena...'} rows={1} maxLength={MAX_DRAFT_LENGTH} value={selectedSlash ? (commandAtStart(input)?.arguments ?? input) : input} disabled={loading || !isDesktop} onFocus={(event) => { const query = selectedSlash ? null : slashQuery(input, event.currentTarget.selectionStart); if (query) { setSlashText(query); setSlashIndex(0); setSlashOpen(true); void refreshSlash() } }} onPaste={(event) => {
         const plain = event.clipboardData.getData('text/plain')
         const formatted = clipboardHtmlToMarkdown(event.clipboardData.getData('text/html'))
         const pasted = plain || formatted
@@ -562,7 +590,13 @@ export function ChatView() {
         }
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit() }
       }} /></div>
-      <div className="chat-composer-toolbar"><div className="chat-composer-tools"><button type="button" className="chat-action" aria-label="Attach files or images" title="Attach files or images (20 MB each)" disabled={busy || voiceActive || uploading || !snapshot.sessionId} onClick={() => void contextRequest({ action: 'pick-files', sessionId: snapshot.sessionId! })}><Paperclip size={17} /></button><button type="button" className="chat-action" aria-label="Connect project folder" title="Authorize a local project; changes follow the selected permission mode" disabled={busy || voiceActive || uploading || !snapshot.sessionId} onClick={() => void contextRequest({ action: 'connect', sessionId: snapshot.sessionId! }).then((ok) => { if (ok) setProjectBrowser(true) })}><FolderOpen size={17} /></button><PushToTalk sessionId={snapshot.sessionId} toggle disabled={busy || pending || uploading || loading || !available || !isDesktop} onActive={setVoiceActive} onTranscript={(text, id) => {
+      <div className="chat-composer-toolbar"><div className="chat-composer-tools"><ComposerActions key={snapshot.sessionId} disabled={!snapshot.sessionId || !isDesktop} actions={[
+        {label:'Add photos and files',icon:<Paperclip size={16}/>,disabled:busy || voiceActive || uploading,run:() => void contextRequest({ action: 'pick-files', sessionId: snapshot.sessionId! })},
+        {label:'Attach project folder',icon:<FolderOpen size={16}/>,disabled:busy || voiceActive || uploading,run:() => void contextRequest({ action: 'connect', sessionId: snapshot.sessionId! }).then(ok => { if(ok) setProjectBrowser(true) })},
+        {label:voiceActive ? 'Finish voice message' : 'Voice input',icon:<Mic size={16}/>,disabled:busy || pending || uploading || loading || !available,run:() => setVoiceActivation(v => v+1)},
+        {label:'Create image',icon:<ImagePlus size={16}/>,selected:mediaMode==='image',disabled:busy || pending,run:() => void setMediaMode('image')},
+        {label:'Create video',icon:<Film size={16}/>,selected:mediaMode==='video',disabled:busy || pending,run:() => void setMediaMode('video')},
+      ]}/><PushToTalk hideIdleTrigger activation={voiceActivation} sessionId={snapshot.sessionId} toggle disabled={busy || pending || uploading || loading || !available || !isDesktop} onActive={setVoiceActive} onTranscript={(text, id) => {
         receiveTranscript(text, id)
       }} /></div><ConversationControls config={config} catalog={catalog} />{speechStatus.phase !== 'idle' && <button type="button" className="chat-action" aria-label="Stop speaking" title="Stop speaking" onClick={stopSpeaking}><VolumeX size={14} /></button>}{busy ? <button type="button" className="chat-send" aria-label="Stop generation" title="Stop generation" disabled={pending} onClick={() => void stop()}><Square size={16} fill="currentColor" /></button> : <button className="chat-send" type="submit" aria-label="Send message" title={hasAttachments && !input.trim() ? 'Send attached content' : 'Send message'} disabled={voiceActive || pending || uploading || loading || !available || (!input.trim() && !hasAttachments)}><ArrowUp size={19} /></button>}</div>
     </form></div>

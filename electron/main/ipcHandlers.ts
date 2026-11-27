@@ -1,10 +1,22 @@
+import { automationControlSchema } from '../../shared/applicationAutomation'
+import { combineTools } from './ai/applicationTools'
+import { randomUUID as voiceRequestId } from 'node:crypto'
+import { VoiceMemory } from './voice/voiceMemory'
+import { LiveVoiceService } from './voice/liveVoice'
+import type { CodexVoiceAutomation } from './ai/codexVoiceAutomation'
+import { resolveVoiceActionPlan } from './ai/voiceActionPlan'
+import { liveCommandSchema } from '../../shared/liveVoice'
+import { mediaCommandSchema } from '../../shared/mediaGeneration'
+import { MediaFailure, mediaMime } from './media/protocols'
+import type { AudioDeviceService } from './voice/audioDeviceService'
+import { audioDeviceCommandSchema } from '../../shared/audioDevices'
 import { copilotCommandSchema } from '../../shared/copilot'
 import type { CopilotService } from './ai/copilotService'
 import type { AntigravityACPService, AntigravityGeneralWorkspace } from './ai/antigravityACP'
 import { antigravityCommandSchema } from '../../shared/antigravity'
-import { app, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
-import { stat, writeFile } from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { app, clipboard, dialog, ipcMain, net, safeStorage, shell, type IpcMainInvokeEvent } from 'electron'
+import { open as openMediaFile, stat, writeFile } from 'node:fs/promises'
+import { constants as fileFlags, existsSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
 import { VROID_ACTION_IDS } from '../../shared/vroidActions'
@@ -31,10 +43,6 @@ import { localEngineReport } from './ai/engineSupportRuntime'
 import { isLlamaValidation, llamaLongGguf, llamaLongMetadata } from '../../shared/llamaLongContext'
 import { localVoicePreviewSchema, VOICE_PREVIEW_TEXT } from '../../shared/localVoice'
 import type { SpeechService } from './voice/speechService'
-import type { OfficialCSM } from './voice/officialCSM'
-import { officialCSMCommandSchema } from '../../shared/officialCSM'
-import type { HiggsTTS } from './voice/higgsTTS'
-import { higgsCommandSchema } from '../../shared/higgsTTS'
 import { emptyVoiceEngines } from '../../shared/localVoice'
 import type { ChatGPTAuth } from './ai/chatGPTAuth'
 import type { HandsFreeController } from './voice/handsFreeController'
@@ -75,7 +83,7 @@ type CachedLocalVoice = SpeechService & {
   generateCached?: (text: string, voice: Parameters<SpeechService['generate']>[1], speed: number, signal: AbortSignal, cacheKey: string, contextKey?: string) => Promise<{ bytes: Uint8Array; cached: boolean }>
 }
 
-export function registerIPC(controller: AthenaController, ai: AIConfiguration, chat: ChatController, permissions: PermissionService, context?: ChatContextService, voice?: VoiceController, speech?: SpeechController, applications?: ApplicationDetectionController, ollama?: OllamaService, localVoice?: CachedLocalVoice & { dispose?(): void }, chatGPT?: ChatGPTAuth, handsFree?: HandsFreeController, desktopActions?: DesktopTools, claudeAPI?: ClaudeAPIConfiguration, cursorACP?: CursorACPService, slashCommands?: SlashCommandService, webSearch?: WebSearchService, codexCLI?: CodexCLIService, companion?: CompanionConversation, athenaChat?: AthenaChatRuntime, academy?: AcademyService, academyIntegrations?: AcademyIntegrations, academyStudio?: AcademyStudio, localTranscription?: LocalWhisperTranscription, academyTraining?: AcademyTraining, officialCSM?: OfficialCSM, higgsTTS?: HiggsTTS, copilot?: CopilotService, antigravityACP?: AntigravityACPService, antigravityGeneralWorkspace?: AntigravityGeneralWorkspace, thirdParty?: ThirdPartyInferenceService, unifiedAccounts?: UnifiedAccounts, providerUsage?: ProviderUsageService): void {
+export function registerIPC(controller: AthenaController, ai: AIConfiguration, chat: ChatController, permissions: PermissionService, context?: ChatContextService, voice?: VoiceController, speech?: SpeechController, applications?: ApplicationDetectionController, ollama?: OllamaService, localVoice?: CachedLocalVoice & { dispose?(): void }, chatGPT?: ChatGPTAuth, handsFree?: HandsFreeController, desktopActions?: DesktopTools, claudeAPI?: ClaudeAPIConfiguration, cursorACP?: CursorACPService, slashCommands?: SlashCommandService, webSearch?: WebSearchService, codexCLI?: CodexCLIService, companion?: CompanionConversation, athenaChat?: AthenaChatRuntime, academy?: AcademyService, academyIntegrations?: AcademyIntegrations, academyStudio?: AcademyStudio, localTranscription?: LocalWhisperTranscription, academyTraining?: AcademyTraining, copilot?: CopilotService, antigravityACP?: AntigravityACPService, antigravityGeneralWorkspace?: AntigravityGeneralWorkspace, thirdParty?: ThirdPartyInferenceService, unifiedAccounts?: UnifiedAccounts, providerUsage?: ProviderUsageService, audioDevices?: AudioDeviceService, computerUseCheck?: (action:import('../../shared/applicationAutomation').AutomationControl)=>Promise<import('../../shared/automation').ComputerUseStatus>, codexVoice?: CodexVoiceAutomation): () => Promise<void> {
   const accountChanged = async <T,>(operation: Promise<T> | T): Promise<T> => { const result = await operation; unifiedAccounts?.invalidate(); return result }
   controller.windows.control.webContents.on('render-process-gone', () => controller.avatarModels.interrupt())
   controller.windows.control.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) controller.avatarModels.interrupt() })
@@ -107,6 +115,87 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       }
     })
   }
+  const liveVoice = new LiveVoiceService(join(app.getPath('userData'), 'live-voice-usage.json'),
+    () => controller.settings.liveVoice, () => ai.mediaCredential(), () => ai.usageAccountId(),
+    (owner, mode) => {
+      const settings = controller.settings
+      if (settings.strictOffline || !settings.voiceEnabled || settings.voiceMuted || settings.doNotDisturb || audioDevices?.snapshot().outputHeld) return false
+      if (mode === 'floating') return settings.liveVoice.engine === 'live' && settings.liveVoice.cloudAllowed && !!handsFree?.canCapture(owner) && owner === controller.windows.floating.webContents.id && controller.windows.floating.isVisible() && settings.voiceInteraction.autoVoiceResponse && permissions.isCapabilityAllowed('microphone')
+      return owner === controller.windows.control.webContents.id && (mode === 'preview' || (!!audioDevices?.canTest(owner) && permissions.isCapabilityAllowed('microphone') && !settings.voiceInteraction.handsFreeEnabled))
+    }, liveVoice => {controller.updateSettings({liveVoice})}, (url, options) => net.fetch(String(url), options), conversation=>codexVoice?.disconnect(conversation),
+    new VoiceMemory(app.getPath('userData'),safeStorage.isEncryptionAvailable() && (process.platform!=='linux' || safeStorage.getSelectedStorageBackend()!=='basic_text')?{
+      seal:text=>safeStorage.encryptString(text).toString('base64'),open:data=>safeStorage.decryptString(Buffer.from(data,'base64')),
+    }:undefined))
+  for (const surface of [controller.windows.control, controller.windows.floating]) {
+    const owner = surface.webContents.id
+    surface.webContents.on('render-process-gone', () => {void liveVoice.close(owner)})
+    surface.webContents.on('destroyed', () => {void liveVoice.close(owner)})
+    surface.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {if(mainFrame && !inPlace) void liveVoice.close(owner)})
+  }
+  handle(IPC.liveVoice, async (event, input) => {
+    const command = liveCommandSchema.parse(input), owner = event.sender.id
+    const control = owner === controller.windows.control.webContents.id
+    if (!control && owner !== controller.windows.floating.webContents.id) throw new ChatError('Open Voice Settings or use Floating Athena.')
+    if(command.action==='checkpoint'){
+      if(command.entries.some(e=>e.role==='task'))throw new ChatError('Task receipts must come from the executor.')
+      return liveVoice.checkpoint(owner,command.request,command.entries)
+    }
+    if(command.action==='memory'){
+      if(!control)throw new ChatError('Manage saved voice context in Voice Settings.')
+      return liveVoice.manage(command)
+    }
+    if (command.action === 'usage') return liveVoice.usage(owner, command.request, command.seconds)
+    if (command.action === 'stop') return liveVoice.close(owner, command.request, command.finalSeconds)
+    if (command.action === 'start') {
+      if (control === (command.mode === 'floating')) throw new ChatError('This voice session has the wrong owner.')
+      return liveVoice.start(owner, command)
+    }
+    if (!control) throw new ChatError('Manage cloud voice from Voice Settings.')
+    if (command.action === 'status') return {...liveVoice.snapshot(), credential:!!(await ai.mediaCredential())}
+    if (command.action === 'billing') {await shell.openExternal('https://platform.openai.com/settings/organization/billing/overview');return {}}
+    if (controller.settings.strictOffline) throw new ChatError('Disable Strict Offline before contacting OpenAI.')
+    if (command.action === 'check') return liveVoice.check()
+    return liveVoice.generate(command.design, command.regenerate)
+  })
+  handle(IPC.mediaGeneration, async (event, input) => {
+    if(event.sender.id !== controller.windows.control.webContents.id) throw new ChatError('Open the conversation in the control center.')
+    const command=mediaCommandSchema.parse(input)
+    const target=!command.sessionId||chat.getSession(command.sessionId)?chat:athenaChat?.chat.getSession(command.sessionId)?athenaChat.chat:companion?.chat
+    if(!target)throw new ChatError('Conversation unavailable.')
+    if (command.action === 'catalog') {
+      const result = await target.mediaCommand(command)
+      if (!('routes' in result)) return result
+      const accounts = await unifiedAccounts?.list().catch(() => undefined)
+      const labels: Record<string,string> = {subscription:'ChatGPT Subscription',cloud:'OpenAI API',cursor:'Cursor Subscription',copilot:'GitHub Copilot',antigravity:'Google Antigravity','claude-api':'Claude API','third-party':'Third-Party Inference'}
+      return {...result, accounts: accounts?.accounts.filter(a=>a.enabled).map(a=>({
+        provider: labels[a.route.provider] ?? a.route.provider,
+        state: a.state,
+        details: a.route.provider === 'subscription' ? 'Sign in with ChatGPT currently excludes hosted image generation and has no documented video-generation tool. ChatGPT app entitlements are separate.' :
+          a.route.provider === 'cursor' ? 'Cursor ACP documents generated-image output. Select a Cursor model to check this native route; included allowance and overage eligibility are not exposed.' :
+          ['cloud','third-party'].includes(a.route.provider) ? 'Generation requires a compatible endpoint, an available media model, and separate billing authorization. See discovered routes.' :
+          'This connected inference interface has no verified media generation route registered in Athena. A dedicated generation endpoint can be configured independently.'
+      }))}
+    }
+    if(command.action==='remove-asset'){
+      const answer=await dialog.showMessageBox(controller.windows.control,{type:'warning',message:'Permanently delete this local media file?',buttons:['Cancel','Delete file'],defaultId:0,cancelId:0})
+      if(answer.response!==1)return {ok:false,message:'Deletion cancelled.'}
+    }
+    if(command.action==='import'){
+      if(!permissions.isCapabilityAllowed('personalFiles'))throw new ChatError('Enable Personal File Access in Privacy to import reference media.')
+      const choice=await dialog.showOpenDialog(controller.windows.control,{title:'Choose reference media',properties:['openFile'],filters:[{name:'Images and videos',extensions:['png','jpg','jpeg','gif','webp','mp4','webm']}]})
+      if(choice.canceled||!choice.filePaths[0])return {ok:false,message:'Import cancelled.'}
+      const file=await openMediaFile(choice.filePaths[0], fileFlags.O_RDONLY | (fileFlags.O_NOFOLLOW??0))
+      try{
+        const st=await file.stat()
+        if(!st.isFile()||st.size<=0||st.size>100*1024*1024)throw new ChatError('Choose a regular media file up to 100 MB.')
+        const bytes=Buffer.alloc(st.size);let offset=0
+        while(offset<bytes.length){const {bytesRead}=await file.read(bytes,offset,bytes.length-offset,offset);if(!bytesRead)throw new ChatError('The selected file changed.');offset+=bytesRead}
+        if(!permissions.isCapabilityAllowed('personalFiles'))throw new ChatError('File authorization was withdrawn.')
+        return await target.importMedia(command.sessionId,{bytes,mime:mediaMime(bytes)},basename(choice.filePaths[0]))
+      }finally{await file.close()}
+    }
+    try{return await target.mediaCommand(command)}catch(e){if(e instanceof MediaFailure)throw new ChatError(e.message);throw e}
+  })
   handle(IPC.providerUsage, async (_event, input) => {
     if (!providerUsage) throw new ChatError('Usage storage is unavailable.')
     const command = usageCommandSchema.parse(input)
@@ -116,6 +205,37 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     const accountId = query.accountId ?? (query.provider === 'openai-api' ? await ai.usageAccountId() : (await chatGPT?.status())?.activeAccountId) ?? 'not-connected'
     return providerUsage.snapshot({ ...query, accountId })
   })
+  handle(IPC.audioDevices, async (event, input) => {
+    if (!audioDevices) throw new ChatError('Audio device routing is unavailable. Restart Athena.')
+    const command = audioDeviceCommandSchema.parse(input)
+    const control = event.sender.id === controller.windows.control.webContents.id
+    const floating = event.sender.id === controller.windows.floating.webContents.id
+    if (!control && !floating && event.sender.id !== controller.windows.panel.webContents.id) throw new ChatError('Audio routing is restricted to Athena voice surfaces.')
+    if (command.action === 'get') return audioDevices.snapshot()
+    if (command.action === 'inventory') {
+      if (!(floating && controller.windows.floating.isVisible()) && !(control && (controller.windows.control.isVisible() || audioDevices.canTest(event.sender.id) || voice?.canCapture()))) throw new ChatError('Device discovery requires a visible Athena window or authorized microphone capture.')
+      // An inactive broker sees redacted input metadata during a settings mic
+      // test. Preserve the authorized test owner's inventory until it finishes.
+      const devices = floating && audioDevices.snapshot().testActive && !handsFree?.canCapture(event.sender.id)
+        ? [...command.devices.filter(d => d.kind === 'audiooutput'), ...audioDevices.snapshot().devices.filter(d => d.kind === 'audioinput')]
+        : command.devices
+      return audioDevices.discover(devices)
+    }
+    if (command.action === 'level') {
+      if (!permissions.isCapabilityAllowed('microphone') || !(audioDevices.canTest(event.sender.id) || (floating && handsFree?.canCapture(event.sender.id)))) throw new ChatError('No authorized microphone test is active.')
+      return audioDevices.level(command.level)
+    }
+    if (!control) throw new ChatError('Change audio routing from Voice Settings.')
+    if (command.action === 'confirm-output') {
+      try { return audioDevices.confirmOutput() } catch { throw new ChatError('Connect or select a speaker before testing voice.') }
+    }
+    if (command.action === 'test-stop') return audioDevices.stopTest(event.sender.id)
+    if (!permissions.isCapabilityAllowed('microphone')) throw new ChatError('Allow Microphone Access in Athena Privacy and your operating system before testing.')
+    if (voice && voice.snapshot().phase !== 'idle') throw new ChatError('Finish chat dictation before testing the microphone.')
+    if (controller.settings.voiceInteraction.handsFreeEnabled && !handsFree?.canCapture(controller.windows.floating.webContents.id)) throw new ChatError('The hands-free listener is not ready. Resolve its status below or turn it off before testing.')
+    try { return audioDevices.startTest(event.sender.id) } catch { throw new ChatError('A microphone test is already running.') }
+  })
+  controller.windows.control.webContents.on('render-process-gone', () => audioDevices?.stopTest())
   handle(IPC.snapshot, () => controller.snapshot())
   handle(IPC.vroidCatalog, (_event, input) => {
     // Old renderer reports remain compatible, but can only describe the bundled model.
@@ -127,15 +247,21 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     return controller.snapshot()
   })
   handle(IPC.vroidPlay, (_event, input) => controller.vroidActions.trigger(z.enum(VROID_ACTION_IDS).parse(input)))
-  handle(IPC.settings, (event, input) => {
-    if (input && typeof input === 'object' && ['aiMode', 'strictOffline', 'localAI', 'localVoice', 'athenaChatAvatarLinked', 'chatGPTCodingBackend', 'unifiedAccountEnabled'].some((key) => key in input) && event.sender.id !== controller.windows.control.webContents.id) throw new ChatError('AI configuration is only available in Settings.')
+  handle(IPC.settings, async (event, input) => {
+    if (input && typeof input === 'object' && ['aiMode', 'strictOffline', 'localAI', 'localVoice', 'athenaChatAvatarLinked', 'chatGPTCodingBackend', 'unifiedAccountEnabled', 'audioDevices', 'liveVoice', 'mediaGeneration', 'applicationAutomation', 'computerUse', 'automationPermissions'].some((key) => key in input) && event.sender.id !== controller.windows.control.webContents.id) throw new ChatError('AI configuration is only available in Settings.')
     const previousVoice = JSON.stringify(controller.settings.localVoice), previousLocal = JSON.stringify(controller.settings.localAI)
+    const oldHistoryDays=controller.settings.liveVoice.historyDays
     const snapshot = controller.updateSettings(input)
     if (previousVoice !== JSON.stringify(controller.settings.localVoice) || previousLocal !== JSON.stringify(controller.settings.localAI) || !controller.settings.voiceEnabled || controller.settings.voiceMuted || controller.settings.doNotDisturb) {
       speech?.stop(); stopPreview()
       if (previousVoice !== JSON.stringify(controller.settings.localVoice) || previousLocal !== JSON.stringify(controller.settings.localAI)) localVoice?.dispose?.()
     }
     handsFree?.reconcile()
+    liveVoice.reconcile()
+    if(oldHistoryDays!==controller.settings.liveVoice.historyDays)await liveVoice.refreshRetention()
+    const cfg=controller.settings
+    if(cfg.applicationAutomation.engine!=='codex' || !cfg.computerUse.enabled || !cfg.computerUse.voice || !cfg.automationPermissions.externalMessageSubmission || cfg.strictOffline)codexVoice?.end()
+    audioDevices?.reconcile()
     return snapshot
   })
   handle(IPC.command, (event, input) => {
@@ -327,17 +453,41 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     }
     if (controller.settings.aiMode !== 'subscription') return ai.getStatus()
     if (!chatGPT) throw new ChatError('ChatGPT sign-in is unavailable.')
-    if (controller.settings.chatGPTCodingBackend === 'codex-cli' && chat.current().workspaces.length > 0) {
+    if (controller.settings.aiMode === 'subscription') {
       if (!codexCLI) throw new ChatError('Codex CLI integration is unavailable.')
       const status = await codexCLI.status()
       const selected = chat.current().config.model
-      const model = selected && status.models.some((entry) => entry.id === selected) ? selected : status.defaultModel
+      const model = selected ?? status.defaultModel
       const models = status.models
       const active = status.authenticated && models.length > 0
       return { ok: active, message: status.message, status: { provider: 'Codex CLI' as const, active, hasKey: false, model, models: models.map((entry) => entry.id), modelLabels: Object.fromEntries(models.map((entry) => [entry.id, entry.displayName])), modelEfforts: Object.fromEntries(models.map((entry) => [entry.id, entry.efforts])), lastVerifiedAt: status.checkedAt, connection: active ? 'successful' as const : 'failed' as const } }
     }
     const status = await chatGPT.status()
     return { ok: true, message: status.message, status: { provider: 'ChatGPT Subscription' as const, active: status.connected && status.planEnabled, hasKey: false, model: status.model, models: status.models.map((model) => model.slug), modelLabels: Object.fromEntries(status.models.map((model) => [model.slug, model.displayName])), lastVerifiedAt: null, connection: status.connected && status.planEnabled ? 'successful' as const : 'not-tested' as const } }
+  })
+  aiHandle(IPC.codexCommand, async (input, event) => {
+    if (!codexCLI) throw new ChatError('Codex is unavailable.')
+    const command = z.object({action:z.enum(['login','threads','read','steer']),threadId:z.string().min(1).max(256).optional(),cursor:z.string().max(4000).optional(),sessionId:z.string().uuid().optional(),text:z.string().min(1).max(12000).optional()}).strict().parse(input)
+    if(command.action === 'steer'){if(!command.sessionId||!command.text)throw new ChatError('Provide a conversation and follow-up message.');return chat.steerNative(command.sessionId,command.text)}
+    if (command.action === 'login') {
+      if(event.sender.id !== controller.windows.control.webContents.id)throw new ChatError('Open Settings to sign in to Codex.')
+      const {url}=await codexCLI.login();await shell.openExternal(url);return {ok:true,message:'Complete the Codex sign-in in your browser, then refresh status.'}
+    }
+    if(command.action === 'threads') {
+      const result=await codexCLI.listThreads(command.cursor)
+      return {ok:true,threads:result.data.map(t=>({id:t.id,title:t.name ?? t.preview.slice(0,120),cwd:t.cwd,model:t.model,updatedAt:t.updatedAt,status:t.status.type})),nextCursor:result.nextCursor}
+    }
+    if(!command.threadId)throw new ChatError('Choose a Codex thread.')
+    // A read-only viewer cannot mutate a thread being used by another client.
+    await codexCLI.readThread(command.threadId)
+    const turns=await codexCLI.turns(command.threadId)
+    const output:string[]=[]
+    for(const turn of turns.data.slice(0,20).reverse()) {
+      const items=await codexCLI.items(command.threadId,turn.id)
+      for(const {item} of items)if(item.type==='agentMessage')output.push(`Codex: ${item.text}`)
+        else if(item.type==='userMessage')output.push(`You: ${item.content.filter(c=>c.type==='text').map(c=>c.text).join('\n')}`)
+    }
+    return {ok:true,text:output.join('\n\n').slice(-100_000),message:'Read-only Codex history. Continue in its owning client to avoid concurrent control.'}
   })
   aiHandle(IPC.codexCLIStatus, async (input) => {
     if (!codexCLI) throw new ChatError('Codex CLI integration is unavailable.')
@@ -361,67 +511,8 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     if (!floating.isDestroyed()) floating.webContents.send(IPC.speechLevelChanged, { level })
     return { ok: true }
   })
-  aiHandle(IPC.officialCSM, async input => {
-    const request = officialCSMCommandSchema.parse(input)
-    if (!officialCSM) return { ok: false, message: 'Official CSM is not available in this app instance.' }
-    try {
-      if (request.action === 'status') return { ok: true, status: await officialCSM.status() }
-      if (request.action === 'setup' || request.action === 'download') {
-        const decision = await dialog.showMessageBox(controller.windows.control, { type: 'question', title: 'Official Sesame CSM', message: request.action === 'setup' ? 'Install the official CSM Python dependencies in a separate environment?' : 'Download the official CSM weights and required tokenizer and watermark models?', detail: 'Several GB of storage may be needed. Chatterbox remains unchanged. Hugging Face gated-model terms must be accepted by you; Athena never stores your token in settings or diagnostics.', buttons: ['Cancel', 'Continue'], defaultId: 0, cancelId: 0 })
-        if (decision.response !== 1) return { ok: false, message: 'Cancelled.' }
-        if (request.action === 'setup') await officialCSM.setup(); else await officialCSM.download()
-      } else if (request.action === 'cancel') officialCSM.cancel()
-      else if (request.action === 'unload') { speech?.stop(); stopPreview(); officialCSM.unload() }
-      else if (request.action === 'import-reference') {
-        const selection = await dialog.showOpenDialog(controller.windows.control, { title: 'Authorized CSM reference (1–20 second WAV)', properties: ['openFile'], filters: [{ name: 'WAV recording', extensions: ['wav'] }] })
-        if (selection.canceled || !selection.filePaths[0]) return { ok: false, message: 'No recording selected.' }
-        const referenceId = await officialCSM.importReference(selection.filePaths[0], request.transcript, request.speaker)
-        return { ok: true, referenceId, status: await officialCSM.status() }
-      } else if (request.action === 'remove-reference') {
-        const decision = await dialog.showMessageBox(controller.windows.control, { type: 'warning', message: 'Remove this copied Sesame reference recording and transcript?', detail: 'The original recording and Chatterbox reference will not be changed.', buttons: ['Cancel', 'Remove'], defaultId: 0, cancelId: 0 })
-        if (decision.response !== 1) return { ok: false, message: 'Cancelled.' }
-        speech?.stop(); stopPreview(); await officialCSM.removeReference(request.id)
-        if (controller.settings.localVoice.officialCSM.referenceId === request.id) controller.updateSettings({ localVoice: { ...controller.settings.localVoice, officialCSM: { ...controller.settings.localVoice.officialCSM, referenceId: undefined } } })
-      }
-      return { ok: true, status: await officialCSM.status() }
-    } catch (error) { return { ok: false, message: officialCSM.error(error), status: await officialCSM.status() } }
-  })
-  aiHandle(IPC.higgsTTS, async input => {
-    const request = higgsCommandSchema.parse(input)
-    if (!higgsTTS) return { ok: false, message: 'Higgs TTS 3 is not available in this app instance.' }
-    try {
-      if (request.action === 'status') return { ok: true, status: await higgsTTS.status() }
-      if (request.action === 'setup' || request.action === 'download' || request.action === 'remove') {
-        const prompts = {
-          setup: { title: 'Higgs TTS 3 runtime', message: 'Install isolated PyTorch/Transformers dependencies for official Higgs TTS 3?', detail: 'This does not download the approximately 9.3GB checkpoint. Chatterbox and Sesame remain unchanged. NVIDIA SGLang-Omni is not installed.' },
-          download: { title: 'Higgs TTS 3 checkpoint', message: 'Download the official bosonai/higgs-tts-3-4b checkpoint (about 9.3GB)?', detail: 'Research and non-commercial terms apply; commercial embedding needs a separate Boson license. Athena reuses your existing Hugging Face CLI login if required and never stores a token in settings. Chatterbox and Sesame files are not overwritten.' },
-          remove: { title: 'Remove Higgs model files', message: 'Remove the downloaded Higgs TTS 3 checkpoint from this Mac?', detail: 'The isolated runtime and imported Higgs references remain. Chatterbox and Sesame are not changed.' },
-        } as const
-        const prompt = prompts[request.action]
-        const decision = await dialog.showMessageBox(controller.windows.control, { type: request.action === 'remove' ? 'warning' : 'question', title: prompt.title, message: prompt.message, detail: prompt.detail, buttons: ['Cancel', 'Continue'], defaultId: 0, cancelId: 0 })
-        if (decision.response !== 1) return { ok: false, message: 'Cancelled.' }
-        if (request.action === 'setup') await higgsTTS.setup()
-        else if (request.action === 'download') await higgsTTS.download()
-        else await higgsTTS.removeModel()
-      } else if (request.action === 'verify') await higgsTTS.verify()
-      else if (request.action === 'cancel') higgsTTS.cancel()
-      else if (request.action === 'unload') { speech?.stop(); stopPreview(); higgsTTS.unload() }
-      else if (request.action === 'import-reference') {
-        const selection = await dialog.showOpenDialog(controller.windows.control, { title: 'Authorized Higgs reference (1–20 second WAV)', properties: ['openFile'], filters: [{ name: 'WAV recording', extensions: ['wav'] }] })
-        if (selection.canceled || !selection.filePaths[0]) return { ok: false, message: 'No recording selected.' }
-        const referenceId = await higgsTTS.importReference(selection.filePaths[0], request.transcript)
-        return { ok: true, referenceId, status: await higgsTTS.status() }
-      } else if (request.action === 'remove-reference') {
-        const decision = await dialog.showMessageBox(controller.windows.control, { type: 'warning', message: 'Remove this copied Higgs reference recording and transcript?', detail: 'The original recording and other engines will not be changed.', buttons: ['Cancel', 'Remove'], defaultId: 0, cancelId: 0 })
-        if (decision.response !== 1) return { ok: false, message: 'Cancelled.' }
-        speech?.stop(); stopPreview(); await higgsTTS.removeReference(request.id)
-        if (controller.settings.localVoice.higgs.referenceId === request.id) controller.updateSettings({ localVoice: { ...controller.settings.localVoice, higgs: { ...controller.settings.localVoice.higgs, referenceId: undefined } } })
-      }
-      return { ok: true, status: await higgsTTS.status() }
-    } catch (error) { return { ok: false, message: higgsTTS.error(error), status: await higgsTTS.status() } }
-  })
   // Obsolete community/MLX voice-management endpoints stay disabled.
-  const voiceRemoved = () => ({ ok: false, message: 'Sesame and voice model management were removed. The original Chatterbox voice is available in Settings → Voice.' })
+  const voiceRemoved = () => ({ ok: false, message: 'Legacy voice model management was removed. The original Chatterbox voice is available in Settings → Voice.' })
   aiHandle(IPC.localVoiceStatus, () => ({ runtime: 'unavailable', engines: emptyVoiceEngines('unavailable'), profiles: [] }))
   aiHandle(IPC.localVoiceInstall, voiceRemoved)
   aiHandle(IPC.localVoiceCancel, () => ({ ok: true }))
@@ -449,6 +540,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     return { ok: true }
   }, true)
   conversationHandle(IPC.voiceBegin, async (input, event) => {
+    if (audioDevices?.snapshot().testActive) return { ok: false, message: 'Finish the microphone test in Voice Settings before dictating.' }
     if (event.sender.id !== controller.windows.control.webContents.id) return { ok: false, message: 'Use local hands-free voice from the companion.' }
     if (speech?.isBusy() && !controller.settings.localVoice.allowSpeechInterruption) return { ok: false, message: 'Athena is speaking. Use Stop Speaking first, or enable speech interruption in Settings → Voice.' }
     stopPreview(event.sender.id)
@@ -475,6 +567,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   conversationHandle(IPC.voiceTranscribe, (input) => voice?.transcribe(input) ?? { ok: false }, true)
   conversationHandle(IPC.voiceCancel, (input) => voice?.cancelRequest(input) ?? { ok: true }, true)
   conversationHandle(IPC.handsFreeEnable, async (input, event) => {
+    if (audioDevices?.snapshot().testActive) return { ok: false, message: 'Finish the microphone test before enabling hands-free listening.' }
     const isFloating = event.sender.id === controller.windows.floating.webContents.id
     if (isFloating) {
       const sessionId = z.string().uuid().parse(input)
@@ -500,6 +593,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
   conversationHandle(IPC.handsFreeDisable, (input, event) => {
     if (event.sender.id === controller.windows.floating.webContents.id) {
       if (!voiceOwnership.release(input)) return { ok: false }
+      codexVoice?.end()
       handsFree?.deactivate(event.sender.id)
       controller.clearHandsFreeActivity?.()
       controller.setVoiceState(null); controller.setSpeechState('idle')
@@ -510,6 +604,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     controller.updateSettings({ voiceInteraction: { ...controller.settings.voiceInteraction, handsFreeEnabled: false } })
     handsFree?.deactivate()
     voiceOwnership.clear()
+    codexVoice?.end()
     companion?.chat.clearHandsFreeContext()
     return { ok: true }
   }, true)
@@ -525,18 +620,105 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     if (request.diagnosticDirect && app.isPackaged) return { ok: false, message: 'Direct inference diagnostics are available only in development builds.' }
     if (!request.ownership || !ownsVoice(request.ownership)) return { ok: false, message: 'Local voice session changed. Reactivate hands-free voice and retry.' }
     if (!companion) return { ok: false, message: 'The local companion is unavailable.' }
+    request.id ??= voiceRequestId()
+    const lease=liveVoice.floatingRequest(event.sender.id)
+    if(request.liveRequest && request.liveRequest!==lease)return {ok:false,message:'This GPT-Live session ended. Activate Floating Athena again.'}
+    if(lease && controller.settings.applicationAutomation.engine==='codex'){
+      if(request.liveRequest!==lease)return {ok:false,message:'The command does not belong to this GPT-Live session.'}
+      const plan=resolveVoiceActionPlan(request.text,chat.snapshot())
+      // Keep deterministic internal actions on Athena's existing validated APIs.
+      // Bare stop/cancel targets the voice task and cannot stop a selected chat.
+      if(/^(?:please )?(?:stop|cancel)(?: (?:the |my )?(?:current )?(?:task|automation))?[.!?]*$/i.test(request.text.trim())){
+        const stopped=codexVoice?.cancel()
+        return {ok:true,text:stopped?'Stopped pending voice automation. A submitted action may already have taken effect.':'There is no active Codex voice task to stop.'}
+      }
+      if(plan?.steps.every(step=>/^athena_(?:chat_|local_chat_|project_|navigate$|navigation_|git_|last_action$)/.test(step.name)))
+        return companion.chat.answerHandsFree(request)
+      if(/^(?:hi|hey|hello|thanks|thank you|good (?:morning|afternoon|evening)|how are you|tell me a joke)[.!? ]*$/i.test(request.text))
+        return {ok:true,text:'Respond conversationally to the user.'}
+      const authorized=()=>!event.sender.isDestroyed() && ownsVoice(request.ownership) && liveVoice.floatingRequest(event.sender.id)===lease &&
+        controller.settings.applicationAutomation.engine==='codex' && controller.settings.computerUse.enabled && controller.settings.computerUse.voice &&
+        controller.settings.automationPermissions.externalMessageSubmission && !controller.settings.strictOffline
+      if(!authorized())return {ok:false,message:'Enable voice computer use and external task submission for Codex in Automation Permissions.'}
+      if(!codexVoice)return {ok:false,message:'The Codex voice planner is unavailable. Check the Codex subscription connection.'}
+      const taskId=request.id
+      return codexVoice.run(liveVoice.conversation(event.sender.id)??lease,taskId,request.text,authorized).then(async result=>{
+        if(result.memoryOutcome && authorized()){
+          const generic=result.memoryOutcome==='observed'?'The executor inspected the requested target.':'The executor verified the requested action.'
+          const playback=result.text?.match(/\b(?:verified (?:that )?playback|playback is) (?:is )?(playing|paused)\b/i)
+          await liveVoice.checkpoint(event.sender.id,lease,[{id:'task-'+taskId,role:'task',offset:0,text:playback?'Verified playback '+playback[1].toLowerCase()+'.':generic}]).catch(()=>{
+            console.warn('Voice task completed but its memory checkpoint could not be saved.')
+          })
+        }
+        return result
+      })
+    }
+    const canPlan = () => controller.settings.computerUse.enabled && controller.settings.computerUse.voice
+      && controller.settings.computerUse.planner === 'selected' && controller.settings.automationPermissions.externalMessageSubmission
+      && !controller.settings.strictOffline && liveVoice.floating(event.sender.id) && ownsVoice(request.ownership)
     return companion.chat.answerHandsFree(request, request.id ? (progress) => {
       try { if (!event.sender.isDestroyed() && ownsVoice(request.ownership)) event.sender.send(IPC.handsFreeReplyProgress, { id: request.id, ...progress, ownership: request.ownership }) }
       catch { /* A closed floating window must not fail the provider request. */ }
-    } : undefined)
+    } : undefined, canPlan()
+      ? async signal => {
+          if (signal.aborted || !ownsVoice(request.ownership) || !liveVoice.floating(event.sender.id)) return {ok:false,message:'The voice session changed before delegation.'}
+          const sessionId=chat.selectedSessionId()
+          const cancel=()=>chat.cancelHandsFreeReply()
+          signal.addEventListener('abort', cancel, {once:true})
+          try {return await chat.answerHandsFree(request, undefined, undefined, async signal => {
+            const native = companion.context.voiceRegistryTools(request.text, request.id!)
+            const project = /\b(?:project|branch|file|folder|code|repository|git|terminal|command)\b/i.test(request.text)
+              ? await context?.voiceProjectTools(signal,chat,()=>controller.settings.automationPermissions) : undefined
+            const visual=await context?.voiceVisualTools(request.text,signal,app=>{
+              const s=controller.settings
+              return s.computerUse.input && app!=='terminal' && !s.computerUse.blockedApps.includes(app) && s.automationPermissions.desktopApplicationControl &&
+                s.automationPermissions.desktopUIInteraction && permissions.isCapabilityAllowed('desktopAutomation') && permissions.isCapabilityAllowed('accessibilityControl')
+            })
+            const tools = combineTools(combineTools(project?.tools, native),visual)
+            if (!tools || !canPlan()) throw new ChatError('The selected voice planner is unavailable or its permission changed.')
+            const assertAccess = () => {
+              signal.throwIfAborted()
+              if (chat.selectedSessionId() !== sessionId) throw new ChatError('The active conversation changed during voice planning.')
+              if (!canPlan()) throw new ChatError('The voice session or automation permission changed.')
+              tools.assertAccess()
+            }
+            return {attachments:[],sources:[],repositoryText:'',projectTools:{...tools,assertAccess,
+              execute:(name,input,operationSignal)=>{assertAccess();return tools.execute(name,input,operationSignal)}},projectName:project?.name}
+
+          })}
+          finally {signal.removeEventListener('abort', cancel)}
+        } : undefined)
   }, true)
-  conversationHandle(IPC.handsFreeCancelReply, (_input, event) => {
-    if (event.sender.id !== controller.windows.floating.webContents.id) throw new Error('Voice cancellation is restricted to the floating companion.')
+  conversationHandle(IPC.steerVoiceAutomation,(input,event)=>{
+    const data=z.object({paused:z.boolean(),ownership:z.unknown()}).strict().parse(input)
+    if(event.sender.id!==controller.windows.floating.webContents.id || !ownsVoice(data.ownership))throw new ChatError('Voice session changed.')
+    if(data.paused)controller.windows.clearAutomationFeedback?.()
+    if(codexVoice?.steer(liveVoice.conversation(event.sender.id)??liveVoice.floatingRequest(event.sender.id),data.paused))return true
+    const active=companion?.chat.setVoicePaused(data.paused)
+    if(active)chat.setVoicePaused(data.paused)
+    return !!active
+  },true)
+  handle(IPC.computerUseCheck, async (event,input) => {
+    if(!computerUseCheck)throw new ChatError('Computer use is unavailable.')
+    const command=automationControlSchema.parse(input)
+    if(event.sender.id===controller.windows.control.webContents.id)return computerUseCheck(command)
+    const voice=companion?.chat.snapshot().automationProgress
+    if(![controller.windows.floating.webContents.id,controller.windows.panel.webContents.id].includes(event.sender.id) ||
+      typeof command==='string' || voice?.phase!=='running' || voice.cancelTarget!=='voice' || command.taskId!==voice.id)
+      throw new ChatError('Open Computer use in the control window.')
+    await computerUseCheck(command)
+    return {browser:'',locked:false,recent:[]}
+  })
+  conversationHandle(IPC.handsFreeCancelReply, (input, event) => {
+    if (![controller.windows.floating.webContents.id,controller.windows.control.webContents.id].includes(event.sender.id)) throw new Error('Stop automation from Floating Athena or Settings.')
+    controller.windows.clearAutomationFeedback?.()
+    if (input === true) controller.windows.floating.webContents.send(IPC.voiceAutomationStopped)
+    codexVoice?.cancel()
     companion?.chat.cancelHandsFreeReply(); return { ok: true }
   }, true)
   conversationHandle(IPC.handsFreeClearContext, (_input, event) => {
     if (event.sender.id !== controller.windows.floating.webContents.id) throw new Error('Voice context is restricted to the floating companion.')
-    // Clearing the conversational LLM context must not discard Sesame's
+    // Clearing conversation context must not discard the local voice’s
     // selected voice anchor or force a costly model reload on the next wake.
     companion?.chat.clearHandsFreeContext(); return { ok: true }
   }, true)
@@ -565,7 +747,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     if (event.sender.id !== controller.windows.floating.webContents.id) throw new Error('Voice-only playback is restricted to the floating companion.')
     const request = handsFreeSpeechPartSchema.parse(input)
     if (!ownsVoice(request.ownership)) return { ok: false, message: 'Local voice session changed.' }
-    return { ok: false, message: 'Sesame audio streaming has been removed. Start a new natural voice response.' }
+    return { ok: false, message: 'Legacy audio streaming has been removed. Start a new natural voice response.' }
   }, true)
   conversationHandle(IPC.handsFreeStopSpeech, (_input, event) => {
     if (event.sender.id !== controller.windows.floating.webContents.id) throw new Error('Voice-only playback is restricted to the floating companion.')
@@ -624,7 +806,8 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     const preference = permissionPreferenceSchema.safeParse(input)
     if (preference.success && !preference.data.enabled) {
       const permission = preference.data.permission
-      if (permission === 'microphone') { voice?.cancel('Microphone access was disabled.'); handsFree?.deactivate() }
+      if(permission!=='personalFiles')codexVoice?.end()
+      if (permission === 'microphone') { audioDevices?.stopTest(); voice?.cancel('Microphone access was disabled.'); handsFree?.deactivate(); audioDevices?.reconcile() }
       else {
         chat.stopAll('Access was disabled. Pending tool work has stopped; previously completed actions and transmitted data cannot be recalled.')
         companion?.chat.stop('Access was disabled. Local tool work has stopped.')
@@ -1120,6 +1303,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     } catch (error) { return { ok: false, snapshot: academy.snapshot(), message: error instanceof Error ? error.message : 'Academy operation failed.' } }
   })
   conversationHandle(IPC.chatGet, async () => {
+    await chat.refreshNativeHistory?.().catch(()=>{})
     const migrateLegacySelections = async () => {
       if (!unifiedAccounts || ['local', 'unconfigured'].includes(controller.settings.aiMode)) return
       const catalog = await unifiedAccounts.list()
@@ -1138,7 +1322,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     let model: string | null = null, models: string[] = [], modelCatalogAvailable = true
     let cursorCatalog: CursorStatus | undefined
     let codexDefault: string | null = null
-    if (mode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat.current().workspaces.length > 0) {
+    if (mode === 'subscription' && controller.settings.aiMode === 'subscription') {
       const status = await codexCLI?.status()
       model = status?.defaultModel ?? null
       models = status?.models.map((entry) => entry.id) ?? []
@@ -1187,8 +1371,8 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     // An ACP catalog refresh can be incomplete. Keep an explicit Antigravity
     // selection; the provider validates it against the live session before send.
     } else if (mode === 'antigravity') chat.initializeModel(model)
-    else if (model && selected && models.length && !models.includes(selected)) await chat.command({ action: 'configure-model', id: chat.current().id, model })
-    else if (mode === 'subscription' && controller.settings.chatGPTCodingBackend === 'codex-cli' && chat.current().workspaces.length > 0 && !selected && codexDefault) await chat.command({ action: 'configure-model', id: chat.current().id, model: codexDefault })
+    else if (mode !== 'subscription' && model && selected && models.length && !models.includes(selected)) await chat.command({ action: 'configure-model', id: chat.current().id, model })
+    else if (mode === 'subscription' && controller.settings.aiMode === 'subscription' && !selected && codexDefault) await chat.command({ action: 'configure-model', id: chat.current().id, model: codexDefault })
     else chat.initializeModel(model)
     await migrateLegacySelections()
     return chat.snapshot()
@@ -1251,7 +1435,7 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
       const mode = controller.settings.aiMode
       let status: { status: { active: boolean; models: string[] } }
       let cursorCatalog: CursorStatus | undefined
-      if (mode === 'subscription') { const value = await chatGPT!.status(); status = { status: { active: value.planEnabled, models: value.models.map((entry) => entry.slug) } } }
+      if (mode === 'subscription') { const value = await codexCLI?.status(); status = { status: { active: value?.authenticated ?? false, models: value?.models.map(entry => entry.id) ?? [] } } }
       else if (mode === 'copilot') status = await copilot!.aiStatus()
       else if (mode === 'antigravity') { const value = await antigravityACP!.status(); status = { status: { active: value.authState === 'authenticated', models: value.models.map((entry) => entry.id) } } }
       else if (mode === 'third-party') {
@@ -1369,4 +1553,5 @@ export function registerIPC(controller: AthenaController, ai: AIConfiguration, c
     clipboard.writeText(parsed.data.text)
     return { ok: true }
   })
+  return () => liveVoice.dispose()
 }

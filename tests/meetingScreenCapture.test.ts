@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeEach, expect, it, vi } from 'vitest'
 const fixture=vi.hoisted(()=>({sources:vi.fn(),ocr:vi.fn(),permission:vi.fn(),displays:vi.fn()}))
-vi.mock('electron',()=>({app:{isPackaged:false,getAppPath:()=>'/app'},desktopCapturer:{getSources:fixture.sources},screen:{getCursorScreenPoint:()=>({x:2000,y:100}),getDisplayNearestPoint:()=>({id:42,label:'External display'}),getAllDisplays:fixture.displays},systemPreferences:{getMediaAccessStatus:fixture.permission}}))
+vi.mock('electron',()=>({app:{isPackaged:false,getAppPath:()=>'/app',getPath:()=>'/development/Athena.app/Contents/MacOS/Electron'},shell:{showItemInFolder:vi.fn()},desktopCapturer:{getSources:fixture.sources},screen:{getCursorScreenPoint:()=>({x:2000,y:100}),getDisplayNearestPoint:()=>({id:42,label:'External display'}),getAllDisplays:fixture.displays},systemPreferences:{getMediaAccessStatus:fixture.permission}}))
 vi.mock('../electron/main/screenCapture/localScreenOCR',()=>({recognizeScreenText:fixture.ocr}))
 import { captureActiveScreen } from '../electron/main/meetings/meetingScreenCapture'
 const thumbnail=(text:string)=>({isEmpty:()=>false,toPNG:()=>Buffer.from(text),toDataURL:()=>`data:image/png;base64,${text}`})

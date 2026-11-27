@@ -1,0 +1,27 @@
+{
+  "profile": "/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-ui-profile-cOEqxj",
+  "root": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-ui-project-zfx4vc",
+  "first": "a2e6d57d-afa4-4746-9aa7-6ac1fefe79d3",
+  "second": "26614a16-4ea2-4ccf-acb7-6b543788fcb6",
+  "thread": "01a2118d-32e0-7912-a111-76681614c5cb",
+  "approvalCount": 1,
+  "provider": "codex-subscription",
+  "model": "gpt-6-astra",
+  "effort": "high",
+  "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-ui-project-zfx4vc",
+  "restarted": true,
+  "independentThreads": true,
+  "accessChangeKeptApproval": true,
+  "fullAccess": {
+    "mode": "full-access",
+    "sandbox": "{\"type\":\"dangerFullAccess\"}",
+    "approvalPolicy": "\"never\"",
+    "status": "verified"
+  },
+  "readOnly": {
+    "mode": "read-only",
+    "sandbox": "{\"type\":\"readOnly\",\"networkAccess\":false}",
+    "approvalPolicy": "\"on-request\"",
+    "status": "verified"
+  }
+}

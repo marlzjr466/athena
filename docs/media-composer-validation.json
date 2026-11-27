@@ -1,0 +1,141 @@
+{
+  "date": "2026-11-24",
+  "task": "Media generation routing and composer/settings integration",
+  "confirmedFindings": [
+    "The existing inline media form bypassed the normal composer experience and mixed image/video configuration.",
+    "The Sign in with ChatGPT interface does not expose hosted image generation. No documented native video-generation route was found for this authentication method. This is an interface limitation, not a claim that ChatGPT products cannot generate media.",
+    "A failure to load Third-Party Inference profiles previously interrupted discovery of otherwise available routes.",
+    "New-conversation configuration inheritance could carry media mode and source references into another conversation; the regression test now prevents this.",
+    "The shared select-menu CSS overrode the plus popup positioning during UI verification; the scoped portal rule now keeps it above the trigger."
+  ],
+  "implementation": [
+    "One keyboard-accessible plus popup preserves attachment, project and voice actions and offers separate image/video modes.",
+    "Normal composer text supplies the generation prompt; removable mode chips, drafts and source selections are conversation-scoped.",
+    "Fresh image/video attachments take precedence over a previous edit reference and route to compatible editing/animation operations.",
+    "Independent image/video provider, model and output defaults are persisted through the existing settings service.",
+    "Media settings reuse Section, SettingRow, Toggle, CustomSelect, input and button styles; there is no native HTML select or inline media configuration form.",
+    "Catalog results separate connected accounts from supported interfaces, configured endpoints and billing authorization; unavailable details are expandable.",
+    "No-charge filtering requires verified included subscription entitlement, authorized free routes or local generation. Paid generation remains confirmation-controlled.",
+    "Dollar caps fail closed when a provider cannot supply a binding price quote; local token estimates are not treated as authoritative spending.",
+    "Generated media, actual provider/model labels, job monitoring, background notifications and native image/video controls retain existing services."
+  ],
+  "validation": {
+    "focused": {
+      "command": "npm test -- --run tests/mediaGeneration.test.ts tests/mediaComposer.test.tsx tests/chatPermissionPrompt.test.tsx tests/attachments.test.ts tests/voiceChat.test.tsx",
+      "passed": 60,
+      "failed": 0,
+      "log": "/tmp/athena-media-ui-final-focused.log"
+    },
+    "electronEndToEnd": {
+      "command": "npx playwright test tests/desktop/mediaGeneration.spec.ts",
+      "passed": 1,
+      "failed": 0,
+      "kind": "Real Electron UI and backend with loopback protocol fixtures; not live provider generation",
+      "coverage": [
+        "Popup actions, keyboard/outside-close behavior and viewport placement",
+        "Image mode, removable chips, per-conversation draft/mode isolation",
+        "Image generation, waterfall edit and image-to-video routing",
+        "Video polling recovery after restart without duplicate submission",
+        "Playable fixture video and persistent image artifacts",
+        "Settings custom selects, persistence and light/dark token compatibility"
+      ],
+      "log": "/tmp/athena-media-ui-desktop-final.log"
+    },
+    "fullSuite": {
+      "command": "npm test",
+      "passed": 2222,
+      "skipped": 56,
+      "failed": 4,
+      "note": "Four baseline failures reproduced before these changes: buildIsolation dev-entry expectation, two outputRecovery expectations and systemVoiceRollback extraResources indexing. One subsequent new attachment-routing test is included in the 60-test focused run.",
+      "log": "/tmp/athena-media-ui-full-final.log"
+    },
+    "build": "npm run build passed, including TypeScript checking; existing large-chunk warnings remain",
+    "whitespace": "git diff --check passed",
+    "paidGenerationRequests": 0,
+    "newLiveProviderGeneration": "Not performed: no verified authorized no-additional-charge native generation route available during testing. Paid routes used fixtures.",
+    "liveApp": {
+      "plusMenu": "Verified all five actions in the restarted packaged app",
+      "imageMode": "Verified removable chip, prompt placeholder and unchanged GPT-6 Astra chat model; removed test mode afterward",
+      "noChargeDiscovery": "No eligible no-additional-charge routes. ChatGPT and Antigravity connected; API account present; Cursor disabled. No generation submitted.",
+      "history": "Existing conversation and previously generated image preserved",
+      "configuredEndpointDiscovery": "Live metadata check returned seven OpenAI Images routes, labeled Paid API, and no video route. No generation request was submitted; model listing is not proof of successful generation or sufficient credits.",
+      "finalState": "Returned to the original conversation in normal chat mode, unchanged model and High reasoning; no draft or generated test messages added."
+    }
+  },
+  "limitations": [
+    "Subscription login and image/video understanding do not establish media-generation entitlement.",
+    "Cursor can emit documented native image output, but its included allowance/overage policy is not exposed; Athena does not classify that route as verified no-additional-charge.",
+    "Dedicated API and optional local routes still require the user's own compatible configuration and authorization.",
+    "Windows hardware and live remote video-generation services were not exercised in this macOS session.",
+    "Light-theme validation used shared CSS token overrides; the application does not currently expose a complete alternate light-theme setting."
+  ],
+  "officialReferences": [
+    "https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations.md",
+    "https://prod.cursor.com/docs/cli/acp",
+    "https://docs.x.ai/developers/tools/image-generation"
+  ],
+  "modifiedFilesForThisTask": [
+    "shared/mediaGeneration.ts",
+    "shared/conversations.ts",
+    "electron/main/ai/chatController.ts",
+    "electron/main/ai/conversationRepository.ts",
+    "electron/main/ai/attachmentService.ts",
+    "electron/main/media/mediaService.ts",
+    "electron/main/media/registry.ts",
+    "electron/main/ipcHandlers.ts",
+    "electron/main/main.ts",
+    "src/features/chat/ComposerActions.tsx",
+    "src/features/chat/ChatView.tsx",
+    "src/features/chat/MediaJobControls.tsx",
+    "src/features/voice/PushToTalk.tsx",
+    "src/features/athena-ai/AthenaChat.tsx",
+    "src/features/settings/MediaGenerationSettings.tsx",
+    "src/styles/mediaGeneration.css",
+    "tests/mediaComposer.test.tsx",
+    "tests/mediaGeneration.test.ts",
+    "tests/attachments.test.ts",
+    "tests/voiceChat.test.tsx",
+    "tests/chatPermissionPrompt.test.tsx",
+    "tests/desktop/mediaGeneration.spec.ts"
+  ],
+  "deployment": {
+    "result": "Updated and restarted the exact packaged Athena app; verified live UI and preserved saved conversation/media",
+    "processId": 39722,
+    "path": "release/mac-arm64/Athena.app",
+    "rollbackBundle": "/private/tmp/athena-media-composer-package/mac-arm64/Athena-before-ui.previous",
+    "signing": "Same persistent local signing requirement; codesign deep/strict verification passed",
+    "otherProcesses": "No unrelated processes terminated"
+  },
+  "stylingFollowup": {
+    "date": "2026-11-24",
+    "rootCause": "Disclosure summaries inherited the 16px page font; nested ai-key-field wrappers added 44px vertical padding and reduced usable input width inside settings rows.",
+    "changes": [
+      "Shared SettingsDisclosure reuses SettingRow label typography, spacing, separators and keyboard-accessible native disclosure behavior.",
+      "Shared settings-input uses the same control height, padding and font tokens as CustomSelect; numeric fields are 150px wide and 36px high.",
+      "Media fields no longer use API-key panel wrappers; expanded forms and file input use the shared settings controls."
+    ],
+    "files": [
+      "src/components/ui/Controls.tsx",
+      "src/features/settings/MediaGenerationSettings.tsx",
+      "src/styles/global.css",
+      "src/styles/ui-overrides.css",
+      "src/styles/mediaGeneration.css"
+    ],
+    "validation": [
+      "20 media composer / AI settings tests passed",
+      "npm run build passed",
+      "git diff --check passed",
+      "Isolated Electron measurements: 12px disclosure labels, 11px input text, 36px height, 150px numeric width",
+      "Expanded workflow/custom-endpoint forms and narrow viewport inspected; no horizontal overflow",
+      "Keyboard Enter expands native disclosure; quiet focus background matches existing controls"
+    ],
+    "artifacts": [
+      "/tmp/athena-billing-spacing.png",
+      "/tmp/athena-local-spacing.png",
+      "/tmp/athena-local-expanded.png",
+      "/tmp/athena-custom-expanded.png",
+      "/tmp/athena-local-narrow.png"
+    ],
+    "deployment": "Signed update installed at the same packaged Athena path; restarted only PID 39722, verified new PID 49467 and corrected live settings UI. Previous bundle retained at /private/tmp/athena-media-spacing-package/mac-arm64/Athena-before-spacing.previous. Settings values unchanged."
+  }
+}

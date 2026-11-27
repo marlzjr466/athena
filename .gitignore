@@ -41,4 +41,5 @@ __pycache__/
 /voice-service/higgs_tokens.json
 # Generated native executable
 /build/native/athena-screen-ocr
+/build/native/athena-desktop-accessibility
 /build/search-runtime/

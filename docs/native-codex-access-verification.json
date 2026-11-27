@@ -1,0 +1,47 @@
+{
+  "root": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+  "evidence": [
+    {
+      "mode": "ask",
+      "ms": 22864,
+      "approvals": 1,
+      "policy": {
+        "mode": "ask",
+        "sandbox": "{\"type\":\"workspaceWrite\",\"writableRoots\":[],\"networkAccess\":false,\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}",
+        "approvalPolicy": "\"on-request\"",
+        "status": "verified"
+      },
+      "thread": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "turn": "01a2118c-5213-7253-aeb0-21e0d98c689b",
+      "commands": 4
+    },
+    {
+      "mode": "full-access",
+      "ms": 9182,
+      "approvals": 0,
+      "policy": {
+        "mode": "full-access",
+        "sandbox": "{\"type\":\"dangerFullAccess\"}",
+        "approvalPolicy": "\"never\"",
+        "status": "verified"
+      },
+      "thread": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "turn": "01a2118c-ab7c-7052-ada7-8372d66e745d",
+      "commands": 4
+    },
+    {
+      "mode": "read-only",
+      "ms": 13041,
+      "approvals": 0,
+      "policy": {
+        "mode": "read-only",
+        "sandbox": "{\"type\":\"readOnly\",\"networkAccess\":false}",
+        "approvalPolicy": "\"on-request\"",
+        "status": "verified"
+      },
+      "thread": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "turn": "01a2118c-dbee-7303-bb80-1ca7e3fe782d",
+      "commands": 4
+    }
+  ]
+}

@@ -360,7 +360,7 @@ describe('main-owned conversation lifecycle', () => {
   })
   it('passes the voice-only preparation flag and its safe realtime tools to the selected provider', async () => {
     const tools = { definitions: [{ name: 'web_search', description: 'Search public web', parameters: { type: 'object', properties: {}, required: [], additionalProperties: false } }], assertAccess: () => {}, execute: async () => '{}' }
-    const provider: AIProvider = { testConnection: async () => true, streamMessage: vi.fn(async function* (): AsyncGenerator<AIChunk> { yield { type: 'text', text: 'Grounded answer.' }; yield { type: 'done' } }) }
+    const provider: AIProvider = { testConnection: async () => true, streamMessage: vi.fn(async function* (_messages, options): AsyncGenerator<AIChunk> { await options?.context?.projectTools?.execute('web_search', {}, options.signal); yield { type: 'text', text: 'Grounded answer.' }; yield { type: 'done' } }) }
     const prepare = vi.fn(async () => ({ attachments: [], repositoryText: 'Live cited evidence.', sources: [], projectTools: tools }))
     const chat = new ChatController({ provider: async () => provider, prepare, changed: vi.fn(), phase: vi.fn() })
     expect(await chat.answerHandsFree({ text: 'Search the web for React docs' })).toMatchObject({ ok: true, text: 'Grounded answer.' })

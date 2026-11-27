@@ -1,23 +1,20 @@
+import { LivePeer } from '../../services/speech/livePeer'
+import { MicrophoneSource, currentAudioDevices, onAudioDevices, routeSpeech } from '../../services/speech/audioDevices'
 import { useEffect, useRef, useState } from 'react'
 import { MicOff } from 'lucide-react'
 import { MicVAD, type RealTimeVADOptions } from '@ricky0123/vad-web'
-import { AdaptiveNoiseFloor, chooseClarification, chooseWakeAcknowledgement, classifyHandsFreeTranscript, encodeHandsFreeWav, handsFreeMicrophoneConstraints, isUsableSpeechSegment, isVoiceInterruption, negativeSpeechConfidenceThreshold, normalizeVoiceCommand, SESAME_WAKE_ACKNOWLEDGEMENT, shouldFallbackFromAudioWorklet, silenceEndpointMs, speechConfidenceThreshold, type HandsFreeState } from '../../../shared/handsFree'
-import { chooseHiggsWakeAcknowledgement } from '../../../shared/higgsTTS'
-import { isHiggsEngine, isSesameEngine } from '../../../shared/localVoice'
+import { AdaptiveNoiseFloor, isPlaybackEcho, chooseClarification, chooseWakeAcknowledgement, classifyHandsFreeTranscript, encodeHandsFreeWav, handsFreeMicrophoneConstraints, isUsableSpeechSegment, isVoiceInterruption, negativeSpeechConfidenceThreshold, shouldFallbackFromAudioWorklet, silenceEndpointMs, speechConfidenceThreshold, type HandsFreeState } from '../../../shared/handsFree'
 import type { VoiceInteractionSettings } from '../../../shared/handsFree'
 import { desktop } from '../../services/desktop'
 import { PlaybackAmplitude } from '../../services/speech/playbackAmplitude'
 import { handsFreeAudio } from '../../services/speech/handsFreeAudio'
 import { useAthena } from '../../store/athenaStore'
 import { setVoiceAmplitude } from '../../three/voiceAmplitude'
-import { parseVoiceWebOpen } from './voiceWebCommand'
 import { VoiceSegmentQueue, VoiceSentenceBuffer } from '../../../shared/voiceResponse'
 import type { AIOwnership } from '../../../shared/aiOwnership'
 import '../../styles/handsFree.css'
 
 type Phase = HandsFreeState['state']
-type PendingChatAction = 'send' | 'draft' | null
-type PendingVoiceAction = { action: 'open-app'; app: string } | { action: 'focus-app'; app: string } | { action: 'open-url'; url: string }
 interface CaptureRuntime {
   vad?: MicVAD
   stream?: MediaStream
@@ -25,22 +22,19 @@ interface CaptureRuntime {
   requestId?: string
   noiseFloor: AdaptiveNoiseFloor
   lastThresholdUpdate: number
-  deviceChange?: EventListener
+  source?: MicrophoneSource
+  reconnectTimer?: ReturnType<typeof setTimeout>
+  reconnecting?: boolean
+  reconnectAttempts?: number
 }
 
 function releaseCapture(active: CaptureRuntime): void {
   if (active.requestId) void desktop.cancelHandsFreeTranscription({ id: active.requestId }).catch(() => {})
   if (active.vad) void active.vad.destroy().catch(() => {})
   active.stream?.getTracks().forEach((track) => track.stop())
-  if (active.deviceChange) navigator.mediaDevices?.removeEventListener('devicechange', active.deviceChange)
+  clearTimeout(active.reconnectTimer)
+  active.source?.close()
 }
-
-const appAliases: Array<[RegExp, string]> = [
-  [/\b(?:visual studio code|vs\s?code|vscode)\b/i, 'vscode'],
-  [/\b(?:google chrome|chrome)\b/i, 'chrome'], [/\bsafari\b/i, 'safari'], [/\bfinder\b/i, 'finder'],
-  [/\bterminal\b/i, 'terminal'], [/\bslack\b/i, 'slack'], [/\bspotify\b/i, 'spotify'],
-  [/\bnotes\b/i, 'notes'], [/\bcalculator\b/i, 'calculator'],
-]
 
 function frameRms(values: Float32Array): number {
   let sum = 0
@@ -66,13 +60,6 @@ function asBlobBytes(bytes: Uint8Array<ArrayBufferLike>): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
-function appAction(text: string): { kind: 'open' | 'focus'; app: string } | undefined {
-  const match = /^(?:please\s+)?(open|launch|start|switch to|focus)(?:\s+the)?\s+(.+)$/i.exec(text)
-  if (!match) return undefined
-  const app = appAliases.find(([pattern]) => pattern.test(match[2]))?.[1]
-  return app ? { kind: /^(?:switch to|focus)$/i.test(match[1]) ? 'focus' : 'open', app } : undefined
-}
-
 function speakable(text: string): string {
   return text.replace(/\n\nSources:\n[\s\S]*$/i, '').replace(/```[\s\S]*?```/g, ' code block omitted. ').replace(/`([^`]+)`/g, '$1').replace(/https?:\/\/\S+/g, 'link').replace(/[#*_>|~]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3600)
 }
@@ -85,13 +72,24 @@ export function HandsFreeAssistant() {
   const [notice, setNotice] = useState('')
   const [diagnosticDirectMode, setDiagnosticDirectMode] = useState(false)
   const diagnosticDirectModeRef = useRef(false)
+  const activeMeterAt = useRef(0)
+  const cloudPeer = useRef<LivePeer | undefined>(undefined)
+  useEffect(()=>desktop.onVoiceAutomationStopped?.(()=>cloudPeer.current?.stopAutomation()),[])
+  useEffect(()=>desktop.onVoiceSubmissionEnded?.((id,complete)=>cloudPeer.current?.submittedTaskEnded(id,complete)),[])
   const runtime = useRef<CaptureRuntime | undefined>(undefined)
   const leaseActive = useRef(false)
   const ownership = useRef<AIOwnership | undefined>(undefined)
   const [localSessionId, setLocalSessionId] = useState<string | undefined>()
   useEffect(() => {
     let live = true, observed = false
-    const off = desktop.onChat(snapshot => { if (live) { observed = true; setLocalSessionId(snapshot.sessionId) } })
+    const off = desktop.onChat(snapshot => {
+      if (!live) return
+      observed = true
+      setLocalSessionId(snapshot.sessionId)
+      const progress=snapshot.automationProgress
+      if(progress?.cancelTarget==='voice' && progress.phase==='running' && progress.engine)
+        cloudPeer.current?.automationProgress(progress.id,progress.engine)
+    })
     void desktop.getChat().then(snapshot => { if (live && !observed) setLocalSessionId(snapshot.sessionId) }).catch(() => {})
     return () => { live = false; off() }
   }, [])
@@ -105,10 +103,13 @@ export function HandsFreeAssistant() {
     }
     void desktop.disableHandsFree(lease).catch(() => {})
   }
+  const lastSpoken = useRef({ text: '', until: 0 })
+  const overlappedPlayback = useRef(false)
   const audio = useRef<HTMLAudioElement | undefined>(undefined)
   const meter = useRef<PlaybackAmplitude | undefined>(undefined)
   meter.current ??= new PlaybackAmplitude(setVoiceAmplitude)
   useEffect(() => () => { meter.current?.dispose(); meter.current = undefined }, [])
+  const releaseRoute = useRef<(() => void) | undefined>(undefined)
   const audioUrl = useRef<string | undefined>(undefined)
   const activeReplyId = useRef<string | undefined>(undefined)
   const segmentFinished = useRef<((played: boolean) => void) | undefined>(undefined)
@@ -119,8 +120,6 @@ export function HandsFreeAssistant() {
   const clarificationCooldownUntil = useRef(0)
   const followUpActive = useRef(false)
   const followUpTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const pendingChat = useRef<PendingChatAction>(null)
-  const pendingAction = useRef<PendingVoiceAction | null>(null)
   const disposed = useRef(false)
   const phaseRef = useRef<Phase>('paused')
   const turnId = useRef(0)
@@ -164,13 +163,15 @@ export function HandsFreeAssistant() {
   }
 
   const endVoiceConversation = () => {
-    followUpActive.current = false; pendingChat.current = null; pendingAction.current = null
+    followUpActive.current = false
     clearTimeout(followUpTimer.current); followUpTimer.current = undefined
     void desktop.clearHandsFreeContext()
     setStatus('standby')
   }
 
   const cleanupPlayback = () => {
+    releaseRoute.current?.(); releaseRoute.current = undefined
+    if (audio.current) lastSpoken.current.until = Date.now() + 1800
     segmentFinished.current?.(false)
     segmentFinished.current = undefined
     meter.current?.stop()
@@ -190,6 +191,7 @@ export function HandsFreeAssistant() {
   }
 
   useEffect(() => desktop.onLocalVoicePlaybackStopped(() => {
+    cloudPeer.current?.close('Voice playback stopped.')
     // Main already cancelled the previous owner. Do not issue a second global
     // stop here: it could cancel the new settings preview that caused this event.
     streamingQueue.current?.cancel(); streamingQueue.current = undefined
@@ -229,6 +231,7 @@ export function HandsFreeAssistant() {
           segmentFinished.current = resolve
           player.onended = () => {
             if (activeReplyId.current !== id) return
+            lastSpoken.current.until = Date.now() + 1800
             segmentFinished.current = undefined
             cleanupPlayback()
             resolve(true)
@@ -237,10 +240,11 @@ export function HandsFreeAssistant() {
             if (activeReplyId.current !== id) return
             activeReplyId.current = undefined
             cleanupPlayback()
-            setNotice('Athena’s voice could not play. Check the Mac audio output device.')
+            setNotice('Athena’s voice could not play. Check the selected output in Voice Settings.')
           }
           player.onplaying = () => {
             if (activeReplyId.current !== id) return
+            lastSpoken.current = { text: output, until: Number.POSITIVE_INFINITY }
             meter.current?.start(player)
             diagnostics.current.firstAudioMs ??= Math.round(performance.now() - firstAudioStartedAt)
             if (speechEndedAt.current !== undefined) diagnostics.current.speechEndToAudioMs ??= Math.round(performance.now() - speechEndedAt.current)
@@ -249,6 +253,9 @@ export function HandsFreeAssistant() {
         })
         try {
           const playbackStarted = performance.now()
+          const release = await routeSpeech(player, message => { void stopPlayback(); setNotice(message) }, meter.current)
+          if (activeReplyId.current !== id || turnId.current !== turn || disposed.current) { release(); return false }
+          releaseRoute.current = release
           await player.play()
           diagnostics.current.playbackStartMs = Math.round(performance.now() - playbackStarted)
           diagnostics.current.firstPlaybackStartMs ??= diagnostics.current.playbackStartMs
@@ -264,9 +271,9 @@ export function HandsFreeAssistant() {
           setStatus('speaking')
           onStarted?.()
           if (!await finished) return false
-        } catch {
+        } catch (error) {
           if (activeReplyId.current === id) { activeReplyId.current = undefined; cleanupPlayback() }
-          setNotice('Athena’s voice could not play. Check the Mac audio output device.')
+          setNotice(error instanceof Error ? error.message : 'Athena’s voice could not play. Check Voice Settings.')
           return false
         }
       }
@@ -283,8 +290,6 @@ export function HandsFreeAssistant() {
     const seconds = interactionRef.current?.followUpTimeoutSeconds ?? 15
     followUpTimer.current = setTimeout(() => {
       followUpActive.current = false
-      pendingChat.current = null
-      pendingAction.current = null
       void desktop.clearHandsFreeContext()
       setStatus('standby')
     }, seconds * 1000)
@@ -332,174 +337,20 @@ export function HandsFreeAssistant() {
     await say(text, true)
   }
 
-  const getChat = () => desktop.getChat()
-  const findSession = async (query: string) => {
-    const chat = await getChat()
-    const matches = (chat.sessions ?? []).filter((session) => session.title.toLowerCase().includes(query.toLowerCase()))
-    return { chat, matches }
-  }
-  const routeSessionCommand = async (text: string): Promise<string | null> => {
-    const command = normalizeVoiceCommand(text)
-    if (/^(?:open my chat|show my chat|open chat|show chat|open my conversations|show my conversations)$/i.test(command)) {
-      await desktop.command('open-chat'); return 'Sure. I opened your conversations.'
-    }
-    if (/^(?:create|start) (?:a )?new chat(?: for this project)?$/i.test(command)) {
-      const chat = await getChat(), project = /for this project$/i.test(command) ? chat.workspaces?.[0]?.id : undefined
-      const result = await desktop.chatSession({ action: 'create', ...(project ? { workspaceId: project } : {}) })
-      return result.ok ? 'A new chat is ready.' : result.message ?? 'I could not create a new chat.'
-    }
-    if (/^(?:close|hide) (?:my )?(?:chat|conversation)$/i.test(command)) {
-      await desktop.command('close-chat'); return 'Okay, I closed the chat window.'
-    }
-    const rename = /^(?:rename|call) (?:this|the current) chat (?:to|as) (.+)$/i.exec(command)
-    if (rename) {
-      const chat = await getChat()
-      if (!chat.sessionId) return 'There is no active chat to rename.'
-      const result = await desktop.chatSession({ action: 'rename', id: chat.sessionId, title: rename[1].trim() })
-      return result.ok ? `Done. I renamed this chat to ${rename[1].trim()}.` : result.message ?? 'I could not rename this chat.'
-    }
-    if (/^(?:show|list) (?:my )?(?:chats|conversations)$/i.test(command)) {
-      const chat = await getChat(), titles = (chat.sessions ?? []).slice(0, 6).map((session) => session.title)
-      return titles.length ? `Here are your recent conversations: ${titles.join('; ')}.` : 'There are no saved conversations yet.'
-    }
-    const requestedProject = /^(?:open|switch to|use) (?:my )?(?:last |the )?(.+?) project(?: in (?:vs code|visual studio code))?$/i.exec(command)
-    if (requestedProject || /^(?:open|switch to) my last project$/i.test(command)) {
-      const chat = await getChat(), query = requestedProject?.[1]?.replace(/^(?:last|the)\s+/i, '')
-      const sessions = (chat.sessions ?? []).filter((session) => session.project)
-      const matches = query && !/^(?:last|current)$/i.test(query) ? sessions.filter((session) => session.project!.name.toLowerCase().includes(query.toLowerCase())) : sessions.slice(0, 1)
-      const unique = [...new Map(matches.map((session) => [session.project!.id, session])).values()]
-      if (unique.length === 1) {
-        const result = await desktop.chatSession({ action: 'switch', id: unique[0].id })
-        if (result.ok) { await desktop.command('open-chat'); return `I switched to the ${unique[0].project!.name} project conversation.` }
-      }
-      if (unique.length > 1) return `I found more than one match: ${unique.map((session) => session.project!.name).join(', ')}. Which project did you mean?`
-      if (chat.sessionId) {
-        const result = await desktop.chatContext({ action: 'connect', sessionId: chat.sessionId })
-        return result.ok ? 'I opened the project folder picker. Choose the folder you want to authorize.' : result.message ?? 'I could not open the project picker.'
-      }
-      return 'Open a chat first, then I can attach a project folder to it.'
-    }
-    const switchChat = /^(?:open|switch to) (?:my )?(.+?) (?:chat|conversation)$/i.exec(command)
-    if (switchChat) {
-      const { matches } = await findSession(switchChat[1])
-      if (matches.length === 1) { await desktop.chatSession({ action: 'switch', id: matches[0].id }); await desktop.command('open-chat'); return `I opened ${matches[0].title}.` }
-      if (matches.length > 1) return `I found a few matching chats: ${matches.slice(0, 5).map((item) => item.title).join(', ')}. Which one should I open?`
-      return `I could not find a chat called ${switchChat[1]}.`
-    }
-    const readLatest = /^(?:read|say) (?:the )?(?:latest|last) (?:chat )?(?:response|answer|message)$/i.test(command)
-    if (readLatest) {
-      const chat = await getChat(), message = [...chat.messages].reverse().find((entry) => entry.role === 'assistant' && entry.content.trim())
-      return message?.content ?? 'There is no assistant response in the active chat yet.'
-    }
-    if (/^(?:summarize|summary of) (?:this|my current) conversation$/i.test(command)) {
-      const chat = await getChat(), excerpt = chat.messages.slice(-12).map((message) => `${message.role}: ${message.content.slice(0, 1200)}`).join('\n')
-      if (!excerpt) return 'The active conversation is empty.'
-      const response = await desktop.answerHandsFree({ text: `Summarize this conversation briefly and accurately. Use only this transcript as evidence:\n${excerpt}`, ownership: ownership.current })
-      return response.ok ? response.text ?? 'I could not summarize the conversation.' : response.message ?? 'I could not summarize the conversation.'
-    }
-    return null
-  }
-
-  const sendOrDraft = async (kind: Exclude<PendingChatAction, null>, text: string, sessionQuery?: string): Promise<string> => {
-    let chat = await getChat(), sessionId = chat.sessionId
-    if (sessionQuery) {
-      const match = (chat.sessions ?? []).filter((session) => session.title.toLowerCase().includes(sessionQuery.toLowerCase()))
-      if (match.length !== 1) return match.length ? `I found more than one chat matching ${sessionQuery}. Please say the full chat name.` : `I could not find a chat called ${sessionQuery}.`
-      sessionId = match[0].id
-      const switched = await desktop.chatSession({ action: 'switch', id: sessionId })
-      if (!switched.ok) return switched.message ?? 'I could not switch to that chat.'
-      chat = await getChat()
-    }
-    if (!sessionId) return 'There is no active chat to use.'
-    if (kind === 'draft') {
-      const result = await desktop.chatSession({ action: 'draft', id: sessionId, text })
-      return result.ok ? 'I put that in the chat draft without sending it.' : result.message ?? 'I could not create the draft.'
-    }
-    if (chat.phase !== 'idle') return 'That chat is still working. I did not send another message.'
-    const sent = await desktop.sendChat({ text, sessionId })
-    await desktop.command('open-chat')
-    return sent.ok ? 'I sent that to the selected chat.' : sent.message ?? 'I could not send the message.'
-  }
-
-  const executeVoiceAction = async (action: PendingVoiceAction, confirmed = false): Promise<string> => {
-    const options = { confirmed }
-    const result = action.action === 'open-app'
-      ? await desktop.openApplicationByVoice({ app: action.app, ...options })
-      : action.action === 'focus-app'
-        ? await desktop.focusApplicationByVoice({ app: action.app, ...options })
-        : await desktop.openURLByVoice({ url: action.url, ...options })
-    return result.message || (result.ok ? 'The requested desktop action is complete.' : 'I could not complete that desktop action.')
-  }
-
-  const queueVoiceURL = async (address: string): Promise<string> => {
-    const action: PendingVoiceAction = { action: 'open-url', url: address }
-    const mode = (await getChat()).config?.agentMode ?? 'ask'
-    if (mode === 'read-only') return 'Read Only mode blocks desktop actions. Change the permission mode in this conversation before asking me to open it.'
-    if (mode === 'ask') { pendingAction.current = action; return `Would you like me to open ${address}? Say yes to confirm or no to cancel.` }
-    return executeVoiceAction(action)
-  }
-
-  // `null` means this is not one of Athena's local voice commands and should
-  // fall through to the conversational AI. `undefined` means a command was
-  // handled silently (for example, "stop talking" or "stop listening").
+  // All action planning runs in the main-process registry. The floating renderer
+  // owns audio and interruption only, never session mutations or message submission.
   const routeCommand = async (rawText: string): Promise<string | null | undefined> => {
-    const text = normalizeVoiceCommand(rawText).replace(/^(?:wait|hold on|listen)[,\s]+/i, '')
     const interrupt = isVoiceInterruption(rawText)
     if (interrupt === 'stop-speech') { await stopPlayback(); return undefined }
     if (interrupt === 'cancel-task') {
-      pendingAction.current = null
+      await desktop.cancelHandsFreeReply()
       await stopPlayback()
-      const chat = await getChat()
-      if (chat.phase !== 'idle') { await desktop.stopChat(); return 'Okay, I stopped the active chat task. Any completed changes are preserved.' }
-      return 'Okay, I cancelled that pending action.'
+      return null // Also route the explicit stop to the selected conversation.
     }
     if (interrupt === 'standby') {
-      followUpActive.current = false; pendingChat.current = null; pendingAction.current = null; clearTimeout(followUpTimer.current)
+      followUpActive.current = false; clearTimeout(followUpTimer.current)
       await stopPlayback(); await desktop.clearHandsFreeContext(); setStatus('standby'); return undefined
     }
-    if (pendingAction.current) {
-      if (/^(?:yes|yes please|do it|go ahead|confirm|sure|okay|ok)$/i.test(text)) {
-        const action = pendingAction.current; pendingAction.current = null
-        return executeVoiceAction(action, true)
-      }
-      if (/^(?:no|no thanks|cancel|not now|don't|do not)$/i.test(text)) {
-        pendingAction.current = null
-        return 'Okay, I did not open anything.'
-      }
-      pendingAction.current = null
-    }
-    if (pendingChat.current) {
-      const pending = pendingChat.current; pendingChat.current = null
-      return sendOrDraft(pending, text)
-    }
-    const draft = /^(?:type|put|draft) (?:this )?(?:in|into) (?:my )?(?:current )?chat(?:\s*[:,-]\s*|\s+)(.+)$/i.exec(text)
-    if (draft) return sendOrDraft('draft', draft[1])
-    if (/^(?:type|put|draft) (?:this )?(?:in|into) (?:my )?(?:current )?chat$/i.test(text)) {
-      pendingChat.current = 'draft'; return 'What would you like me to put in the chat draft?'
-    }
-    const explicitSend = /^(?:send|ask) (?:this )?(?:to|in) (?:my )?(?:current )?chat(?:\s*[:,-]\s*|\s+)(.+)$/i.exec(text)
-    if (explicitSend) return sendOrDraft('send', explicitSend[1])
-    const namedSend = /^ask my (.+?) chat(?:\s+(?:where|how|what|why|when|about)\b|\s*[:,-]\s*)(.+)$/i.exec(text)
-    if (namedSend) return sendOrDraft('send', namedSend[2], namedSend[1])
-    if (/^(?:send|ask) (?:a )?message to (?:my )?(?:current )?chat$/i.test(text)) {
-      pendingChat.current = 'send'; return 'Sure. What would you like me to send?'
-    }
-    const nativeAutomationRequest = /\b(?:new\s+(?:online\s+|local\s+)?(?:chat|conversation)|ChatGPT\s+conversation|Online\s+AI\s+Chat|Athena\s+Academy|YouTube|https?:\/\/|VS\s*Code|Visual\s+Studio\s+Code)\b/i.test(text)
-    if (!nativeAutomationRequest) {
-      const sessionResponse = await routeSessionCommand(text)
-      if (sessionResponse) return sessionResponse
-    }
-    const browserRequest = parseVoiceWebOpen(text)
-    if (browserRequest?.kind === 'result') {
-      const result = await desktop.getVoiceSearchResult({ index: browserRequest.index })
-      return result.ok && result.url ? queueVoiceURL(result.url) : result.message ?? 'I do not have that search result anymore. Search again first.'
-    }
-    // Explicit URL opens go through the main-process browser action so the
-    // Browser Access permission, OS result, audit record, and diagnostics are
-    // the same for voice and local Athena Chat.
-    if (browserRequest?.kind === 'url') return null
-    const app = appAction(text)
-    if (app) return null
     return null
   }
 
@@ -521,11 +372,61 @@ export function HandsFreeAssistant() {
     setStatus('listening')
     followUpActive.current = interaction.followUpEnabled
     clearTimeout(followUpTimer.current)
+    const current = settingsRef.current
+    if (route.kind === 'wake-only' || route.includedWakePhrase) {
+      if (current?.liveVoice.engine === 'live') {
+        const config=current.liveVoice
+        const stream=runtime.current?.stream
+        const allowed=config.cloudAllowed && !current.strictOffline && current.voiceEnabled && !current.voiceMuted && !current.doNotDisturb && interaction.autoVoiceResponse
+        if (allowed && stream && !cloudPeer.current) {
+          const owner=ownership.current
+          const connect=async(recovering=false)=>{
+            const peer:LivePeer=new LivePeer({mode:'floating',stream,settings:config,initial:recovering || route.kind==='wake-only'?undefined:route.text,
+              volume:current.voiceVolume,amplitude:setVoiceAmplitude,
+              state:(state,message)=>{
+                if (cloudPeer.current!==peer || disposed.current)return
+                const talking=state==='speaking'
+                void reportPlayback(talking)
+                setStatus(talking?'speaking':state==='listening'?'listening':'processing',message ?? (state==='working'?'Working on your request…':state==='connecting'?'Connecting to GPT-Live…':talking&&config.fullDuplex?'Speaking and listening':'GPT-Live connected'))
+              },
+              pauseWork:paused=>owner?desktop.steerVoiceAutomation({paused,ownership:owner}):Promise.resolve(false),
+              cancelWork:async()=>{await desktop.cancelHandsFreeReply()},
+              delegate:async (text,id)=>{
+                if(!owner || cloudPeer.current!==peer || disposed.current) return 'The voice session has ended.'
+                const result=await desktop.answerHandsFree({id,text,ownership:owner,liveRequest:peer.request})
+                return (result.ok?result.text:result.message) || 'The task result is unavailable.'
+              },
+              ended:reason=>{
+                if(cloudPeer.current!==peer)return
+                cloudPeer.current=undefined;void reportPlayback(false)
+                if(!disposed.current){
+                  if(!recovering && /WebRTC connection failed|connection was interrupted/i.test(reason) && runtime.current?.stream===stream && ownership.current===owner && settingsRef.current?.liveVoice.cloudAllowed && !settingsRef.current.strictOffline){
+                    void connect(true).catch(()=>setStatus('standby','Connection recovery failed. Wake Athena to try again.'))
+                    return
+                  }
+                  followUpActive.current=false;setStatus('standby',reason)
+                  if(config.fallback && /failed|interrupted|could not|budget|unable/i.test(reason)){
+                    followUpActive.current=true;setStatus('follow-up','Using your local voice.');armFollowUpExpiry()
+                  }
+                }
+              },
+            })
+            cloudPeer.current=peer
+            try {await peer.start()}catch(e){if(cloudPeer.current===peer)cloudPeer.current=undefined;throw e}
+          }
+          try {await connect();return}
+          catch(error){
+            if(disposed.current || turnId.current!==turn)return
+            if(!config.fallback){endVoiceConversation();setStatus('error',error instanceof Error?error.message:'GPT-Live is unavailable.');return}
+            setStatus('listening','Using your local voice.')
+          }
+        } else if(!config.fallback) {
+          endVoiceConversation();setStatus('error','Enable cloud voice and audio output in Voice Settings to use GPT-Live.');return
+        }
+      }
+    }
     if (route.kind === 'wake-only') {
-      const engine = settingsRef.current?.localVoice.engine
-      const acknowledgement = engine && isSesameEngine(engine) ? SESAME_WAKE_ACKNOWLEDGEMENT
-        : engine && isHiggsEngine(engine) ? chooseHiggsWakeAcknowledgement(previousWakeAcknowledgement.current)
-        : chooseWakeAcknowledgement(previousWakeAcknowledgement.current)
+      const acknowledgement = chooseWakeAcknowledgement(previousWakeAcknowledgement.current)
       previousWakeAcknowledgement.current = acknowledgement
       if (speechEndedAt.current !== undefined) diagnostics.current.wakeRecognitionMs = Math.round(performance.now() - speechEndedAt.current)
       await say(acknowledgement, interaction.followUpEnabled, turn, true)
@@ -637,7 +538,7 @@ export function HandsFreeAssistant() {
       runtime.current = undefined
       if (active) releaseCapture(active)
       clearTimeout(followUpTimer.current); followUpTimer.current = undefined
-      followUpActive.current = false; pendingChat.current = null
+      followUpActive.current = false
       if (leaseActive.current) {
         if (activeReplyId.current || audio.current) void stopPlayback()
         void desktop.cancelHandsFreeReply(); void reportVoiceState({ state: 'paused' }); releaseVoiceLease(ownership.current)
@@ -653,6 +554,14 @@ export function HandsFreeAssistant() {
     disposed.current = false
     let cancelled = false
     let effectOwner: AIOwnership | undefined
+    let retryOnDevice: (() => void) | undefined
+    let retryDeviceChange: (() => void) | undefined
+    let startupRetryTimer: ReturnType<typeof setTimeout> | undefined
+    const clearStartupRetry = () => {
+      retryOnDevice?.(); retryOnDevice = undefined
+      if (retryDeviceChange) navigator.mediaDevices?.removeEventListener('devicechange', retryDeviceChange)
+      retryDeviceChange = undefined; clearTimeout(startupRetryTimer)
+    }
     const failCapture = (active: CaptureRuntime, message: string) => {
       if (runtime.current !== active) return
       runtime.current = undefined
@@ -661,6 +570,7 @@ export function HandsFreeAssistant() {
       setStatus('error', message)
     }
     const boot = async () => {
+      clearStartupRetry()
       let startupStage = 'loading local speech detector'
       setStatus('processing', 'Starting microphone…')
       const authorized = await desktop.enableHandsFree(localSessionId)
@@ -678,33 +588,38 @@ export function HandsFreeAssistant() {
       try {
         const active: CaptureRuntime = { vad: undefined as unknown as MicVAD, processing: false, noiseFloor: new AdaptiveNoiseFloor(), lastThresholdUpdate: 0 }
         runtime.current = active
+        const reconnect = () => {
+          clearTimeout(active.reconnectTimer)
+          active.reconnectTimer = setTimeout(async () => {
+            if (cancelled || runtime.current !== active || !active.source?.needsReconnect()) return
+            if (active.processing || active.reconnecting || !active.vad) { reconnect(); return }
+            active.reconnecting = true
+            try {
+              await active.vad.pause()
+              await active.vad.start()
+              if (active.stream) await cloudPeer.current?.replaceMicrophone(active.stream)
+              active.reconnectAttempts = 0
+              setNotice(currentAudioDevices().input.message ?? '')
+              if (!activeReplyId.current && !cloudPeer.current) setStatus(followUpActive.current ? 'follow-up' : 'standby')
+            } catch {
+              await active.vad.pause().catch(() => {})
+              active.reconnectAttempts = (active.reconnectAttempts ?? 0) + 1
+              setStatus('error', 'Microphone unavailable. Reconnect it or choose an input in Voice Settings; listening will recover when a device is available.')
+              if (active.reconnectAttempts < 3) reconnect()
+            } finally { active.reconnecting = false }
+          }, 500 * Math.max(1, active.reconnectAttempts ?? 1))
+        }
+        active.source = new MicrophoneSource(() => microphoneConstraints(interactionRef.current ?? interaction).audio as MediaTrackConstraints, () => { active.reconnectAttempts = 0; reconnect() })
         const createStream = async () => {
-          const current = interactionRef.current ?? interaction
-          let stream: MediaStream
-          const constraints = microphoneConstraints(current)
-          try { stream = await navigator.mediaDevices.getUserMedia(constraints) }
-          catch (error) {
-            // Some macOS input stacks advertise voice isolation but reject it.
-            // Retry once without that optional control; noise suppression stays on.
-            const audio = constraints.audio
-            if (!audio || typeof audio !== 'object' || !('voiceIsolation' in audio)) throw error
-            const fallback = handsFreeMicrophoneConstraints(current.noiseSuppressionLevel, false)
-            stream = await navigator.mediaDevices.getUserMedia(fallback)
-          }
+          const stream = await active.source!.getStream()
+          if (cancelled || runtime.current !== active) { active.source?.close(); throw new Error('Capture cancelled.') }
           active.stream = stream
-          for (const track of stream.getAudioTracks()) track.addEventListener('ended', () => {
-            if (runtime.current !== active || cancelled) return
-            failCapture(active, 'Microphone disconnected. Reconnect it, then turn Hands-Free Athena off and on in Settings → Voice.')
-          }, { once: true })
-          if (active.deviceChange) navigator.mediaDevices.removeEventListener('devicechange', active.deviceChange)
-          active.deviceChange = () => {
-            if (runtime.current === active && stream.getAudioTracks().every((track) => track.readyState === 'ended')) failCapture(active, 'Microphone input changed or disconnected. Reconnect it and restart hands-free listening in Settings → Voice.')
-          }
-          navigator.mediaDevices.addEventListener?.('devicechange', active.deviceChange)
           return stream
         }
         const onSpeechEnd = async (samples: Float32Array) => {
-          if (runtime.current !== active || active.processing || cancelled) { samples.fill(0); return }
+          cloudPeer.current?.resumeListening()
+          if (cloudPeer.current || runtime.current !== active || active.processing || cancelled) { samples.fill(0); return }
+          if (overlappedPlayback.current && !interactionRef.current?.allowSpeechInterruption) { samples.fill(0); return }
           active.processing = true
           speechEndedAt.current = performance.now()
           const turn = ++turnId.current
@@ -780,6 +695,10 @@ export function HandsFreeAssistant() {
               else setStatus('standby')
               return
             }
+            if (overlappedPlayback.current && isPlaybackEcho(result.transcript!, lastSpoken.current.text)) {
+              setStatus(followUpActive.current ? 'follow-up' : 'standby')
+              return
+            }
             transcript = result.transcript.trim()
             trace('transcript-ready', undefined, `characters=${transcript.length}`)
           } catch {
@@ -808,7 +727,7 @@ export function HandsFreeAssistant() {
           // stream alive. Reopening CoreAudio on every utterance added latency
           // and repeatedly allocated input-device resources.
           pauseStream: async () => {},
-          resumeStream: async (stream) => stream,
+          resumeStream: async () => createStream(),
           positiveSpeechThreshold: speechThresholds(interactionRef.current ?? interaction, active.noiseFloor.current()).positiveSpeechThreshold,
           negativeSpeechThreshold: speechThresholds(interactionRef.current ?? interaction, active.noiseFloor.current()).negativeSpeechThreshold,
           minSpeechMs: 300, preSpeechPadMs: 360,
@@ -820,8 +739,13 @@ export function HandsFreeAssistant() {
             const current = interactionRef.current
             if (!current) return
             if (import.meta.env.DEV && speechStartedAt.current !== undefined && probabilities.isSpeech >= 0.5) lastSpeechFrameAt.current = performance.now()
+            if (cloudPeer.current && probabilities.isSpeech>=0.7)cloudPeer.current.activity()
             const floor = active.noiseFloor.observe(frameRms(frame), probabilities.isSpeech, current.automaticNoiseCalibration)
             const now = Date.now()
+            if (currentAudioDevices().testActive && now - (activeMeterAt.current ?? 0) > 100) {
+              activeMeterAt.current = now
+              void desktop.audioDevices({ action: 'level', level: Math.min(1, frameRms(frame) * 5) }).catch(() => {})
+            }
             if (now - active.lastThresholdUpdate >= 500) {
               const thresholds = speechThresholds(current, floor)
               active.vad?.setOptions({ ...thresholds, redemptionMs: silenceEndpointMs(current.endOfSpeechDelayMs, speechStartedAt.current === undefined ? 0 : performance.now() - speechStartedAt.current) })
@@ -830,6 +754,8 @@ export function HandsFreeAssistant() {
           },
           onSpeechRealStart: () => {
             if (runtime.current !== active || cancelled) return
+            if(cloudPeer.current){if(interactionRef.current?.allowSpeechInterruption)cloudPeer.current.interruptSpeech();else cloudPeer.current.activity();return}
+            overlappedPlayback.current = Boolean(audio.current && !audio.current.paused) || Date.now() < lastSpoken.current.until
             speechStartedAt.current = performance.now()
             lastSpeechFrameAt.current = speechStartedAt.current
             startTrace()
@@ -846,7 +772,7 @@ export function HandsFreeAssistant() {
             setStatus('listening')
           },
           onSpeechEnd,
-          onVADMisfire: () => {},
+          onVADMisfire: () => {cloudPeer.current?.resumeListening()},
         }
         active.vad = await MicVAD.new(vadOptions)
         if (cancelled || disposed.current) { releaseCapture(active); if (runtime.current === active) runtime.current = undefined; return }
@@ -863,8 +789,7 @@ export function HandsFreeAssistant() {
           try { await workletVad.destroy() } catch { /* A partial worklet init may not yet have a processor node. */ }
           active.stream?.getTracks().forEach((track) => track.stop())
           active.stream = undefined
-          if (active.deviceChange) navigator.mediaDevices?.removeEventListener('devicechange', active.deviceChange)
-          active.deviceChange = undefined
+
           active.vad = await MicVAD.new({ ...vadOptions, processorType: 'ScriptProcessor' })
           if (cancelled || disposed.current) { releaseCapture(active); if (runtime.current === active) runtime.current = undefined; return }
           startupStage = 'opening fallback audio processor'
@@ -884,11 +809,25 @@ export function HandsFreeAssistant() {
         // Keep the root cause visible in Settings; the generic error sentence was
         // consuming most of the IPC status limit and truncating ONNX/WASM errors.
         setStatus('error', `Hands-free startup failed: ${safeDetail}`.slice(0, 240))
+        if (['NotFoundError', 'NotReadableError', 'AbortError', 'OverconstrainedError'].includes(errorName)) {
+          const previousInput = currentAudioDevices().input.deviceId
+          const retry = () => {
+            clearTimeout(startupRetryTimer)
+            startupRetryTimer = setTimeout(() => { if (!cancelled) void boot() }, 500)
+          }
+          retryOnDevice = onAudioDevices(next => { if (next.input.deviceId && next.input.deviceId !== previousInput) retry() })
+          // With no active capture lease, Chromium can redact input IDs. A real
+          // OS device-change event still permits one fresh authorized attempt.
+          retryDeviceChange = retry
+          navigator.mediaDevices.addEventListener('devicechange', retryDeviceChange)
+        }
       }
     }
     void boot()
     return () => {
       cancelled = true
+      cloudPeer.current?.close('Voice owner changed.');cloudPeer.current=undefined
+      clearStartupRetry()
       turnId.current++
       const active = runtime.current
       runtime.current = undefined
@@ -921,6 +860,11 @@ export function HandsFreeAssistant() {
       if (followUpActive.current) setStatus('follow-up')
     }
   }, [interaction?.handsFreeEnabled, settings?.voiceEnabled, settings?.voiceMuted, settings?.doNotDisturb])
+
+  useEffect(()=>{
+    if(settings?.liveVoice.engine!=='live' || !settings.liveVoice.cloudAllowed || settings.strictOffline || settings.voiceMuted || !settings.voiceEnabled || settings.doNotDisturb || !interaction?.autoVoiceResponse)cloudPeer.current?.close('Cloud voice stopped.')
+    else cloudPeer.current?.setVolume(settings.voiceVolume)
+  },[settings?.liveVoice.engine,settings?.liveVoice.cloudAllowed,settings?.strictOffline,settings?.voiceMuted,settings?.voiceEnabled,settings?.doNotDisturb,settings?.voiceVolume,interaction?.autoVoiceResponse])
 
   if (!interaction?.handsFreeEnabled) return null
   const labels: Record<Phase, string> = { standby: 'Listening for Athena', listening: 'Listening', processing: 'Processing', speaking: 'Speaking', 'follow-up': 'Ready for follow-up', paused: 'Paused', error: notice || 'Microphone unavailable' }

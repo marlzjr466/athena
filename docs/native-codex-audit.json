@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-25",
+  "platform": "macOS arm64",
+  "runtime": {"executable":"/opt/homebrew/bin/codex","version":"0.171.0","arguments":["app-server","--listen","stdio://"],"authentication":"chatgpt"},
+  "path": ["Composer per-conversation configuration","main.ts subscription provider selection","ChatController.generateNative","CodexAppServerProvider","official Codex App Server stdio","native thread and turn"],
+  "fixes": [
+    "Send explicit reasoning effort through supported thread config.model_reasoning_effort as well as turn/start.effort.",
+    "Preserve server-returned reasoning effort; verify changed effort rather than recording a requested value as confirmed.",
+    "Recognize a loaded thread's previously verified policy from thread/resume, apply authorized changes through turn/start, then verify the effective policy. Stop on genuine mismatches.",
+    "Expose executable metadata to development diagnostics without adding chat UI."
+  ],
+  "confirmationLimits": [
+    "turn/start acknowledges a turn ID and status; it does not echo model, effort or policy. The report keeps these fields absent in that acknowledgment.",
+    "Configuration confirmation comes from thread/start or thread/resume. Changed loaded-thread configuration is read back after turn/start.",
+    "The initial unconditional immediate readback experiment failed with server error list_turns is not supported yet on a new thread; it was replaced with conditional readback and the affected live tests passed."
+  ],
+  "evidence": {
+    "nativeProtocol":"native-codex-protocol-audit.json",
+    "accessAndFileEffects":"native-codex-access-verification.json",
+    "actualAthenaConversations":"native-codex-ui-verification.json",
+    "interruptionAndNoReplay":"native-codex-resume-verification.json"
+  },
+  "diagnostics": {"implementation":"tests/fixtures/codexIntegrationDiagnostics.ts","developmentOnly":true,"excludes":["prompts","command output","credentials","environment","account identity"],"providerHarnessConversationId":"Correlation ID only; actual Athena conversation IDs are in the UI evidence."},
+  "validation": {"targetedTests":41,"unitResult":"PASS","livePolicies":"PASS","liveStopModelChangeRecovery":"PASS","finalElectronUI":"PASS","typecheck":"PASS","build":"PASS","installedRequestSchemas":"Exact match for ThreadStartParams, TurnStartParams, SandboxPolicy and AskForApproval"},
+  "limitations": [
+    "Live tests used disposable temporary directories, not Metrobank repositories or services.",
+    "Native sub-agent rendering, file-diff rendering, failed-turn handling and dropped-stream recovery have fixture coverage; live sub-agent/diff/failure and forced network-disconnection scenarios were not verified in this audit.",
+    "Windows was not physically tested. Organization-enforced policy denials were fixture tested, not induced on the user's account.",
+    "No separate premium API route or billing fallback was used; this verifies the selected ChatGPT subscription path, not external billing-account balances."
+  ]
+}

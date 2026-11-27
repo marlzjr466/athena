@@ -64,6 +64,10 @@ export class AttachmentService {
       const image = await this.decodeImage(bytes)
       if (!image.width || !image.height || image.width * image.height > 32_000_000 || image.png.length > MAX_ATTACHMENT_BYTES) throw new ChatError('Image is unreadable or exceeds 32 megapixels. Resize it first.')
       stored = image.png; kind = 'image'; mime = 'image/png'
+    } else if (extension === '.mp4' || extension === '.webm') {
+      const valid = extension === '.mp4' ? bytes.subarray(4, 8).toString() === 'ftyp' : bytes.subarray(0, 4).equals(Buffer.from([0x1a,0x45,0xdf,0xa3]))
+      if (!valid) throw new ChatError('Video contents do not match its file type.')
+      kind = 'video'; mime = extension === '.mp4' ? 'video/mp4' : 'video/webm'
     } else if (extension === '.pdf' || extension === '.docx' || extension === '.xlsx') {
       if (extension === '.pdf' && bytes.subarray(0, 5).toString() !== '%PDF-') throw new ChatError('Invalid PDF file.')
       text = await this.parser(bytes, extension)
@@ -123,6 +127,7 @@ export class AttachmentService {
     return { size: bytes.length, characters: text.length }
   }
   async preview(sessionId: string, attachment: Attachment): Promise<{ preview?: string; text?: string }> {
+    if (attachment.kind === 'video') { this.gate(); return { text: 'Video reference · ' + attachment.name + '\nUse Create video to edit or extend this clip.' } }
     const prepared = await this.prepare(sessionId, attachment)
     return prepared.kind === 'image' ? { preview: prepared.data } : { text: prepared.data }
   }
@@ -154,6 +159,7 @@ export class AttachmentService {
     } finally { await file.close() }
   }
   async prepare(sessionId: string, attachment: Attachment): Promise<PreparedAttachment> {
+    if (attachment.kind === 'video') throw new ChatError('Use Create video to send this reference to a compatible video generation provider.')
     const requirePermission = attachment.origin !== 'paste'
     const bytes = await this.readStored(sessionId, attachment.id, attachment.kind === 'image' ? 'bin' : 'txt', requirePermission)
     return { id: attachment.id, name: attachment.name, kind: attachment.kind, data: attachment.kind === 'image' ? `data:image/png;base64,${bytes.toString('base64')}` : new TextDecoder('utf-8', { fatal: true }).decode(bytes) }

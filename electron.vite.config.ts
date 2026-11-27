@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
 const developmentNonce = randomBytes(18).toString('base64')
 
@@ -13,7 +14,10 @@ export default defineConfig(({ command }) => {
   const buildWatch = development ? { chokidar: { ignored: ignoredOutputs } } : undefined
   return {
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), { name: 'athena-window-capture-resource', buildStart() {
+      this.emitFile({type:'asset',fileName:'interactionOverlay.html',source:readFileSync(resolve('electron/main/desktop/interactionOverlay.html'),'utf8')})
+      this.emitFile({ type: 'asset', fileName: 'windowCapture.html', source: readFileSync(resolve('electron/main/screenCapture/windowCapture.html'), 'utf8') })
+    } }],
     build: { outDir: resolve(outputRoot, 'main'), watch: buildWatch, rollupOptions: { input: { main: resolve('electron/main/main.ts'), documentWorker: resolve('electron/main/ai/documentWorker.ts') }, output: { entryFileNames: '[name].js' } } },
   },
   preload: {

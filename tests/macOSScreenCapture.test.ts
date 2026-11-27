@@ -62,6 +62,6 @@ describe('macOS one-shot screen capture', () => {
     } finally { stub.mockRestore(); vi.useRealTimers() }
   })
   it('does not claim unsupported platforms can capture', () => {
-    expect(() => new MacOSScreenCapture('linux').displays()).toThrow('macOS only')
+    expect(() => new MacOSScreenCapture('linux').displays()).toThrow('unavailable on this platform')
   })
 })

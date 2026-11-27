@@ -30,7 +30,11 @@ export const taskControlStateSchema = z.object({
   contextTokens: z.number().nonnegative().optional(), contextWindow: z.number().positive().optional(),
   status: z.enum(['running', 'compacting', 'waiting-tool', 'waiting-permission', 'waiting-user', 'responded', 'resumable', 'cancelled', 'blocked']),
   stopReason: z.string().max(120).optional(),
-  operations: z.array(z.object({ key: z.string().length(64), tool: z.string().max(128), readOnly: z.boolean(), risk: operationRiskSchema.optional(), status: z.enum(['started', 'complete', 'failed']), at: z.number() })).max(1000),
+  operations: z.array(z.object({ key: z.string().length(64), tool: z.string().max(128), readOnly: z.boolean(), risk: operationRiskSchema.optional(), status: z.enum(['started', 'complete', 'failed']), at: z.number(),
+    id: z.string().optional(), runId: z.string().optional(), finishedAt: z.number().optional(),
+    outcome: z.enum(['success', 'permission-denied', 'timeout', 'cancelled', 'missing-input', 'conflict', 'not-found', 'failed']).optional(),
+    credentialSource: z.object({ file: z.string().max(1000), names: z.array(z.string().max(90)).max(12) }).optional(),
+    exitCode: z.number().int().nullable().optional() })).max(1000),
 })
 export type TaskControlState = z.infer<typeof taskControlStateSchema>
 export const taskCheckpointSchema = z.object({
@@ -41,6 +45,8 @@ export const taskCheckpointSchema = z.object({
   control: taskControlStateSchema.optional(), recoveryAttempts: z.number().int().nonnegative().optional(),
   parentTaskId: z.string().optional(), resumable: z.boolean().optional(),
   migration: z.object({ fromTaskId: z.string(), fromProvider: z.string().optional(), fromModel: z.string(), authorized: z.boolean() }).optional(),
+  requestedModel: z.string().max(200).optional(),
+  repositoryRef: z.string().max(2048).optional(), responseModel: z.string().max(200).optional(),
   nativeSessionId: z.string().max(256).optional(),
   workspaceIds: z.array(z.string()), instructionMessageIds: z.array(z.string()).max(10000),
   completedOperationIds: z.array(z.string()).max(500), modifiedFiles: z.array(z.string()).max(2000),

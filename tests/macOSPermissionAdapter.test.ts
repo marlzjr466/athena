@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-const os = vi.hoisted(() => ({ getMediaAccessStatus: vi.fn(() => 'not-determined'), askForMediaAccess: vi.fn(async () => true), isTrustedAccessibilityClient: vi.fn(() => false), openExternal: vi.fn(async () => {}), getSources: vi.fn(async () => []) }))
-vi.mock('electron', () => ({ systemPreferences: os, shell: { openExternal: os.openExternal }, desktopCapturer: { getSources: os.getSources } }))
+const os = vi.hoisted(() => ({ getMediaAccessStatus: vi.fn(() => 'not-determined'), askForMediaAccess: vi.fn(async () => true), isTrustedAccessibilityClient: vi.fn(() => false), openExternal: vi.fn(async () => {}), getSources: vi.fn(async () => []), executable: vi.fn(() => '/Applications/Athena.app/Contents/MacOS/Athena'), reveal: vi.fn() }))
+vi.mock('electron', () => ({ app: { getPath: os.executable }, systemPreferences: os, shell: { openExternal: os.openExternal, showItemInFolder: os.reveal }, desktopCapturer: { getSources: os.getSources } }))
 import { MacOSPermissionAdapter, mediaPermissionStatus } from '../electron/main/permissions/macOSPermissionAdapter'
-beforeEach(() => vi.clearAllMocks())
+import { runningApplicationPath } from '../electron/main/permissions/runningApplication'
+beforeEach(() => { vi.clearAllMocks(); os.executable.mockReturnValue('/Applications/Athena.app/Contents/MacOS/Athena'); os.isTrustedAccessibilityClient.mockReturnValue(false) })
 describe('macOS permission adapter', () => {
   it.each([['granted', 'allowed'], ['not-determined', 'not-requested'], ['denied', 'denied'], ['restricted', 'restricted'], ['unknown', 'unavailable']])('maps real OS %s to %s', (source, expected) => expect(mediaPermissionStatus(source)).toBe(expected))
   it('reads media permission and accurately marks basic desktop actions as requiring no OS grant', () => {
@@ -43,5 +44,24 @@ describe('macOS permission adapter', () => {
     expect(adapter.getStatus('microphone').status).toBe('unavailable')
     await adapter.request('microphone')
     expect(os.askForMediaAccess).not.toHaveBeenCalled()
+  })
+  it('reports the exact running bundle and never interprets an enabled preference as OS trust', () => {
+    const adapter = new MacOSPermissionAdapter('darwin')
+    expect(adapter.getStatus('accessibilityControl')).toMatchObject({ status: 'denied', appPath: '/Applications/Athena.app', detail: expect.stringContaining('another copy') })
+    os.executable.mockReturnValue('/project/out-dev/.electron-dev/version/Athena.app/Contents/MacOS/Electron')
+    expect(adapter.getStatus('accessibilityControl').appPath).toBe('/project/out-dev/.electron-dev/version/Athena.app')
+    os.isTrustedAccessibilityClient.mockReturnValue(true)
+    expect(adapter.getStatus('accessibilityControl').status).toBe('allowed')
+    os.isTrustedAccessibilityClient.mockReturnValue(false)
+    expect(adapter.getStatus('accessibilityControl').status).toBe('denied')
+    expect(os.isTrustedAccessibilityClient).toHaveBeenLastCalledWith(false)
+    expect(os.isTrustedAccessibilityClient).not.toHaveBeenCalledWith(true)
+  })
+  it('reveals the host-selected bundle without prompting or changing authorization', () => {
+    new MacOSPermissionAdapter('darwin').revealApplication()
+    expect(os.reveal).toHaveBeenCalledWith('/Applications/Athena.app')
+    expect(os.isTrustedAccessibilityClient).not.toHaveBeenCalled()
+    os.executable.mockReturnValue('/not/an/application')
+    expect(() => runningApplicationPath('darwin')).toThrow('could not be identified')
   })
 })

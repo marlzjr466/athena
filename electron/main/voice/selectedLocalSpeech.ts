@@ -6,7 +6,7 @@ import { readFile, mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 interface Engine extends SpeechService { dispose(): void }
-/** Only routes explicitly selected engines. Legacy MLX Sesame settings remain inert. */
+/** Serializes local speech and maintains profile-keyed acknowledgment caches. */
 export class SelectedLocalSpeech implements SpeechService {
   readonly mimeType = 'audio/wav' as const
   private selected?: Engine
@@ -14,7 +14,7 @@ export class SelectedLocalSpeech implements SpeechService {
   private readonly cached = new Map<string, Uint8Array>()
   private readonly pendingCached = new Map<string, Promise<{ bytes: Uint8Array; cached: boolean }>>()
   private lane: Promise<void> = Promise.resolve()
-  constructor(private settings: () => Settings, private chatterbox: Engine, private official: Engine, private higgs: Engine, private cacheDirectory?: string) {}
+  constructor(private settings: () => Settings, private chatterbox: Engine, private cacheDirectory?: string) {}
   private selectionKey(): string {
     const settings = this.settings().localVoice
     return JSON.stringify({
@@ -22,17 +22,9 @@ export class SelectedLocalSpeech implements SpeechService {
       profileId: settings.profileId,
       style: settings.style,
       expressiveness: settings.expressiveness,
-      officialCSM: settings.officialCSM,
-      higgs: settings.higgs,
     })
   }
   private engine(): Engine {
-    // `sesame-csm` is the legacy value written by the removed community/MLX
-    // integration. Treat it as the official CSM selection so an existing
-    // user's explicit Sesame choice cannot silently route to Chatterbox.
-    const engine = this.settings().localVoice.engine
-    if (engine === 'sesame-csm' || engine === 'sesame-csm-official') return this.official
-    if (engine === 'higgs-tts-3-4b') return this.higgs
     return this.chatterbox
   }
   private select(engine: Engine): Engine {
@@ -64,7 +56,7 @@ export class SelectedLocalSpeech implements SpeechService {
       && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WAVE'
   }
   private cachePath(cacheKey: string): string | undefined {
-    if (!this.cacheDirectory || !cacheKey.startsWith('wake-ack:v3:')) return undefined
+    if (!this.cacheDirectory || !cacheKey.startsWith('wake-ack:v4:')) return undefined
     return join(this.cacheDirectory, `${createHash('sha256').update(cacheKey).digest('hex')}.wav`)
   }
   async generateCached(text: string, voice: SpeechVoice, speed: number, signal: AbortSignal, cacheKey: string, contextKey?: string): Promise<{ bytes: Uint8Array; cached: boolean }> {
@@ -103,5 +95,5 @@ export class SelectedLocalSpeech implements SpeechService {
     if (signal.aborted) throw new Error('Speech stopped.')
     return { bytes: result.bytes.slice(), cached: result.cached || joined }
   }
-  dispose(): void { this.cached.clear(); this.pendingCached.clear(); this.chatterbox.dispose(); this.official.dispose(); this.higgs.dispose(); this.selected = undefined; this.selectedKey = undefined }
+  dispose(): void { this.cached.clear(); this.pendingCached.clear(); this.chatterbox.dispose(); this.selected = undefined; this.selectedKey = undefined }
 }

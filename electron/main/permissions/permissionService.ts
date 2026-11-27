@@ -1,5 +1,5 @@
 import { RememberedPermissions } from './rememberedPermissions'
-import { ATHENA_PERMISSIONS, filesystemAccessSchema, permissionInputSchema, permissionPreferenceSchema, permissionSchema, type AthenaPermission, type FilesystemAccessMode, type FilesystemAccessStatus, type PermissionInfo, type PermissionPreferences, type PermissionResult, type PermissionSnapshot } from '../../../shared/permissions'
+import { ATHENA_PERMISSIONS, filesystemAccessSchema, permissionInputSchema, permissionSettingsSchema, permissionPreferenceSchema, permissionSchema, type AthenaPermission, type FilesystemAccessMode, type FilesystemAccessStatus, type PermissionInfo, type PermissionPreferences, type PermissionResult, type PermissionSnapshot } from '../../../shared/permissions'
 import type { PermissionPreferencesStore } from './permissionRepository'
 import type { OSAccess, PermissionPlatform } from './macOSPermissionAdapter'
 import { log } from '../logger'
@@ -35,7 +35,7 @@ export class PermissionService {
     const enabled = this.preferences[permission]
     const capabilityAllowed = enabled && (os.status === 'allowed' || os.status === 'not-required')
     return { permission, enabled, status: os.status === 'unavailable' || os.status === 'restricted' ? os.status : !enabled ? 'not-requested' : os.status === 'not-required' ? 'allowed' : os.status,
-      osStatus: os.status, capabilityAllowed, canRequest: os.canRequest, canOpenSettings: os.canOpenSettings, detail: os.detail }
+      osStatus: os.status, capabilityAllowed, canRequest: os.canRequest, canOpenSettings: os.canOpenSettings, detail: os.detail, ...(os.appPath ? { appPath: os.appPath } : {}) }
   }
   snapshot(): PermissionSnapshot { return { permissions: ATHENA_PERMISSIONS.map((permission) => this.getPermissionStatus(permission)), filesystemAccess: this.filesystemStatus(), remembered: this.remembered.snapshot() } }
   updateRemembered(input: unknown): PermissionResult {
@@ -79,8 +79,13 @@ export class PermissionService {
     return this.result(after.capabilityAllowed, after.capabilityAllowed ? 'Permission allowed. No recording, capture or desktop action has started.' : 'Access is not enabled. Review the OS decision in System Settings; Athena will remain blocked.')
   }
   async openPermissionSettings(input: unknown): Promise<PermissionResult> {
-    const parsed = permissionInputSchema.safeParse(input)
+    const parsed = permissionSettingsSchema.safeParse(input)
     if (!parsed.success) return this.result(false, 'Invalid permission request.')
+    if (parsed.data.operation === 'reveal-app') {
+      if (!this.getPermissionStatus(parsed.data.permission).appPath || !this.platform.revealApplication) return this.result(false, 'This permission does not expose an application location.')
+      try { this.platform.revealApplication(); return this.result(true, 'This running Athena app is selected in Finder. Add this exact copy in macOS Accessibility settings, then return and refresh. No permission was changed.') }
+      catch { return this.result(false, 'Could not reveal the running Athena app. Use the application path shown here in System Settings.') }
+    }
     if (!this.getPermissionStatus(parsed.data.permission).canOpenSettings) return this.result(false, 'This capability has no separate OS permission settings page.')
     try { await this.platform.openSettings(parsed.data.permission); return this.result(true, 'System Settings opened. Return here and refresh after changing consent; macOS may require Athena to restart.') }
     catch { return this.result(false, 'Could not open System Settings. Open Privacy & Security manually.') }

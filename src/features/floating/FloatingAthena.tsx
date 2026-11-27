@@ -11,10 +11,13 @@ export function FloatingAthena() {
   const command = useAthena((state) => state.command)
   const snapshot = useAthena((state) => state.snapshot)
   const name = avatarName(snapshot?.settings.avatarVariant ?? 'vroid-athena', snapshot?.importedAvatars)
+  const task = snapshot?.taskVisual
+  const automationActive = task?.source === 'voice-automation' && !['idle', 'completed', 'failed', 'cancelled'].includes(task.mode)
   return <div className="floating-surface">
     <div className="floating-render"><AthenaScene /></div>
-    <TaskHolograms task={snapshot?.floatingVoiceActive ? undefined : snapshot?.taskVisual} enabled={Boolean(snapshot?.settings.taskHologramsEnabled && snapshot?.settings.taskActivityEnabled)} completionEnabled={snapshot?.settings.taskCompletionNotification ?? true} reduced={Boolean(snapshot?.settings.reducedMotion || snapshot?.reducedMotion || snapshot?.settings.doNotDisturb || (snapshot?.settings.reduceOnBattery && snapshot?.onBattery))} characterSize={snapshot?.settings.size ?? 120} active={Boolean(snapshot?.visible)} />
+    <TaskHolograms task={snapshot?.floatingVoiceActive && snapshot.taskVisual?.source !== 'voice-automation' ? undefined : snapshot?.taskVisual} enabled={Boolean(snapshot?.settings.taskHologramsEnabled && snapshot?.settings.taskActivityEnabled)} completionEnabled={snapshot?.settings.taskCompletionNotification ?? true} reduced={Boolean(snapshot?.settings.reducedMotion || snapshot?.reducedMotion || snapshot?.settings.doNotDisturb || (snapshot?.settings.reduceOnBattery && snapshot?.onBattery))} characterSize={snapshot?.settings.size ?? 120} active={Boolean(snapshot?.visible)} />
     <HandsFreeAssistant />
+    {(snapshot?.handsFreeState?.state === 'processing' || automationActive) && <button className="floating-automation-stop" aria-label="Stop Automation" title="Stop Automation" onClick={() => void desktop.cancelHandsFreeReply(true)}>■ Stop</button>}
     <button className="character-hit-area" style={snapshot?.taskVisual && snapshot.taskVisual.mode !== 'idle' ? { left: snapshot.taskVisual.anchor.x - snapshot.settings.size * .32, top: snapshot.taskVisual.anchor.y - snapshot.settings.size * .44, width: snapshot.settings.size * .64, height: snapshot.settings.size * .86 } : undefined} aria-label={`${name}. Drag to move, or right-click for controls.`} onPointerDown={(event) => {
       if (event.button !== 0) return
       pressed.current = true

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
@@ -28,6 +28,18 @@ describe('local attachments and session authorization', () => {
     expect(prepared.attachments[0].data).toContain('const answer = 42;')
     expect(prepared.notice).toContain('excerpted')
     chat.dispose()
+  })
+  it('delivers a complete active pasted task specification even when a code excerpt would be shortened', async () => {
+    const directory = await mkdtemp(join(tmpdir(),'athena-task-instructions-'))
+    const store = new AttachmentService(directory, () => false, () => { throw Error() })
+    const chat = new ChatController(hooks()), id = chat.current().id
+    try {
+      const context = new ChatContextService(chat,store,new WorkspaceService(()=>false),{files:async()=>[],folder:async()=>undefined},()=>false)
+      const text = 'Retain each task constraint.\n'.repeat(1700) + 'Verify the authenticated endpoint last.'
+      expect((await context.run({action:'import-pasted',sessionId:id,name:'Provisioning instructions.md',text})).ok).toBe(true)
+      const result = await context.prepare(chat.current(),[{id:randomUUID(),role:'user',status:'complete',createdAt:1,content:'Implement this specification.',attachments:chat.snapshot().attachments}],new AbortController().signal)
+      expect(result.attachments[0].data).toBe(text)
+    } finally { chat.dispose(); await rm(directory,{recursive:true,force:true}) }
   })
   it('persists source/CSV and extracted documents with UUID storage', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'athena-attachments-')), parser = vi.fn(async () => 'Extracted document text')
@@ -131,5 +143,21 @@ describe('local attachments and session authorization', () => {
     const text = [...Array(300)].map((_, index) => index === 200 ? 'Authentication is configured here.' : `Unrelated line ${index}`).join('\n')
     const extracted = relevantText(text, 'Where is authentication?', 1500)
     expect(extracted).toContain('201: Authentication'); expect(Buffer.byteLength(extracted)).toBeLessThan(1600)
+  })
+})
+
+describe('video references through the normal attachment service',()=>{
+  it('stores validated video bytes, keeps workspace permissions, and prevents text-provider misuse',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'athena-video-reference-'))
+    let allowed=true
+    const service=new AttachmentService(root,()=>allowed,()=>{throw new Error('video must not use image decoder')})
+    const session=randomUUID(),bytes=Buffer.from('000000186674797069736f6d0000020069736f6d69736f32','hex')
+    const file=await service.import(session,'reference.mp4',bytes)
+    expect(file).toMatchObject({kind:'video',mime:'video/mp4'})
+    expect(await service.original(session,file)).toEqual(bytes)
+    await expect(service.prepare(session,file)).rejects.toThrow('Create video')
+    await expect(service.import(session,'fake.mp4',new TextEncoder().encode('fake video'))).rejects.toThrow('do not match')
+    await expect(service.original(randomUUID(),file)).rejects.toThrow()
+    allowed=false;await expect(service.original(session,file)).rejects.toThrow('Personal File Access')
   })
 })

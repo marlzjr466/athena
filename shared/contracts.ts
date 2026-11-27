@@ -29,7 +29,7 @@ import type { WebSearchStatus, WebSearchTestResult } from './webAccess'
 export const athenaStates = ['idle', 'floating', 'listening', 'thinking', 'speaking', 'moving', 'working', 'happy', 'sleeping', 'error'] as const
 export type AthenaState = typeof athenaStates[number]
 export type TaskVisualMode = 'idle' | 'thinking' | 'exploring' | 'reading' | 'searching' | 'typing' | 'terminal' | 'browser' | 'completed' | 'failed' | 'cancelled'
-export interface TaskVisualSnapshot { mode: TaskVisualMode; source?: 'local-chat' | 'background'; label?: string; activityType?: string; startedAt?: number; anchor: { x: number; y: number } }
+export interface TaskVisualSnapshot { mode: TaskVisualMode; source?: 'local-chat' | 'background' | 'voice-automation'; label?: string; activityType?: string; startedAt?: number; anchor: { x: number; y: number } }
 export type Surface = 'control' | 'floating' | 'panel' | 'meeting'
 export const commandSchema = z.enum(['show', 'hide', 'toggle', 'pin', 'unpin', 'open-control', 'open-chat', 'open-settings', 'open-panel', 'open-menu', 'close-panel', 'close-chat', 'next-monitor', 'quit'])
 export type DesktopCommand = z.infer<typeof commandSchema>
@@ -55,8 +55,10 @@ export interface Snapshot {
   error: string | null
 }
 export interface AthenaAPI {
-  officialCSM(input: import('./officialCSM').OfficialCSMCommand): Promise<import('./officialCSM').CSMResult>
-  higgsTTS(input: import('./higgsTTS').HiggsCommand): Promise<import('./higgsTTS').HiggsResult>
+  mediaGeneration(input: import('./mediaGeneration').MediaCommand): Promise<import('./mediaGeneration').MediaCatalog | {ok: boolean; message?:string}>
+  liveVoice(input: import('./liveVoice').LiveCommand): Promise<import('./liveVoice').LiveReply>
+  audioDevices(input: import('./audioDevices').AudioDeviceCommand): Promise<import('./audioDevices').AudioDeviceState>
+  onAudioDevices(callback: (state: import('./audioDevices').AudioDeviceState) => void): () => void
   avatarModel(input: ModelCommand): Promise<ModelResult>
   readAvatarModel(id: string): Promise<Uint8Array>
   beginSpeech(input: SpeechStart): Promise<SpeechAudioResult>
@@ -84,9 +86,13 @@ export interface AthenaAPI {
   disableHandsFree(ownership?: import('./aiOwnership').AIOwnership): Promise<{ ok: boolean }>
   transcribeHandsFree(input: HandsFreeAudio): Promise<{ ok: boolean; transcript?: string; message?: string }>
   cancelHandsFreeTranscription(input: { id: string }): Promise<{ ok: boolean }>
-  answerHandsFree(input: { id?: string; text: string; ownership?: import('./aiOwnership').AIOwnership; diagnosticDirect?: boolean }): Promise<HandsFreeReplyResult>
+  answerHandsFree(input: { liveRequest?:string; id?: string; text: string; ownership?: import('./aiOwnership').AIOwnership; diagnosticDirect?: boolean }): Promise<HandsFreeReplyResult>
   onHandsFreeReplyProgress(callback: (progress: import('./handsFree').HandsFreeReplyProgress) => void): () => void
-  cancelHandsFreeReply(): Promise<{ ok: boolean }>
+  steerVoiceAutomation(input:{paused:boolean;ownership:import('./aiOwnership').AIOwnership}):Promise<boolean>
+  onVoiceSubmissionEnded(callback:(id:string,complete:boolean)=>void):()=>void
+  onVoiceAutomationStopped(callback:()=>void):()=>void
+  computerUseCheck(action:import('./applicationAutomation').AutomationControl):Promise<import('./automation').ComputerUseStatus>
+  cancelHandsFreeReply(emergency?:boolean): Promise<{ ok: boolean }>
   clearHandsFreeContext(): Promise<{ ok: boolean }>
   speakHandsFree(input: { id: string; text: string; ownership?: import('./aiOwnership').AIOwnership; cache?: boolean }): Promise<HandsFreeSpeechResult>
   nextHandsFreeSpeech(input: { id: string; index: number; ownership: import('./aiOwnership').AIOwnership }): Promise<HandsFreeSpeechResult>
@@ -103,7 +109,7 @@ export interface AthenaAPI {
   setPermissionEnabled(input: { permission: AthenaPermission; enabled: boolean }): Promise<PermissionResult>
   setFilesystemAccess(input: { mode: FilesystemAccessMode }): Promise<PermissionResult>
   requestPermission(input: { permission: AthenaPermission }): Promise<PermissionResult>
-  openPermissionSettings(input: { permission: AthenaPermission }): Promise<PermissionResult>
+  openPermissionSettings(input: { permission: AthenaPermission; operation?: 'settings' | 'reveal-app' }): Promise<PermissionResult>
   isCapabilityAllowed(input: { permission: AthenaPermission }): Promise<boolean>
   getApplications(): Promise<ApplicationDetectionResult>
   getChat(): Promise<ChatSnapshot>
@@ -158,6 +164,7 @@ export interface AthenaAPI {
   signOutCursor(): Promise<CursorStatus>
   antigravity(input: import('./antigravity').AntigravityCommand): Promise<import('./antigravity').AntigravityStatus>
   getChatGPTStatus(): Promise<ChatGPTStatus>
+  codexCommand(input: {action:'login'|'threads'|'read'|'steer';threadId?:string;cursor?:string;sessionId?:string;text?:string}): Promise<{ok:boolean;message?:string;threads?:import('./codex').CodexThreadSummary[];nextCursor?:string|null;text?:string}>
   getCodexCLIStatus(input?: { refresh?: boolean }): Promise<CodexCLIStatus>
   addChatGPTAccount(): Promise<ChatGPTStatus>
   retryAddChatGPTAccount(): Promise<ChatGPTStatus>
@@ -198,6 +205,6 @@ export interface AthenaAPI {
   beginDrag(): Promise<void>
   endDrag(): Promise<boolean>
   onSnapshot(callback: (snapshot: Snapshot) => void): () => void
-  onNavigate(callback: (page: string) => void): () => void
+  onNavigate(callback: (page: string) => string | void): () => void
 }
 export { IPC } from './ipcChannels'

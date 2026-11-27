@@ -21,6 +21,8 @@ import type { HandsFreeState } from '../../shared/handsFree'
 import type { ChatSnapshot } from '../../shared/chat'
 import { currentTaskActivity, taskVisualModeForActivity, taskVisualModeForStatus } from '../../shared/taskActivity'
 import { isLocalOwnership } from '../../shared/aiOwnership'
+import { isVideoOperation, type MediaJob } from '../../shared/mediaGeneration'
+import type { AutomationProgress } from '../../shared/automation'
 
 function isWindowVisible(window: BrowserWindow | undefined): boolean {
   try { return Boolean(window && !window.isDestroyed() && window.isVisible()) }
@@ -49,6 +51,8 @@ export class AthenaController {
   private taskActivityLabel?: string
   private taskVisualSource?: 'local-chat' | 'background'
   private taskStartedAt?: number
+  private voiceMedia?: {label:string;startedAt:number}
+  private voiceAutomation?: AutomationProgress
   private taskStartTimer?: ReturnType<typeof setTimeout>
   private taskCompletionTimer?: ReturnType<typeof setTimeout>
   private taskOutcomeStatus?: string
@@ -73,7 +77,7 @@ export class AthenaController {
       flight: (flight) => { this.flight = flight; if (flight) this.actions?.cancel(); this.broadcast() },
       activity: () => this.actions?.reconcile(),
       actionRemainingMs: () => isVrmAvatar(this.settings.avatarVariant) ? this.vroidActions?.remainingMs ?? 0 : this.actions?.current ? Math.max(0, this.actions.current.startedAt + this.actions.current.durationMs - Date.now()) : 0,
-      taskActive: () => Boolean(this.conversationState || this.speechState || this.taskMode !== 'idle'),
+      taskActive: () => Boolean(this.conversationState || this.speechState || this.voiceMedia || this.taskMode !== 'idle'),
       pauseForTask: () => this.settings.pauseFloatingWhileWorking || (this.settings.taskActivityEnabled && this.taskMode !== 'idle'),
       characterBounds: () => {
         const bounds = this.windows.floating.getBounds(), anchor = this.windows.getTaskAnchor()
@@ -223,6 +227,19 @@ export class AthenaController {
     if (!this.taskStartedAt) this.taskStartedAt = Date.now()
     this.updateTaskWindow(); this.refreshVoiceAnimation(); this.broadcast()
   }
+  setVoiceMedia(job:MediaJob):void {
+    this.voiceMedia=['routing','submitting','processing'].includes(job.status) ? {
+      label:isVideoOperation(job.operation)?'Generating video':'Generating image', startedAt:job.started
+    } : undefined
+    this.updateTaskWindow()
+    this.motion.reconcile()
+    this.actions.reconcile()
+    this.broadcast()
+  }
+  setVoiceAutomationProgress(progress?: AutomationProgress): void {
+    this.voiceAutomation = progress?.cancelTarget === 'voice' ? progress : undefined
+    this.updateTaskWindow(); this.broadcast()
+  }
   setTaskOutcome(status: string | undefined): void {
     this.taskOutcomeStatus = status ?? 'complete'
     // Speech may still be draining after the model finishes. Preserve the
@@ -274,7 +291,7 @@ export class AthenaController {
     }
   }
   private updateTaskWindow(): void {
-    const active = this.settings.taskActivityEnabled && !this.taskStartTimer && (Boolean(this.conversationState || (this.speechState && !this.isFloatingVoiceActive())) || ['completed', 'failed', 'cancelled'].includes(this.taskMode))
+    const active = this.settings.taskActivityEnabled && (Boolean(this.voiceMedia) || (this.isFloatingVoiceActive() && Boolean(this.voiceAutomation)) || (!this.taskStartTimer && (Boolean(this.conversationState || (this.speechState && !this.isFloatingVoiceActive())) || ['completed', 'failed', 'cancelled'].includes(this.taskMode))))
     const hadTaskCanvas = Boolean(this.windows.getTaskAnchor())
     const anchor = this.windows.setTaskVisualMode(active, this.settings.taskActivityEnabled && this.settings.taskHologramsEnabled)
     if (!active) {
@@ -290,6 +307,14 @@ export class AthenaController {
   }
   private currentTaskAnchor?: { x: number; y: number }
   private taskVisualSnapshot(): TaskVisualSnapshot {
+    if (this.isFloatingVoiceActive() && this.voiceAutomation && this.settings.taskActivityEnabled) {
+      const progress = this.voiceAutomation, step = progress.steps.find(item => item.status === 'running') ?? progress.steps.at(-1)
+      const label=progress.engine ? [progress.application,progress.task].filter(Boolean).join(' · ') : step?.label ?? 'Voice automation'
+      return { mode: progress.phase === 'running' ? taskVisualModeForActivity(label, '') : progress.phase === 'complete' ? 'completed' : progress.phase, source: 'voice-automation', label, startedAt: progress.startedAt, anchor: this.currentTaskAnchor ?? { x: this.settings.size / 2, y: this.settings.size / 2 } }
+    }
+    if(this.settings.taskActivityEnabled && this.voiceMedia && this.taskMode==='idle') {
+      return {mode:'thinking',source:'voice-automation',activityType:'generate_media',label:this.voiceMedia.label,startedAt:this.voiceMedia.startedAt,anchor:this.currentTaskAnchor??{x:this.settings.size/2,y:this.settings.size/2}}
+    }
     const mode = this.settings.taskActivityEnabled && !this.taskStartTimer ? this.taskMode : 'idle'
     return { mode, ...(mode !== 'idle' && this.taskVisualSource ? { source: this.taskVisualSource } : {}), ...(mode !== 'idle' && this.taskActivityType ? { activityType: this.taskActivityType } : {}), ...(mode !== 'idle' && this.taskActivityLabel ? { label: this.taskActivityLabel } : {}), ...(mode !== 'idle' && this.taskStartedAt ? { startedAt: this.taskStartedAt } : {}), anchor: mode !== 'idle' ? this.currentTaskAnchor ?? { x: this.settings.size / 2, y: this.settings.size / 2 } : { x: this.settings.size / 2, y: this.settings.size / 2 } }
   }
@@ -311,6 +336,8 @@ export class AthenaController {
   private refreshVoiceAnimation(): void { this.vroidActions?.setVoicePhase(this.activeFloatingVoicePhase()) }
   setHandsFreeState(state: HandsFreeState): void {
     this.handsFreeState = state
+    if (!['processing', 'speaking'].includes(state.state)) this.voiceAutomation = undefined
+    this.updateTaskWindow()
     this.refreshVoiceAnimation()
     if (state.state === 'paused' && !this.settings.voiceInteraction.handsFreeEnabled && !this.conversationState && !this.speechState) {
       this.clearHandsFreeActivity(false)
@@ -320,6 +347,7 @@ export class AthenaController {
   }
   /** Clear hands-free ownership and visuals without interrupting regular local speech or chat tasks. */
   clearHandsFreeActivity(broadcast = true): void {
+    this.voiceAutomation = undefined
     this.voiceState = null
     this.handsFreeState = { state: 'paused' }
     this.vroidActions?.setVoicePhase(null)

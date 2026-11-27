@@ -1,3 +1,4 @@
+vi.mock('../src/services/speech/audioDevices', () => ({ routeSpeech: vi.fn(async () => () => {}) }))
 import { describe, expect, it, vi } from 'vitest'
 import { SpeechPlayer } from '../src/services/speech/speechPlayer'
 import type { AthenaAPI } from '../shared/contracts'

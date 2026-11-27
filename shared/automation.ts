@@ -10,11 +10,26 @@ export const automationPermissionsSchema = z.object({
   terminalExecution: z.boolean().default(false),
   externalMessageSubmission: z.boolean().default(false),
   destructiveOperations: z.boolean().default(false),
+  projectManagement: z.boolean().default(false),
+  gitOperations: z.boolean().default(false),
+  browserInteraction: z.boolean().default(false),
+  desktopUIInteraction: z.boolean().default(false),
+  screenObservation: z.boolean().default(false),
 }).strict()
 
 export type AutomationPermissions = z.infer<typeof automationPermissionsSchema>
 export const automationPermissionDefaults = automationPermissionsSchema.parse({})
 export type AutomationPermission = keyof AutomationPermissions
+
+export interface ComputerUseStatus {
+  automation?: import('./applicationAutomation').AutomationEngineStatus
+  installed?: Array<{key:string;name:string}>
+  browser: string
+  locked: boolean
+  recent: Array<{actionId:string;createdAt:string;status:string;durationMs?:number;diagnostics?:Record<string,string>}>
+  test?: {ok:boolean;message:string}
+  checks?:Array<{name:string;status:'passed'|'failed'|'not-tested';message:string}>
+}
 
 export interface AutomationProgressStep {
   id: string
@@ -26,6 +41,11 @@ export interface AutomationProgressStep {
 }
 
 export interface AutomationProgress {
+  engine?: 'OpenAI' | 'Athena Native' | 'Codex'
+  application?: string
+  paused?:boolean
+  verifiedSteps?:number
+  apiRequests?:number
   id: string
   task: string
   phase: 'running' | 'complete' | 'failed' | 'cancelled'

@@ -1,4 +1,12 @@
 import { z } from 'zod'
+
+/** A short-lived echo check, used only for speech that overlaps actual playback. */
+export function isPlaybackEcho(transcript: string, spoken: string): boolean {
+  const words = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean)
+  const heard = words(transcript), source = words(spoken)
+  // Never swallow short explicit interruption commands such as “Athena, stop”.
+  return heard.length >= 4 && source.length >= heard.length && ` ${source.join(' ')} `.includes(` ${heard.join(' ')} `)
+}
 import { MAX_AUDIO_BYTES } from './voice'
 import { aiOwnershipSchema, type AIOwnership } from './aiOwnership'
 
@@ -10,9 +18,7 @@ export const WAKE_ACKNOWLEDGEMENTS = [
   'Hey! What would you like to talk about?',
   'I’m here. What can I do for you?',
 ] as const
-// One brief, profile-keyed Sesame clip can be cached and reused. Generating a
-// different CSM sentence for each wake was an avoidable multi-second delay.
-export const SESAME_WAKE_ACKNOWLEDGEMENT = "I'm listening."
+
 
 export type HandsFreeTranscriptRoute =
   | { kind: 'ignore' }
@@ -90,7 +96,7 @@ export const handsFreeAudioSchema = z.object({
   mimeType: z.literal('audio/wav'),
   bytes: z.instanceof(Uint8Array).refine((bytes) => isValidHandsFreeWav(bytes) && bytes.byteLength <= MAX_AUDIO_BYTES),
 }).strict()
-export const handsFreeReplySchema = z.object({ id: z.string().uuid().optional(), text: z.string().trim().min(1).max(12_000), ownership: aiOwnershipSchema.optional(), diagnosticDirect: z.boolean().optional() }).strict()
+export const handsFreeReplySchema = z.object({ liveRequest:z.string().uuid().optional(), id: z.string().uuid().optional(), text: z.string().trim().min(1).max(12_000), ownership: aiOwnershipSchema.optional(), diagnosticDirect: z.boolean().optional() }).strict()
 export const localInferenceTraceSchema = z.object({
   stage: z.enum(['request-start', 'first-token', 'complete']),
   timestamp: z.string().datetime(), durationMs: z.number().int().nonnegative().optional(),
@@ -111,7 +117,7 @@ export const handsFreeStateSchema = z.object({ state: z.enum(['standby', 'listen
 
 export type HandsFreeState = z.infer<typeof handsFreeStateSchema>
 export type HandsFreeAudio = z.infer<typeof handsFreeAudioSchema>
-export type HandsFreeReplyResult = { ok: boolean; text?: string; message?: string }
+export type HandsFreeReplyResult = { memoryOutcome?:'verified'|'observed'; ok: boolean; text?: string; message?: string }
 export type HandsFreeSpeechResult = { ok: boolean; id?: string; bytes?: Uint8Array; mimeType?: 'audio/wav'; message?: string; streaming?: boolean; index?: number; done?: boolean; cached?: boolean }
 
 /** Match only a leading configured wake phrase; return the untouched request tail. */
@@ -132,8 +138,8 @@ export function normalizeVoiceCommand(text: string): string {
 
 export function isVoiceInterruption(text: string): 'stop-speech' | 'cancel-task' | 'standby' | undefined {
   const command = normalizeVoiceCommand(extractWakePhrase(text).command || text)
-  if (/^(?:please )?(?:stop talking|stop speaking|be quiet|stop|wait|hold on|listen)(?: please)?(?:[\s,]+athena)?$/i.test(command)) return 'stop-speech'
-  if (/^(?:please )?(?:cancel (?:the |my )?(?:current )?task|stop (?:the |my )?(?:current )?task|stop working|cancel that)(?: please)?$/i.test(command)) return 'cancel-task'
+  if (/^(?:please )?(?:stop talking|stop speaking|be quiet|wait|hold on|listen)(?: please)?(?:[\s,]+athena)?$/i.test(command)) return 'stop-speech'
+  if (/^(?:please )?(?:stop|cancel (?:the |my )?(?:current )?(?:task|automation)|stop (?:the |my )?(?:current )?(?:task|automation)|stop working|cancel that)(?: please)?$/i.test(command)) return 'cancel-task'
   if (/^(?:go to )?(?:standby|stop listening|goodbye|that's all)$/i.test(command)) return 'standby'
 }
 

@@ -1,3 +1,6 @@
+import { LiveVoiceSettings } from './LiveVoiceSettings'
+import { AudioDeviceSettings } from './AudioDeviceSettings'
+import { routeSpeech } from '../../services/speech/audioDevices'
 import { useEffect, useRef, useState } from 'react'
 import { Square, Volume2 } from 'lucide-react'
 import { useAthena } from '../../store/athenaStore'
@@ -5,20 +8,19 @@ import { Section, SettingRow, Slider, Toggle } from '../../components/ui/Control
 import { CustomSelect } from '../../components/ui/CustomSelect'
 import { desktop } from '../../services/desktop'
 import { VoiceInteractionSettings } from './VoiceInteractionSettings'
-import { OfficialCSMSettings } from './OfficialCSMSettings'
-import { HiggsTTSSettings } from './HiggsTTSSettings'
-import { isHiggsEngine, isSesameEngine } from '../../../shared/localVoice'
 
 export function VoiceSettings() {
   const { snapshot, update } = useAthena()
   const [notice, setNotice] = useState('')
   const [previewing, setPreviewing] = useState(false)
   const [samples, setSamples] = useState<Array<{ bytes: Uint8Array; text: string; label: string }>>([])
+  const releaseRoute = useRef<(() => void) | undefined>(undefined)
   const audio = useRef<HTMLAudioElement | undefined>(undefined)
   const url = useRef<string | undefined>(undefined)
   const generation = useRef(0)
   const active = useRef(false)
   const clear = () => {
+    releaseRoute.current?.(); releaseRoute.current = undefined
     generation.current++; active.current = false
     if (audio.current) { audio.current.onended = null; audio.current.onerror = null; audio.current.pause(); audio.current.removeAttribute('src'); audio.current.load() }
     audio.current = undefined
@@ -35,10 +37,8 @@ export function VoiceSettings() {
   if (!snapshot) return null
   const settings = snapshot.settings, voice = settings.localVoice
   const change = (patch: Partial<typeof voice>) => void update({ localVoice: { ...voice, ...patch } })
-  const officialSelected = isSesameEngine(voice.engine)
-  const higgsSelected = isHiggsEngine(voice.engine)
-  const voiceEngine = officialSelected ? 'sesame-csm-official' : higgsSelected ? 'higgs-tts-3-4b' : 'chatterbox-turbo'
-  const engineLabel = officialSelected ? 'Sesame CSM-1B' : higgsSelected ? 'Higgs TTS 3 4B' : 'Chatterbox Turbo'
+  const voiceEngine = 'chatterbox-turbo'
+  const engineLabel = 'Chatterbox Turbo'
   const playBytes = async (bytes: Uint8Array, token: number, mimeType = 'audio/wav') => {
     const objectURL = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }))
     url.current = objectURL
@@ -46,6 +46,9 @@ export function VoiceSettings() {
     player.volume = settings.voiceVolume; player.playbackRate = settings.voiceSpeed
     player.onended = () => { if (token === generation.current) clear() }
     player.onerror = () => { if (token === generation.current) { clear(); setNotice('Audio playback failed. Check your output device.') } }
+    const release = await routeSpeech(player, message => { clear(); setNotice(message) })
+    if (token !== generation.current) { release(); return }
+    releaseRoute.current = release
     await player.play(); if (token === generation.current) setNotice('')
   }
   const replay = async (sample: typeof samples[number]) => {
@@ -53,7 +56,7 @@ export function VoiceSettings() {
     await stopped
     if (token !== generation.current) return
     active.current = true; setPreviewing(true)
-    try { await playBytes(sample.bytes, token) }
+    try { await desktop.audioDevices({ action: 'confirm-output' }); if (token === generation.current) await playBytes(sample.bytes, token) }
     catch { if (token === generation.current) { clear(); setNotice('Sample playback failed.') } }
   }
   const play = async () => {
@@ -62,29 +65,29 @@ export function VoiceSettings() {
     if (token !== generation.current) return
     active.current = true; setPreviewing(true); setNotice('Preparing Athena’s natural voice…')
     try {
+      await desktop.audioDevices({ action: 'confirm-output' })
+      if (token !== generation.current) return
       const result = await desktop.previewLocalVoice()
       if (token !== generation.current) return
       if (!result.ok || !result.bytes?.length) throw new Error(result.message ?? 'Natural voice preview failed.')
-      const label = officialSelected
-        ? `Sesame · speaker ${voice.officialCSM.speaker} · ${voice.officialCSM.device}`
-        : higgsSelected
-          ? `Higgs TTS 3 · ${voice.higgs.device} · ${voice.higgs.referenceId ? 'reference ' + voice.higgs.referenceId.slice(0, 8) : 'unconditioned'}`
-          : 'Chatterbox Turbo'
+      const label = 'Chatterbox Turbo'
       setSamples(previous => [...previous.slice(-1), { bytes: result.bytes!, text: 'Athena’s standard preview', label }])
       await playBytes(result.bytes, token, result.mimeType)
     } catch (error) { if (token === generation.current) { clear(); setNotice(error instanceof Error ? error.message : 'Natural voice preview failed.') } }
   }
   return <div className="settings-page">
     <div className="page-heading"><div><h1>Voice</h1><p>Speech playback, microphone and hands-free conversation settings.</p></div></div>
-    <Section title="Voice output" description="Local speech through your selected engine. Chatterbox, official Sesame, and Higgs TTS 3 keep independent configuration. No automatic engine fallback.">
-      <SettingRow title="Voice Engine"><CustomSelect ariaLabel="Voice Engine" value={voiceEngine} options={[{ value: 'chatterbox-turbo', label: 'Chatterbox Turbo' }, { value: 'sesame-csm-official', label: 'Sesame CSM-1B · Official' }, { value: 'higgs-tts-3-4b', label: 'Higgs TTS 3 4B' }]} onChange={async engine => { await stop(); change({ engine: engine as typeof voiceEngine }) }} /></SettingRow>
+    <Section title="Voice engine">
+      <SettingRow title="Voice Engine"><CustomSelect ariaLabel="Voice Engine" value={settings.liveVoice.engine==='live'?'live':voiceEngine} options={[{value:'live',label:'OpenAI GPT-Live 1.1 · Recommended'},{value:'chatterbox-turbo',label:'Chatterbox Turbo'}]} onChange={async engine=>{await stop();await update({liveVoice:{...settings.liveVoice,engine:engine==='live'?'live':'local'},...(engine==='live'?{}:{localVoice:{...voice,engine:engine as typeof voiceEngine}})})}}/></SettingRow>
+    </Section>
+    {settings.liveVoice.engine==='live' && <LiveVoiceSettings/>}
+    <Section title="Voice output" description="Local speech settings and downloaded models are saved independently for each engine.">
+      {settings.liveVoice.engine==='live' && <SettingRow title="Fallback engine"><CustomSelect ariaLabel="Fallback engine" value={voiceEngine} options={[{ value: 'chatterbox-turbo', label: 'Chatterbox Turbo' }]} onChange={async engine => { await stop(); change({ engine: engine as typeof voiceEngine }) }} /></SettingRow>}
       <SettingRow title="Enable Voice Output"><Toggle label="Enable Voice Output" checked={settings.voiceEnabled} onChange={voiceEnabled => { if (!voiceEnabled) void stop(); void update({ voiceEnabled }) }} /></SettingRow>
       <SettingRow title="Auto Speak Responses"><Toggle label="Auto Speak Responses" checked={voice.autoSpeak} onChange={autoSpeak => change({ autoSpeak })} /></SettingRow>
       <SettingRow title="Mute"><Toggle label="Mute" checked={settings.voiceMuted} onChange={voiceMuted => { if (voiceMuted) void stop(); void update({ voiceMuted }) }} /></SettingRow>
-      <SettingRow title="Natural voice" description={officialSelected ? 'Official contextual speech · not a Maya preset' : higgsSelected ? 'Expressive conversational speech with natural laughter, emotion, prosody, and multilingual support.' : voice.profileId === 'athena-youthful' ? 'Athena Youthful · original Amy US-English reference' : 'Your previously selected authorized voice profile'}><span>{engineLabel}</span></SettingRow>
-      <div className="slider-row"><Slider label="Expressiveness" disabled={officialSelected || higgsSelected} value={Math.round(voice.expressiveness * 100)} min={0} max={100} unit="%" ends={['Subtle', 'Expressive']} onChange={value => change({ expressiveness: value / 100 })} /></div>
-      {officialSelected && <OfficialCSMSettings value={voice.officialCSM} change={officialCSM => change({ officialCSM })} />}
-      {higgsSelected && <HiggsTTSSettings value={voice.higgs} change={higgs => change({ higgs })} />}
+      <SettingRow title="Natural voice" description={voice.profileId === 'athena-youthful' ? 'Athena Youthful · original Amy US-English reference' : 'Your previously selected authorized voice profile'}><span>{engineLabel}</span></SettingRow>
+      <div className="slider-row"><Slider label="Expressiveness" value={Math.round(voice.expressiveness * 100)} min={0} max={100} unit="%" ends={['Subtle', 'Expressive']} onChange={value => change({ expressiveness: value / 100 })} /></div>
       <div className="slider-row"><Slider label="Speech Speed" value={settings.voiceSpeed} min={0.5} max={2} step={0.05} unit="×" ends={['0.5×', '2×']} onChange={voiceSpeed => void update({ voiceSpeed })} /></div>
       <div className="slider-row"><Slider label="Volume" value={Math.round(settings.voiceVolume * 100)} min={0} max={100} unit="%" ends={['Quiet', 'Full']} onChange={value => void update({ voiceVolume: value / 100 })} /></div>
       <SettingRow title="Preview and playback"><div className="voice-actions"><button className="chat-action" disabled={previewing || !settings.voiceEnabled || settings.voiceMuted || settings.doNotDisturb} onClick={() => void play()}><Volume2 size={16} />Preview Voice</button><button className="chat-action" onClick={() => void stop()}><Square size={14} />Stop Speaking</button></div></SettingRow>
@@ -99,6 +102,7 @@ export function VoiceSettings() {
       <SettingRow title="Completion Announcements"><Toggle label="Completion Announcements" checked={voice.completionAnnouncements} onChange={completionAnnouncements => change({ completionAnnouncements })} /></SettingRow>
       <SettingRow title="Allow Speech Interruption"><Toggle label="Allow Speech Interruption" checked={voice.allowSpeechInterruption} onChange={allowSpeechInterruption => change({ allowSpeechInterruption })} /></SettingRow>
     </Section>
+    <AudioDeviceSettings testVoice={play} voiceBusy={previewing} />
     <VoiceInteractionSettings />
     {notice && <p role="status" className="chat-message-note">{notice}</p>}
   </div>

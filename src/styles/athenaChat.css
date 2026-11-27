@@ -1,9 +1,9 @@
 .my-athena-page.is-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; max-width: none; padding: 16px 22px 12px; }
 #my-athena-chat-panel { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .athena-chat-layout { flex: 1; }
-.my-athena-page.is-chat .conversation-selectors .custom-select { width: auto; max-width: none; }
-.my-athena-page.is-chat .conversation-selectors .conversation-model-selector { min-width: 130px; max-width: 185px; }
-.my-athena-page.is-chat .conversation-selectors .athena-chat-permissions { min-width: 92px; max-width: 145px; }
+.my-athena-page.is-chat .conversation-selectors .custom-select { width: fit-content; min-width: fit-content; max-width: 250px; }
+.my-athena-page.is-chat .conversation-selectors .conversation-model-selector { min-width: fit-content; max-width: 250px; }
+.my-athena-page.is-chat .conversation-selectors .athena-chat-permissions { min-width: fit-content; max-width: 250px; }
 .athena-chat-notice { padding: 9px 12px; margin: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--muted); font-size: 11px; }
 .athena-chat-transcript { padding: 12px 14px 12px 2px; }
 .athena-chat-sidebar .conversation-list { min-height: 0; overflow-y: auto; }
@@ -17,4 +17,4 @@
 .athena-chat-operation summary { cursor: pointer; }
 .athena-chat-operation p { margin: 5px 0; overflow-wrap: anywhere; }
 .athena-chat-operation pre { max-height: 260px; overflow: auto; white-space: pre-wrap; }
-@media (max-width: 720px) { .my-athena-page.is-chat { padding: 12px; } .my-athena-page.is-chat .conversation-selectors .conversation-model-selector { min-width: 100px; max-width: 145px; } }
+@media (max-width: 720px) { .my-athena-page.is-chat { padding: 12px; } }

@@ -1,5 +1,7 @@
 import { BrowserWindow, app, screen } from 'electron'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { IPC } from '../../shared/ipcChannels'
 import { fileURLToPath } from 'node:url'
 import type { Surface } from '../../shared/contracts'
 import { fitPosition, panelPosition } from '../../shared/geometry'
@@ -11,6 +13,7 @@ import type { StartupSplash } from './startupSplash'
 
 const directory = fileURLToPath(new URL('.', import.meta.url))
 export class WindowManager {
+  clearAutomationFeedback?:()=>void
   control!: BrowserWindow
   floating!: BrowserWindow
   panel!: BrowserWindow
@@ -111,6 +114,38 @@ export class WindowManager {
     this.control.focus()
     if (page) this.control.webContents.send('athena:navigate', page)
   }
+  async navigateVoice(page: string, signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted()
+    if (this.startup?.active || !this.control || this.control.isDestroyed() || this.quitting) throw new Error('The main Athena window is unavailable.')
+    if (page === 'hide') {
+      this.control.hide()
+      if (this.control.isVisible()) throw new Error('Athena could not verify that the main window was hidden.')
+      return 'Hidden the main Athena window.'
+    }
+    const contents = this.control.webContents
+    const id = randomUUID()
+    this.showControl()
+    return new Promise((resolve, reject) => {
+      const finish = (message?: string) => {
+        clearTimeout(timeout)
+        signal.removeEventListener('abort', cancel)
+        contents.ipc.removeListener(IPC.navigationAck, ack)
+        if (message) resolve(message)
+        else reject(new Error('The requested page change could not be verified.'))
+      }
+      const cancel = () => finish()
+      const ack = (event: Electron.IpcMainEvent, request: unknown, actual: unknown) => {
+        if (request !== id || event.senderFrame !== contents.mainFrame || !this.isTrustedURL(contents, event.senderFrame.url)) return
+        const expected = page === 'back' || page === 'forward' || page === actual
+        finish(expected && typeof actual === 'string' && /^[a-z-]{1,45}$/.test(actual) ? 'Opened Athena ' + actual.replace(/^my-athena-/, '').replaceAll('-', ' ') + '.' : undefined)
+      }
+      const timeout = setTimeout(cancel, 3500)
+      contents.ipc.on(IPC.navigationAck, ack)
+      signal.addEventListener('abort', cancel, {once:true})
+      try { contents.send(IPC.navigate, page, id) } catch { cancel() }
+    })
+  }
+
   setFloatingVisible(visible: boolean): void {
     if (this.startup?.active) return
     if (visible && this.ready.has(this.floating.id)) this.floating.showInactive()

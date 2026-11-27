@@ -153,9 +153,11 @@ export class ContextManager {
   checkpoint(input: ResponseInput, force = false) {
     if (!this.settings.taskCheckpoints) return
     // Screen snapshots and opaque provider state derived from them are transient.
-    if (this.options.context?.projectTools?.hasEphemeralContext?.()) return
+    if (this.options.context?.projectTools?.hasEphemeralContext?.()) { this.options.onCheckpointUnavailable?.(); return }
     this.checkpointEnabled ||= force
-    if ((this.checkpointEnabled || this.compacted || this.options.checkpoint) && JSON.stringify(input).length <= 2_000_000) this.options.onCheckpoint?.(structuredClone(input))
+    if (!(this.checkpointEnabled || this.compacted || this.options.checkpoint)) return
+    if (Buffer.byteLength(JSON.stringify(input)) > 2_000_000) this.options.onCheckpointUnavailable?.()
+    else this.options.onCheckpoint?.(structuredClone(input))
   }
   async fit(input: ResponseInput, force = false): Promise<ResponseInput> {
     const safeInput = Math.floor(Math.min(this.limits.maxInput ?? Infinity,

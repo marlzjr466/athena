@@ -8,6 +8,7 @@ import type { Snapshot } from '../shared/contracts'
 import type { AIOwnership } from '../shared/aiOwnership'
 
 const mock = vi.hoisted(() => ({
+  liveStart: vi.fn(async()=>{}),liveClose:vi.fn(),getSnapshot:vi.fn(),audioDevices:vi.fn(),
   vadOptions: undefined as any,
   vad: {
     listening: false,
@@ -33,6 +34,7 @@ const mock = vi.hoisted(() => ({
   cancelHandsFreeReply: vi.fn(async () => ({ ok: true })),
 }))
 vi.mock('../src/services/desktop', () => ({ desktop: mock }))
+vi.mock('../src/services/speech/livePeer',()=>({LivePeer:class {start=mock.liveStart;close=mock.liveClose;setVolume=vi.fn()}}))
 vi.mock('@ricky0123/vad-web', () => ({ MicVAD: { new: vi.fn(async (options) => { mock.vadOptions = options; return mock.vad }) } }))
 vi.mock('../src/services/speech/handsFreeAudio', () => ({ handsFreeAudio: async function* () { yield { ok: false, message: 'Diagnostic audio stub.', generationMs: 0, bytes: new Uint8Array() } } }))
 
@@ -130,4 +132,48 @@ describe('floating hands-free lease lifecycle', () => {
     await waitFor(() => expect(mock.answerHandsFree).toHaveBeenCalledWith(expect.objectContaining({ diagnosticDirect: true, text: 'say hello' })))
     view.unmount()
   })
+})
+
+it('recovers an initially missing microphone on a real device event without requiring labeled inventory', async () => {
+  vi.stubGlobal('AudioWorkletNode', class {})
+  const devices = Object.assign(new EventTarget(), { getUserMedia: vi.fn() })
+  vi.stubGlobal('navigator', { mediaDevices: devices })
+  const sessionId = (await mock.getChat()).sessionId
+  mock.enableHandsFree.mockImplementation(async () => ({ ok: true, ownership: owner(sessionId) }))
+  mock.vad.start.mockRejectedValueOnce(new DOMException('No microphone', 'NotFoundError'))
+  const view = render(<HandsFreeAssistant />)
+  try {
+    await waitFor(() => expect(mock.setHandsFreeState).toHaveBeenCalledWith(expect.objectContaining({ state: 'error', message: expect.stringContaining('NotFoundError') })))
+    act(() => { devices.dispatchEvent(new Event('devicechange')); devices.dispatchEvent(new Event('devicechange')) })
+    await waitFor(() => expect(mock.enableHandsFree).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    await waitFor(() => expect(mock.setHandsFreeState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'standby' })))
+  } finally { view.unmount(); vi.unstubAllGlobals() }
+})
+
+it.each([true,false])('opens cloud audio only after a locally recognized wake and handles connection success=%s',async success=>{
+  vi.stubGlobal('AudioWorkletNode',class {})
+  const track=Object.assign(new EventTarget(),{readyState:'live',stop:vi.fn(),getSettings:()=>({deviceId:'mic'})})
+  const mic={getTracks:()=>[track],getAudioTracks:()=>[track]}
+  const devices=Object.assign(new EventTarget(),{getSupportedConstraints:()=>({}),getUserMedia:vi.fn(async()=>mic),enumerateDevices:async()=>[]})
+  vi.stubGlobal('navigator',{mediaDevices:devices})
+  const sessionId=crypto.randomUUID()
+  mock.getChat.mockResolvedValue({...emptyChatSnapshot(),sessionId})
+  mock.enableHandsFree.mockResolvedValue({ok:true,ownership:owner(sessionId)})
+  mock.transcribeHandsFree.mockResolvedValueOnce({ok:true,transcript:'Just talking'}).mockResolvedValueOnce({ok:true,transcript:'Hey Athena, say hello'})
+  mock.answerHandsFree.mockResolvedValue({ok:true,text:'Hello!'})
+  if(!success)mock.liveStart.mockRejectedValueOnce(new Error('Connection failed'))
+  mock.audioDevices.mockResolvedValue({revision:1,input:{deviceId:'mic'},output:{deviceId:'speaker'},devices:[]})
+  const settings={...defaultSettings,liveVoice:{...defaultSettings.liveVoice,cloudAllowed:true},voiceInteraction:{...defaultSettings.voiceInteraction,handsFreeEnabled:true,autoVoiceResponse:true}}
+  mock.getSnapshot.mockResolvedValue({settings})
+  useAthena.setState({snapshot:{settings,visible:true} as Snapshot})
+  const view=render(<HandsFreeAssistant/>)
+  try {
+    await waitFor(()=>expect(mock.vadOptions).toBeTruthy())
+    await act(async()=>{await mock.vadOptions.getStream()})
+    const say=async()=>{await act(async()=>{mock.vadOptions.onSpeechRealStart();await mock.vadOptions.onSpeechEnd(new Float32Array(6000).fill(.1))})}
+    await say();expect(mock.liveStart).not.toHaveBeenCalled()
+    await say();await waitFor(()=>expect(mock.liveStart).toHaveBeenCalledOnce())
+    if(success)expect(mock.answerHandsFree).not.toHaveBeenCalled()
+    else await waitFor(()=>expect(mock.answerHandsFree).toHaveBeenCalledWith(expect.objectContaining({text:'say hello'})))
+  } finally {view.unmount();vi.unstubAllGlobals()}
 })

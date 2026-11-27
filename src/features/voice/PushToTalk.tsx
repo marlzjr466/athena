@@ -6,8 +6,8 @@ import { VoiceCapture } from '../../services/speech/voiceCapture'
 import type { VoicePhase } from '../../../shared/voice'
 import '../../styles/voice.css'
 
-export function PushToTalk({ sessionId, disabled, onTranscript, onActive, toggle = false }: {
-  sessionId?: string; disabled: boolean; onTranscript(text: string, sessionId: string): void; onActive(active: boolean): void; toggle?: boolean
+export function PushToTalk({ sessionId, disabled, onTranscript, onActive, toggle = false, activation = 0, hideIdleTrigger = false }: {
+  sessionId?: string; disabled: boolean; onTranscript(text: string, sessionId: string): void; onActive(active: boolean): void; toggle?: boolean; activation?: number; hideIdleTrigger?: boolean
 }) {
   const [phase, setPhase] = useState<VoicePhase>('idle'), [notice, setNotice] = useState('')
   const [level, setLevel] = useState(0)
@@ -44,10 +44,16 @@ export function PushToTalk({ sessionId, disabled, onTranscript, onActive, toggle
   useEffect(() => { capture.current?.cancel() }, [sessionId])
   useEffect(() => { if (disabled) capture.current?.cancel() }, [disabled])
   const begin = () => { if (!disabled && sessionId) void capture.current?.begin(sessionId) }
+  const lastActivation = useRef(activation)
+  useEffect(() => {
+    if (lastActivation.current === activation) return
+    lastActivation.current = activation
+    if (capture.current?.phase === 'listening') capture.current.finish(); else begin()
+  }, [activation])
   const active = phase !== 'idle'
   const bars = Array.from({ length: 24 }, (_, index) => 0.55 + ((index * 17) % 11) / 20)
   return <div className={`voice-input ${active ? 'is-active' : ''}`}>
-    <button type="button" className={`chat-action voice-button ${active ? 'voice-active' : ''} ${autoSend ? 'voice-auto-send' : ''}`} disabled={disabled || phase === 'transcribing'}
+    {(!hideIdleTrigger || active) && <button type="button" className={`chat-action voice-button ${active ? 'voice-active' : ''} ${autoSend ? 'voice-auto-send' : ''}`} disabled={disabled || phase === 'transcribing'}
       aria-label={phase === 'listening' ? 'Finish voice message' : 'Start voice message'} aria-pressed={phase === 'listening'} aria-describedby={instructionId} aria-keyshortcuts={toggle ? undefined : 'Control+Shift+A Meta+Shift+A'}
       title={`${toggle ? 'Click to start or finish' : 'Hold to talk · release to transcribe'}${autoSend ? ' and send' : ''} · Escape cancels`}
       onPointerDown={(event) => { if (event.button !== 0) return; event.preventDefault(); if (toggle) { if (capture.current?.phase === 'listening') capture.current.finish(); else begin() } else { event.currentTarget.setPointerCapture(event.pointerId); begin() } }}
@@ -55,7 +61,7 @@ export function PushToTalk({ sessionId, disabled, onTranscript, onActive, toggle
       onLostPointerCapture={() => { if (!toggle && capture.current?.phase === 'listening') capture.current.cancel() }}
       onKeyDown={(event) => { if ([' ', 'Enter'].includes(event.key)) { event.preventDefault(); if (!event.repeat) { if (toggle && capture.current?.phase === 'listening') capture.current.finish(); else begin() } } }}
       onKeyUp={(event) => { if ([' ', 'Enter'].includes(event.key)) { event.preventDefault(); if (!toggle) capture.current?.finish() } }}
-    ><Mic size={17} />{autoSend && !active && <span className="voice-auto-send-indicator" aria-hidden="true" />}</button>
+    ><Mic size={17} />{autoSend && !active && <span className="voice-auto-send-indicator" aria-hidden="true" />}</button>}
     {active && <button type="button" className="chat-action" aria-label="Cancel voice input" onClick={() => capture.current?.cancel()}><X size={15} /></button>}
     {phase === 'listening' && <div className="voice-wave" role="img" aria-label="Live microphone waveform" style={{ '--voice-level': level } as React.CSSProperties}>{bars.map((factor, index) => <span key={index} style={{ '--voice-height': `${Math.max(4, 4 + level * factor * 22)}px` } as React.CSSProperties} />)}</div>}
     <span id={instructionId} className="voice-sr-only">{toggle ? 'Click to start recording, then click again to transcribe.' : 'Hold to record, then release to transcribe.'} Recording lasts up to 60 seconds. {autoSend ? 'The transcript sends automatically if the composer is empty and has no attachments. Tool approvals still apply.' : 'Review the transcript before sending your message.'}</span>

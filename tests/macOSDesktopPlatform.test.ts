@@ -2,7 +2,7 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mock = vi.hoisted(() => ({ trusted: vi.fn(() => true), notification: undefined as unknown, mode: 'show' }))
-vi.mock('electron', () => ({ systemPreferences: { isTrustedAccessibilityClient: mock.trusted }, Notification: class extends EventEmitter {
+vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => process.cwd() }, systemPreferences: { isTrustedAccessibilityClient: mock.trusted }, Notification: class extends EventEmitter {
   static isSupported() { return true }
   constructor(public options: unknown) { super(); mock.notification = this }
   show() { if (mock.mode !== 'silent') this.emit(mock.mode) }
@@ -13,23 +13,35 @@ import { MacOSDesktopPlatform } from '../electron/main/desktop/macOSDesktopPlatf
 beforeEach(() => { vi.clearAllMocks(); mock.mode = 'show'; mock.trusted.mockReturnValue(true) })
 afterEach(() => vi.useRealTimers())
 describe('macOS desktop action adapters', () => {
-  it('uses fixed executables with allowlisted bundle IDs and verifies launch state', async () => {
-    const run = vi.fn(async () => ({ stdout: JSON.stringify({ running: true, focused: false }) }))
+  it('gets the foreground app from the same native workspace that resolves windows', async () => {
+    const apps = [{ app: 'com.apple.TextEdit', name: 'TextEdit', active: true }, { app: 'com.apple.finder', name: 'Finder', active: false }]
+    const run = vi.fn().mockResolvedValue({ stdout: JSON.stringify({ apps }) })
     const platform = new MacOSDesktopPlatform('darwin', run)
-    expect(await platform.openApplication('vscode', new AbortController().signal)).toMatchObject({ ok: true, status: 'completed' })
-    expect(run.mock.calls[0]).toEqual(['/usr/bin/open', ['-b', 'com.microsoft.VSCode'], expect.objectContaining({ timeout: 5000 })])
-    expect(run.mock.calls[1]).toEqual(['/usr/bin/osascript', expect.arrayContaining(['com.microsoft.VSCode', 'inspect']), expect.any(Object)])
+    expect(await platform.runningApplications(new AbortController().signal)).toEqual(apps)
+    expect(run.mock.calls[0][1]).toEqual(['', 'workspace', JSON.stringify({ operation: 'running' })])
     platform.dispose()
   })
-  it('does not claim launch success when the app is absent, or focus success until macOS confirms it', async () => {
-    const run = vi.fn(async () => ({ stdout: JSON.stringify({ running: false, focused: false }) }))
-    const platform = new MacOSDesktopPlatform('darwin', run)
-    expect((await platform.openApplication('slack', new AbortController().signal)).ok).toBe(false)
-    run.mockClear()
-    expect(await platform.focusApplication('slack', new AbortController().signal)).toMatchObject({ ok: false, message: expect.stringContaining('not running') })
+  it('observes first, launches only a stopped app and verifies the foreground', async () => {
+    const state=(running:boolean,focused:boolean)=>JSON.stringify({running,focused,pid:running?40:0,foreground:29,windows:[]})
+    const run=vi.fn().mockResolvedValueOnce({stdout:state(false,false)}).mockResolvedValueOnce({stdout:''})
+      .mockResolvedValueOnce({stdout:state(true,false)}).mockResolvedValueOnce({stdout:JSON.stringify({ok:true,message:'Focused'})})
+    const platform=new MacOSDesktopPlatform('darwin',run)
+    expect(await platform.openApplication('vscode',new AbortController().signal)).toMatchObject({ok:true,status:'completed'})
+    expect(run.mock.calls[0][1]).toEqual(['com.microsoft.VSCode','workspace',expect.stringContaining('observe')])
+    expect(run.mock.calls[1][0]).toBe('/usr/bin/open')
+    expect(run.mock.calls[3][1][2]).toContain('activate')
+    run.mockReset().mockResolvedValue({stdout:state(true,true)})
+    expect((await platform.openApplication('vscode',new AbortController().signal)).message).toContain('already')
     expect(run).toHaveBeenCalledOnce()
-    run.mockResolvedValue({ stdout: JSON.stringify({ running: true, focused: true }) })
-    expect((await platform.focusApplication('finder', new AbortController().signal)).ok).toBe(true)
+    platform.dispose()
+  })
+  it('does not report a launch before a running process is observed',async()=>{
+    const run=vi.fn(async()=>({stdout:JSON.stringify({running:false,focused:false,pid:0,foreground:10,windows:[]})}))
+    const platform=new MacOSDesktopPlatform('darwin',run)
+    expect((await platform.openApplication('slack',new AbortController().signal)).ok).toBe(false)
+    run.mockClear()
+    expect(await platform.focusApplication('slack',new AbortController().signal)).toMatchObject({ok:false,message:expect.stringContaining('not running')})
+    expect(run).toHaveBeenCalledOnce()
     platform.dispose()
   })
   it('blocks custom URL schemes before Electron sees them and accurately reports accepted web links', async () => {
@@ -66,9 +78,8 @@ describe('macOS desktop action adapters', () => {
     const platform = new MacOSDesktopPlatform('darwin', run)
     const result = await platform.inspectAccessibility('vscode', new AbortController().signal)
     expect(result).toMatchObject({ app: 'Visual Studio Code', window: 'Untitled', elements: [{ label: 'Search', role: 'AXTextField' }] })
-    const script = String(run.mock.calls[0]?.[1]?.[3])
-    expect(script).toContain('entireContents')
-    expect(script).not.toContain('clickAt')
+    expect(run.mock.calls[0]?.[0]).toMatch(/build\/native\/athena-desktop-accessibility$/)
+    expect(run.mock.calls[0]?.[1]).toEqual(['com.microsoft.VSCode', 'inspect', '', '', ''])
     mock.trusted.mockReturnValue(false)
     const denied = new MacOSDesktopPlatform('darwin', vi.fn())
     await expect(denied.inspectAccessibility('vscode', new AbortController().signal)).rejects.toThrow('Enable Accessibility UI Control')
@@ -78,7 +89,7 @@ describe('macOS desktop action adapters', () => {
     const run = vi.fn(async (_file: string, _args: string[], _options: { timeout: number; maxBuffer: number; signal: AbortSignal; encoding?: 'utf8' }) => ({ stdout: JSON.stringify({ app: 'com.microsoft.VSCode', window: 'Untitled', elements: [{ label: 'Run', role: 'AXButton', enabled: true }], verified: false, changed: false, message: 'The action was invoked, but Athena could not verify a visible state change.' }) }))
     const platform = new MacOSDesktopPlatform('darwin', run)
     expect(await platform.clickAccessibleElement('vscode', 'Run', new AbortController().signal)).toMatchObject({ ok: false, verified: false })
-    expect(run.mock.calls[0]?.[1]?.at(-2)).toBe('Run')
+    expect(run.mock.calls[0]?.[1]?.at(-3)).toBe('Run')
     platform.dispose()
   })
 })

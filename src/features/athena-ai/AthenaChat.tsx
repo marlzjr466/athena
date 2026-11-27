@@ -1,6 +1,10 @@
+import { ComposerActions } from '../chat/ComposerActions'
+import { mediaIntent } from '../../../shared/mediaGeneration'
+import { ArtifactCards } from '../chat/ArtifactCards'
+import { MediaJobControls } from '../chat/MediaJobControls'
 import { HeldPermissionPrompt } from '../../components/PermissionPrompt'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ArrowUp, Check, Circle, Code2, FolderOpen, LoaderCircle, Paperclip, PanelRight, Pencil, RefreshCw, Sparkles, Square, X } from 'lucide-react'
+import { ImagePlus, Film, ArrowUp, Check, Circle, Code2, FolderOpen, LoaderCircle, Paperclip, PanelRight, Pencil, RefreshCw, Sparkles, Square, X } from 'lucide-react'
 import { MAX_MESSAGE_LENGTH, stripTrailingSourcesSection, type ChatMessage as Message } from '../../../shared/chat'
 import { MAX_ATTACHMENT_BYTES, type ContextCommand } from '../../../shared/conversations'
 import { localChatCompatibility, type LocalStatus } from '../../../shared/localAI'
@@ -23,6 +27,7 @@ import '../../styles/chat.css'
 import '../../styles/conversations.css'
 import '../../styles/athenaChat.css'
 import '../../styles/automationProgress.css'
+import { ApplicationAutomationProgress } from '../chat/ApplicationAutomationProgress'
 
 function localActivitySummary(activities: NonNullable<Message['execution']>['activities'], workspaceRoot?: string): string {
   const unique = [...new Map(activities.map(activity => [activity.id, activity])).values()]
@@ -75,6 +80,8 @@ function LocalMessage({ message, sessionId, workspaceRoot, retry, command, busy,
       {message.status === 'stopped' && <p className="chat-message-note">Stopped · partial local response preserved</p>}
       {error && <p className="chat-error" role="alert">{error}</p>}
     </>}
+    {sessionId && !!message.artifacts?.length && <ArtifactCards sessionId={sessionId} artifacts={message.artifacts} job={message.mediaJob} context={desktop.athenaChatContext} />}
+    {sessionId && message.mediaJob && <MediaJobControls context={desktop.athenaChatContext} message={message} sessionId={sessionId} />}
     {choiceInteraction && <ChatChoices key={choiceInteraction.id} interaction={choiceInteraction} disabled={busy || !onAnswerChoice} onAnswer={onAnswerChoice ?? (async () => false)} />}
     {assistant && !!message.attachments?.length && sessionId && <AttachmentCards sessionId={sessionId} attachments={message.attachments} context={desktop.athenaChatContext} />}
     {assistant && message.status !== 'streaming' && <footer>{visible && <CopyText text={visible} compact />}{canRetry && <ChatTooltip label="Regenerate response"><button type="button" className="chat-action chat-icon-action" aria-label="Regenerate local response" disabled={busy} onClick={retry}><RefreshCw size={16} /></button></ChatTooltip>}<span className="chat-message-timestamp"><time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time></span></footer>}
@@ -188,10 +195,17 @@ export function AthenaChat() {
     }
     changeDraft(''); setSelectedSlash(null); setSlashOpen(false)
   }
+  const mediaMode = snapshot.config?.mediaMode
+  const canSendMedia = !!mediaMode || !!mediaIntent(draft)
+  const setMediaMode = async (mode: 'image' | 'video' | null) => {
+    if (!sessionId) return
+    try { const r=await desktop.mediaGeneration({action:'compose',sessionId,mode}); if ('ok' in r && !r.ok) setNotice(r.message ?? 'Could not change mode.') } catch { setNotice('Could not change generation mode.') }
+    setSelectedSlash(null); setSlashOpen(false); composer.current?.focus()
+  }
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!draft.trim() || busy || pending || uploading || !modelReady) return
-    const resolution = resolveSlashCommand(draft, catalog.commands)
+    if (!draft.trim() || busy || pending || uploading || (!modelReady && !canSendMedia)) return
+    const resolution = mediaMode ? undefined : resolveSlashCommand(draft, catalog.commands)
     const entry = resolution?.matches.find(e => e.id === selectedSlash?.id) ?? (resolution?.matches.length === 1 ? resolution.matches[0] : undefined)
     if (resolution && !entry) { setNotice('Choose an available command source from the menu.'); setSlashOpen(true); return }
     if (entry?.compatibility === 'native-only') { setNotice(entry.limitation ?? 'This command requires its native provider.'); return }
@@ -225,9 +239,10 @@ export function AthenaChat() {
     <section className="athena-chat-main ai-chat">
       <div className="chat-toolbar"><button type="button" className="chat-action" aria-label="Toggle local conversation sidebar" aria-expanded={sidebar} onClick={() => setSidebar(value => !value)}><PanelRight size={17} /></button></div>
       {!isDesktop ? <p role="status" className="athena-chat-notice">Athena Chat requires the macOS desktop app.</p> : !connected ? <p role="status" className="athena-chat-notice">Ollama is unavailable. Start it or check its endpoint in Local AI setup.</p> : !modelReady ? <p role="status" className="athena-chat-notice">Choose an installed chat-capable local model for this conversation. No online provider will be used.</p> : null}
-      {snapshot.automationProgress && <section className="automation-progress athena-automation-progress" role="status" aria-label="Athena automation progress">
+      {snapshot.automationProgress?.engine && <ApplicationAutomationProgress progress={snapshot.automationProgress}/>}
+      {snapshot.automationProgress && !snapshot.automationProgress.engine && <section className="automation-progress athena-automation-progress" role="status" aria-label="Athena automation progress">
         <header><strong>{snapshot.automationProgress.phase === 'running' ? 'Working on your request' : snapshot.automationProgress.phase === 'complete' ? 'Request complete' : 'Request stopped'}</strong>{snapshot.automationProgress.phase === 'running' && snapshot.automationProgress.cancelTarget === 'chat' && <button type="button" aria-label="Cancel automation" onClick={() => void stop()}><X size={13} /></button>}</header>
-        <p>{snapshot.automationProgress.task}</p>
+        <p>{[snapshot.automationProgress.engine,snapshot.automationProgress.application,snapshot.automationProgress.task].filter(Boolean).join(' · ')}</p>
         <ol>{snapshot.automationProgress.steps.map(step => <li key={step.id} className={`automation-step ${step.status}`}>
           {step.status === 'complete' ? <Check size={12} /> : step.status === 'running' ? <LoaderCircle size={12} className="automation-spinner" /> : step.status === 'failed' || step.status === 'cancelled' ? <X size={12} /> : <Circle size={10} />}
           <span>{step.label}{step.message ? ` · ${step.message}` : ''}</span>
@@ -238,22 +253,28 @@ export function AthenaChat() {
         {snapshot.hasMore && sessionId && <button className="chat-action" onClick={() => void command({ action: 'more', id: sessionId })}>Load earlier messages</button>}
         {!snapshot.messages.length && <div className="chat-empty"><div className="chat-empty-symbol"><Sparkles size={28} /></div><span className="chat-empty-eyebrow">PRIVATE. LOCAL. YOURS.</span><h1>What’s on your mind?</h1><p>Ask your local Athena a question or work through code.<br />Your online conversations stay separate.</p><div className="chat-starters"><button type="button" disabled={!modelReady} onClick={() => changeDraft('Help me understand a piece of code.')}><Code2 size={18} /><span>Work through code</span><ArrowUp size={14} /></button><button type="button" disabled={!modelReady} onClick={() => changeDraft('Help me brainstorm an idea.')}><Sparkles size={18} /><span>Explore an idea</span><ArrowUp size={14} /></button></div></div>}
         {snapshot.messages.map(message => <LocalMessage key={message.id} message={message} sessionId={sessionId} workspaceRoot={activityWorkspaceRoot} retry={() => void retry()} command={command} busy={busy || pending} canRetry={message.id === snapshot.messages.at(-1)?.id} onAnswerChoice={message.id === snapshot.messages.at(-1)?.id && message.role === 'assistant' ? async answer => {
-          if (busy || pending || uploading || !modelReady) return false
+          if (busy || pending || uploading || (!modelReady && !canSendMedia)) return false
           follow.current = true
           return send(answer)
         } : undefined} />)}
       </div></div>
       {(notice || issue || snapshot.error || contextualNotice) && <p role={notice || issue || snapshot.error ? 'alert' : 'status'} className="athena-chat-notice">{notice || issue || snapshot.error || contextualNotice}</p>}
       <div className="chat-composer-shell">{sessionId && <HeldPermissionPrompt messages={snapshot.messages} sessionId={sessionId} phase={snapshot.phase} label="Local tool approval" decide={(approvalId, allow, remember) => command({ action: 'agent-approval', id: sessionId, approvalId, allow, remember })} />}{slashOpen && <SlashCommandPicker entries={suggestions} index={slashIndex} select={chooseSlash} highlight={setSlashIndex} refresh={() => void refreshCommands()} globals={() => void refreshCommands(catalog.globalEnabled ? 'revoke-global' : 'authorize-global')} globalEnabled={catalog.globalEnabled} />}<form className="ai-chat-composer" onSubmit={submit}>
+        {mediaMode && <div className="composer-mode"><span className="chat-command-chip">{mediaMode==='image'?<ImagePlus size={14}/>:<Film size={14}/>}Create {mediaMode}<button type="button" className="chat-action" aria-label="Remove generation mode" onClick={()=>void setMediaMode(null)}><X size={13}/></button></span></div>}
         {!!snapshot.attachments?.length && sessionId && <AttachmentCards sessionId={sessionId} attachments={snapshot.attachments} context={desktop.athenaChatContext} remove={id => void requestContext({ action: 'remove', sessionId, id })} />}
-        <textarea ref={composer} aria-controls={slashOpen ? 'local-slash-list' : undefined} aria-activedescendant={slashOpen ? `local-slash-option-${slashIndex}` : undefined} aria-label="Message local Athena" placeholder="Ask Athena..." value={draft} maxLength={MAX_MESSAGE_LENGTH} rows={1} onChange={event => { changeDraft(event.target.value); const open = slashQuery(event.target.value, event.target.selectionStart) !== null; setSlashOpen(open); setSlashIndex(0); if (open && !slashOpen) void refreshCommands() }} onKeyDown={event => {
+        <textarea ref={composer} aria-controls={slashOpen ? 'local-slash-list' : undefined} aria-activedescendant={slashOpen ? `local-slash-option-${slashIndex}` : undefined} aria-label="Message local Athena" placeholder={mediaMode ? `Describe the ${mediaMode} you want to create...` : "Ask Athena..."} value={draft} maxLength={MAX_MESSAGE_LENGTH} rows={1} onChange={event => { changeDraft(event.target.value); const open = slashQuery(event.target.value, event.target.selectionStart) !== null; setSlashOpen(open); setSlashIndex(0); if (open && !slashOpen) void refreshCommands() }} onKeyDown={event => {
           if (slashOpen && !event.nativeEvent.isComposing) {
             if (event.key === 'Escape') { event.preventDefault(); setSlashOpen(false); return }
             if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); setSlashIndex(i => (i + (event.key === 'ArrowDown' ? 1 : -1) + Math.max(1, suggestions.length)) % Math.max(1, suggestions.length)); return }
             if ((event.key === 'Enter' || event.key === 'Tab') && suggestions.length) { event.preventDefault(); chooseSlash(suggestions[Math.min(slashIndex, suggestions.length - 1)]); return }
           }
  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(event) } }} />
-        <div className="chat-composer-toolbar"><div className="chat-composer-tools"><input ref={fileInput} type="file" multiple hidden aria-label="Choose local attachments" onChange={event => void attach(event.target.files)} /><button type="button" className="chat-action" aria-label="Attach local files" title="Attach local files" disabled={!sessionId || busy || uploading} onClick={() => fileInput.current?.click()}><Paperclip size={17} /></button><button type="button" className="chat-action" aria-label="Connect local project folder" title="Authorize a local project folder" disabled={!sessionId || busy} onClick={() => sessionId && void requestContext({ action: 'connect', sessionId })}><FolderOpen size={17} /></button></div>
+        <div className="chat-composer-toolbar"><div className="chat-composer-tools"><input ref={fileInput} type="file" multiple hidden aria-label="Choose local attachments" onChange={event => void attach(event.target.files)} /><ComposerActions key={sessionId} disabled={!sessionId} actions={[
+          {label:'Add photos and files',icon:<Paperclip size={16}/>,disabled:busy||uploading,run:()=>fileInput.current?.click()},
+          {label:'Attach project folder',icon:<FolderOpen size={16}/>,disabled:busy,run:()=>{if(sessionId)void requestContext({action:'connect',sessionId})}},
+          {label:'Create image',icon:<ImagePlus size={16}/>,disabled:busy||pending,selected:mediaMode==='image',run:()=>void setMediaMode('image')},
+          {label:'Create video',icon:<Film size={16}/>,disabled:busy||pending,selected:mediaMode==='video',run:()=>void setMediaMode('video')},
+        ]}/></div>
           <div className="conversation-selectors athena-chat-selectors">{!!snapshot.workspaces?.length && <CustomSelect ariaLabel="Athena Chat project permissions" value={snapshot.config?.agentMode ?? 'ask'} disabled={!sessionId || pending} options={[{ value: 'ask', label: 'Ask before changes' }, { value: 'read-only', label: 'Read only' }, { value: 'full-access', label: 'Full Access', description: 'Automatically allow permission-controlled operations without asking for confirmation.' }]} onChange={mode => {
             if (!sessionId) return
             const needsConfirmation = mode === 'full-access' && snapshot.config?.fullAccessWorkspaceId !== snapshot.workspaces?.[0]?.id

@@ -42,13 +42,21 @@ export function installAthenaRendererHandler(): void {
       try {
         const asset = await resolveArtifact(token)
         if (!asset) return new Response('Not found', { status: 404 })
-        return new Response(asset.bytes as unknown as BodyInit, { headers: {
-          'Content-Type': asset.mimeType,
-          'Content-Length': String(asset.bytes.byteLength),
-          'Content-Security-Policy': "default-src 'none'",
-          'X-Content-Type-Options': 'nosniff',
-          'Cache-Control': 'private, max-age=60',
-        } })
+        const size=asset.bytes.byteLength
+        const headers=new Headers({'Content-Type':asset.mimeType,'Accept-Ranges':'bytes','Content-Security-Policy':"default-src 'none'",'X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=60'})
+        const origin=request.headers.get('Origin')
+        if(origin==='athena://renderer'||(!app.isPackaged && origin && /^http:\/\/(?:localhost|127\.0\.0\.1):\d+$/.test(origin))) headers.set('Access-Control-Allow-Origin',origin)
+        const range=request.headers.get('range')
+        if(range){
+          const match=/^bytes=(\d*)-(\d*)$/.exec(range)
+          const first=match?.[1]?Number(match[1]):Math.max(0,size-Number(match?.[2]))
+          const last=match?.[1]&&match[2]?Math.min(size-1,Number(match[2])):size-1
+          if(!match||(!match[1]&&!match[2])||first>=size||last<first){headers.set('Content-Range','bytes */'+size);return new Response(null,{status:416,headers})}
+          headers.set('Content-Range',`bytes ${first}-${last}/${size}`);headers.set('Content-Length',String(last-first+1))
+          return new Response(asset.bytes.subarray(first,last+1) as BodyInit,{status:206,headers})
+        }
+        headers.set('Content-Length',String(size))
+        return new Response(asset.bytes as unknown as BodyInit,{headers})
       } catch { return new Response('Not found', { status: 404 }) }
     }
     if (url.hostname !== 'renderer') return new Response('Not found', { status: 404 })

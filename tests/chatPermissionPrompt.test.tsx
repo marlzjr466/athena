@@ -71,7 +71,7 @@ describe('conversation permission prompt placement', () => {
     mocks.getAIStatus.mockResolvedValue({ ok: true, status: { provider: 'Google Antigravity Subscription', active: true, model: 'gemini-4-argon', models: ['gemini-4-argon'], modelCatalogAvailable: true } })
     render(<ChatView />)
     expect(await screen.findByText(/saved Antigravity model gpt-6\.1-sol is no longer available/)).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: 'Message Athena' })).toBeDisabled()
+    expect(screen.getByRole('textbox', { name: 'Message Athena' })).not.toBeDisabled() // Drafting/media do not require the missing text model.
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     expect(mocks.sendChat).not.toHaveBeenCalled()
   })

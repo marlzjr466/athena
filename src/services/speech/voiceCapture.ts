@@ -1,3 +1,4 @@
+import { MicrophoneSource } from './audioDevices'
 import type { AthenaAPI } from '../../../shared/contracts'
 import { MAX_AUDIO_BYTES, MAX_RECORDING_MS, type VoiceIdentity, type VoicePhase } from '../../../shared/voice'
 
@@ -27,6 +28,7 @@ interface Recording extends VoiceIdentity {
   phase: VoicePhase; stream?: MediaStream; recorder?: MediaRecorder
   chunks: Blob[]; size: number; startedAt: number; timer?: ReturnType<typeof setTimeout>
   audioContext?: AudioContext; analyser?: AnalyserNode; levelFrame?: number
+  source?: MicrophoneSource; inputNode?: MediaStreamAudioSourceNode; destination?: MediaStreamAudioDestinationNode
 }
 interface CaptureHooks { state(phase: VoicePhase, message?: string): void; transcript(text: string, sessionId: string): void; level?(value: number): void; meter?(available: boolean): void }
 
@@ -44,7 +46,13 @@ export class VoiceCapture {
       const context = new AudioContext()
       const analyser = context.createAnalyser()
       analyser.fftSize = 256
-      context.createMediaStreamSource(stream).connect(analyser)
+      const input = context.createMediaStreamSource(stream)
+      input.connect(analyser)
+      // Keep MediaRecorder attached to one stable track. Web Audio resamples
+      // replacement microphones to this context's rate without pitch changes.
+      const destination = context.createMediaStreamDestination()
+      input.connect(destination)
+      recording.inputNode = input; recording.destination = destination; recording.stream = destination.stream
       recording.audioContext = context; recording.analyser = analyser
       this.hooks.meter?.(true)
       const values = new Uint8Array(analyser.fftSize)
@@ -60,6 +68,19 @@ export class VoiceCapture {
       recording.levelFrame = requestAnimationFrame(sample)
     } catch { /* Audio metering is an enhancement; recording can continue without it. */ }
   }
+  private async switchInput(recording: Recording): Promise<void> {
+    if (this.active !== recording || recording.phase !== 'listening') return
+    try {
+      const next = await recording.source!.getStream()
+      if (this.active !== recording || recording.phase !== 'listening') return
+      if (!recording.audioContext || !recording.destination) { this.cancel('Microphone changed. Record again using the new device.'); return }
+      recording.inputNode?.disconnect()
+      const node = recording.audioContext.createMediaStreamSource(next)
+      node.connect(recording.destination)
+      if (recording.analyser) node.connect(recording.analyser)
+      recording.inputNode = node
+    } catch { if (this.active === recording) this.cancel('Microphone unavailable. Reconnect it and record again.') }
+  }
   async begin(sessionId: string): Promise<void> {
     if (this.active) return
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { this.hooks.state('idle', 'Microphone recording is unavailable in this runtime.'); return }
@@ -70,17 +91,9 @@ export class VoiceCapture {
       const result = await this.api.beginVoice({ id: recording.id, sessionId })
       if (this.active !== recording) return
       if (!result.ok) { this.cancel(result.message); return }
-      let stream: MediaStream
-      try {
-        // Prefer clean mono input, but do not make optional constraints a reason to
-        // reject a perfectly usable microphone on older Electron/macOS devices.
-        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, channelCount: { ideal: 1 } }, video: false })
-      } catch (error) {
-        const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : ''
-        if (!['OverconstrainedError', 'NotReadableError', 'AbortError'].includes(name)) throw error
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      }
-      if (this.active !== recording) { stream.getTracks().forEach((track) => track.stop()); return }
+      recording.source = new MicrophoneSource(() => ({ echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, autoGainControl: { ideal: true }, channelCount: { ideal: 1 } }), () => { void this.switchInput(recording) })
+      const stream = await recording.source.getStream()
+      if (this.active !== recording) { recording.source.close(); return }
       recording.stream = stream
       this.startLevelMeter(recording, stream)
       const authorized = await this.api.voiceRecording({ id: recording.id, sessionId })
@@ -92,7 +105,7 @@ export class VoiceCapture {
       let mimeType = ''
       for (const type of [...supported, '']) {
         try {
-          recorder = type ? new MediaRecorder(stream, { mimeType: type, audioBitsPerSecond: 64_000 }) : new MediaRecorder(stream, { audioBitsPerSecond: 64_000 })
+          recorder = type ? new MediaRecorder(recording.stream!, { mimeType: type, audioBitsPerSecond: 64_000 }) : new MediaRecorder(recording.stream!, { audioBitsPerSecond: 64_000 })
           mimeType = recorder.mimeType || type || 'audio/webm'
           break
         } catch { /* try the next codec supported by this Electron runtime */ }
@@ -111,7 +124,7 @@ export class VoiceCapture {
         if (recording.phase === 'transcribing') void this.upload(recording, mimeType)
         else this.cancel('The microphone stopped unexpectedly. Please record again.')
       }
-      stream.getTracks().forEach((track) => track.addEventListener('ended', () => {
+      recording.stream!.getTracks().forEach((track) => track.addEventListener('ended', () => {
         // A few macOS audio drivers briefly report an ended track while the
         // input route is being selected. Give the route a moment to recover.
         setTimeout(() => { if (this.active === recording && recording.phase === 'listening' && track.readyState === 'ended') this.cancel('Microphone disconnected. Please check the selected input device and try again.') }, 250)
@@ -123,8 +136,8 @@ export class VoiceCapture {
     } catch (error) {
       if (this.active !== recording) return
       const name = error && typeof error === 'object' && 'name' in error ? error.name : ''
-      this.cancel(name === 'NotAllowedError' || name === 'SecurityError' ? 'Microphone access was denied. Enable Athena in Settings → Privacy → Microphone and macOS System Settings → Privacy & Security → Microphone.'
-        : name === 'NotFoundError' ? 'No microphone input is available. Select a connected input device in macOS Sound settings and try again.'
+      this.cancel(name === 'NotAllowedError' || name === 'SecurityError' ? 'Microphone access was denied. Enable Athena in Settings → Privacy → Microphone and your operating system’s microphone privacy settings.'
+        : name === 'NotFoundError' ? 'No microphone input is available. Select a connected input device in system Sound settings and try again.'
         : name === 'NotReadableError' || name === 'AbortError' ? 'The microphone is busy or unavailable. Close other apps using the microphone, then try again.'
         : 'Could not start the microphone. Check that an input device is connected and available.')
     }
@@ -138,7 +151,8 @@ export class VoiceCapture {
     clearTimeout(recording.timer)
     this.phaseChanged(recording, 'transcribing')
     recording.recorder?.stop()
-    recording.stream?.getTracks().forEach((track) => track.stop())
+    recording.source?.close()
+    if (recording.destination) recording.stream?.getTracks().forEach((track) => track.stop())
   }
   private async upload(recording: Recording, mimeType: string): Promise<void> {
     try {
@@ -171,7 +185,8 @@ export class VoiceCapture {
         recording.recorder.onstop = null; recording.recorder.ondataavailable = null; recording.recorder.onerror = null
         if (recording.recorder.state !== 'inactive') recording.recorder.stop()
       }
-      recording.stream?.getTracks().forEach((track) => track.stop())
+      recording.source?.close(); recording.inputNode?.disconnect()
+      if (recording.destination) recording.stream?.getTracks().forEach((track) => track.stop())
       if (recording.levelFrame !== undefined && typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(recording.levelFrame)
       if (recording.audioContext) void recording.audioContext.close().catch(() => {})
       recording.audioContext = undefined; recording.analyser = undefined; recording.levelFrame = undefined

@@ -26,7 +26,7 @@ describe('playback analyser lifecycle', () => {
   const source = { connect, disconnect }
   const analyser = { fftSize: 512, connect, disconnect, getByteTimeDomainData: (target: Uint8Array) => target.set(values) }
   const createMediaElementSource = vi.fn(() => source)
-  const context = { createAnalyser: () => analyser, createMediaElementSource, destination: {}, resume: vi.fn(async () => {}), close }
+  const context = { state: 'running', createAnalyser: () => analyser, createMediaElementSource, destination: {}, suspend: vi.fn(async () => { context.state = 'suspended' }), setSinkId: vi.fn(async () => {}), resume: vi.fn(async () => { context.state = 'running' }), close }
   beforeEach(() => {
     vi.useFakeTimers()
     values.fill(128)
@@ -40,17 +40,24 @@ describe('playback analyser lifecycle', () => {
     const levels = vi.fn()
     const meter = new PlaybackAmplitude(levels)
     expect(vi.getTimerCount()).toBe(0)
-    meter.start({} as HTMLAudioElement)
+    await meter.prepare({} as HTMLAudioElement, 'headset')
+    expect(context.setSinkId).toHaveBeenLastCalledWith('headset')
+    meter.start()
     expect(vi.getTimerCount()).toBe(1)
     vi.advanceTimersByTime(40)
     expect(levels).toHaveBeenLastCalledWith(0)
     values.fill(128); values[0] = 0; values[1] = 255
     vi.advanceTimersByTime(40)
     expect(levels.mock.lastCall?.[0]).toBeGreaterThan(0)
+    await meter.setSinkId('built-in')
+    expect(context.setSinkId).toHaveBeenLastCalledWith('built-in')
+    expect(createMediaElementSource).toHaveBeenCalledTimes(1)
     meter.stop()
     expect(levels).toHaveBeenLastCalledWith(0)
     expect(vi.getTimerCount()).toBe(0)
-    meter.start({} as HTMLAudioElement)
+    await meter.prepare({} as HTMLAudioElement, 'headset')
+    expect(context.setSinkId).toHaveBeenLastCalledWith('headset')
+    meter.start()
     expect(createMediaElementSource).toHaveBeenCalledTimes(2)
     meter.dispose()
     expect(vi.getTimerCount()).toBe(0)

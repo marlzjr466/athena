@@ -76,7 +76,7 @@ describe('owned local action narration', () => {
     expect(voiceControlIntent('Hey Athena, stop talking.')).toBe('stop-speech')
     expect(voiceControlIntent('Athena, cancel the current task.')).toBe('cancel-task')
     expect(voiceControlIntent('Explain what cancel the task means')).toBeUndefined()
-    expect(voiceControlIntent('stop')).toBeUndefined()
+    expect(voiceControlIntent('stop')).toBe('cancel-task')
     expect(voiceControlIntent('Open Chrome instead')).toBeUndefined()
   })
 })

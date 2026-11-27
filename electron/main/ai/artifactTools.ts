@@ -46,7 +46,7 @@ async function structuredPackage(mimeType: string, content: string): Promise<Uin
 export function createArtifactTools(service: ArtifactService, active: () => boolean, beforeAction?: (name: string, input: unknown, signal: AbortSignal) => Promise<void>): ProjectTools {
   const { $schema: _schema, ...parameters } = z.toJSONSchema(inputSchema)
   return {
-    definitions: [{ name: 'create_artifact', description: 'Create a real local downloadable text, code, SVG, PDF, DOCX, XLSX or ZIP artifact. Do not claim a file was created unless this tool returns success. PPTX/video and rendered images require a separately configured generator and are unavailable here.', parameters }],
+    definitions: [{ name: 'create_artifact', description: 'Create a real local downloadable text, code, SVG, PDF, DOCX, XLSX or ZIP artifact. Do not claim a file was created unless this tool returns success. Use the media generation tool for rendered images and videos when configured.', parameters }],
     assertAccess: () => { if (!active()) throw new ChatError('The conversation changed. Artifact creation stopped.') },
     parallelSafe: () => false,
     async execute(name, input, signal) {

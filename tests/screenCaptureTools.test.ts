@@ -26,6 +26,30 @@ describe('screen awareness permission and lifetime', () => {
     expect(JSON.parse(await f.call()).ok).toBe(false)
     expect(f.chat.approve).not.toHaveBeenCalled(); expect(f.platform.capture).not.toHaveBeenCalled()
   })
+  it.each(['changed pixels','revoked permission','outside window','unchanged outcome','verified action'])('checks the live target and outcome for %s',async scenario=>{
+    const f=setup(), display={...f.image.display,id:'window:45:0'}, image={...f.image,display,capturedAt:Date.now()}
+    const changed={...image,dataURL:'data:image/jpeg;base64,bmV3'}
+    f.platform.windows=async()=>[display]
+    f.platform.point=vi.fn(async()=>{})
+    f.platform.captureWindow=vi.fn().mockResolvedValueOnce([image])
+      .mockResolvedValueOnce([scenario==='changed pixels'?changed:image])
+      .mockResolvedValue([scenario==='verified action'?changed:image])
+    let grant=true
+    const tools=f.registry.create(f.chat as unknown as ChatController,'session',{allowed:()=>true,mayPoint:()=>grant})
+    const call=(name:string,input:unknown)=>tools.execute(name,input,f.abort.signal)
+    const shot=JSON.parse(await call('capture_screen',{windowId:display.id}))
+    f.chat.approve.mockImplementation(async()=>{if(scenario==='revoked permission')grant=false;return true})
+    const args={app:'calculator',label:'Seven',from:{x:scenario==='outside window'?9999:42,y:24},captureId:shot.captureId}
+    if(scenario==='revoked permission')await expect(call('point_at_window',args)).rejects.toThrow(/permission/i)
+    else expect(JSON.parse(await call('point_at_window',args)).ok).toBe(scenario==='verified action')
+    expect(f.platform.point).toHaveBeenCalledTimes(['unchanged outcome','verified action'].includes(scenario)?1:0)
+    if(scenario==='verified action'){
+      expect(JSON.parse(await call('point_at_window',args)).ok).toBe(false)
+      const verified=await call('verify_window',{})
+      expect(tools.formatOutput?.(verified)).toContainEqual({type:'input_image',detail:'high',image_url:changed.dataURL})
+      expect(f.chat.approve).toHaveBeenCalledTimes(3)
+    }
+  })
   it('requires approval even in advanced mode and names the destination and displays', async () => {
     const f = setup()
     vi.mocked(f.chat.approve).mockResolvedValue(false)

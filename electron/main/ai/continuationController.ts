@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { contextDefaults, type ContextSettings } from '../../../shared/context'
 import type { TaskControlState, OperationRisk } from '../../../shared/generation'
 import { ChatError, type StreamOptions } from './AIProvider'
+import { operationOutcome } from './toolOutcome'
 import { log } from '../logger'
 
 export const CONTINUE_TASK = 'Continue only the unfinished part of the original request. Completed tool results remain authoritative records of execution, not proof of current file state. Do not replay completed or uncertain mutations. Incomplete tool calls were not executed. Read current versions before further changes. Return a final answer when the requested work is complete or explain the actual blocker.'
@@ -23,17 +24,18 @@ export class ContinuationController {
   private stagnant = 0
   private observations = new Set<string>()
   private resumedOperations: Set<string>
+  private failureCounts = new Map<string, number>()
   private responses = new Map<string, number>()
-  constructor(settings: Partial<ContextSettings> = {}, private publish: (state: TaskControlState) => void = () => {}, previous?: TaskControlState, private identity: Record<string, string> = {}) {
+  constructor(settings: Partial<ContextSettings> = {}, private publish: (state: TaskControlState, durable: boolean) => void = () => {}, previous?: TaskControlState, private identity: Record<string, string> = {}) {
     this.settings = { ...contextDefaults(), ...settings }
     this.state = { continuations: 0, compactions: 0, transportRecoveries: 0, toolCalls: 0, toolRounds: 0, status: 'running', operations: [...(previous?.operations ?? [])] }
     // The current executor reclassifies the exact requested arguments. Saved
     // readOnly flags may be legacy/misclassified and are not authorization.
     this.resumedOperations = new Set(this.state.operations.map(item => item.key))
   }
-  private emit() { this.publish(structuredClone(this.state)) }
+  private emit(durable = false) { this.publish(structuredClone(this.state), durable) }
   stop(reason: string, message: string): never {
-    this.state.status = 'resumable'; this.state.stopReason = reason; this.emit()
+    this.state.status = 'resumable'; this.state.stopReason = reason; this.emit(true)
     log('ai.task_stopped', { ...this.identity, reason, continuations: this.state.continuations, compactions: this.state.compactions, toolCalls: this.state.toolCalls })
     throw new ChatError(message)
   }
@@ -62,25 +64,48 @@ export class ContinuationController {
   batch(): void { this.state.toolRounds++; this.emit() }
   operationKey(tool: string, input: unknown): string { return hash({ tool, input }) }
   isReplay(tool: string, input: unknown): boolean { return this.resumedOperations.has(this.operationKey(tool, input)) }
+  previousAttempt(tool: string, input: unknown) {
+    const key = this.operationKey(tool, input)
+    return this.state.operations.findLast(op => op.key === key)
+  }
   operationStarted(tool: string, input: unknown, classification: OperationRisk | boolean): string {
     const risk = typeof classification === 'boolean' ? classification ? 'read-only' : 'unknown' : classification
     const key = this.operationKey(tool, input)
+    if (this.state.operations.length >= 1000) {
+      const replaceable = this.state.operations.findIndex(item => item.readOnly && item.status !== 'started')
+      if (replaceable < 0) this.stop('operation-history-full', 'The receipt limit was reached. Review saved operations before starting a new task.')
+      this.state.operations.splice(replaceable, 1)
+    }
+    const id = randomUUID()
     this.state.toolCalls++; this.state.status = 'waiting-tool'
-    this.state.operations = [...this.state.operations, { key, tool, risk, readOnly: risk === 'read-only', status: 'started' as const, at: Date.now() }].slice(-1000)
-    this.emit() // persisted BEFORE a side effect, including uncertain failures
-    return key
+    this.state.operations = [...this.state.operations, { key, id, runId: this.identity.taskId, tool, risk, readOnly: risk === 'read-only', status: 'started' as const, at: Date.now() }]
+    this.emit(risk !== 'read-only') // Save before any possible side effect.
+    return id
   }
-  operationFinished(key: string, output: string) {
-    const operation = [...this.state.operations].reverse().find(item => item.key === key)
-    let failed = false
-    try { const data = JSON.parse(output); const result = data.result ?? data; failed = Boolean(data.error || result.error || result.ok === false || typeof result.exitCode === 'number' && result.exitCode !== 0) } catch { /* Text tools may have valid plain text output. */ }
-    if (operation) operation.status = failed ? 'failed' : 'complete'
+  operationFinished(id: string, output: string) {
+    const operation = this.state.operations.find(item => item.id === id)
+    if (!operation || operation.status !== 'started') return
+    if (operation.tool === 'execute_command') {
+      try {
+        const result = JSON.parse(output)?.result
+        const source = result?.credentialSource
+        if (result?.approvedReadPaths?.length && typeof source?.file === 'string' && Array.isArray(source.names)) operation.credentialSource = { file: source.file, names: source.names }
+      } catch { /* Other command executors may return text only. */ }
+    }
+    const outcome = operationOutcome(output)
+    const failed = outcome.outcome !== 'success', key = operation.key
+    Object.assign(operation, outcome, { finishedAt: Date.now(), status: failed ? 'failed' : 'complete' })
+    const failureCount = failed ? (this.failureCounts.get(key) ?? 0) + 1 : 0
+    if (!failed && !operation.readOnly) this.failureCounts.clear()
+    this.failureCounts.set(key, failureCount)
     const digest = hash({ key, output }), repeated = this.observations.has(digest)
     this.observations.add(digest)
     // A changed result (including a rerun after an edit) is new evidence.
     if (!failed && !repeated) { this.stagnant = 0; this.responses.clear() }
     else this.stagnant++
-    this.state.status = 'running'; this.emit()
+    this.state.status = this.state.operations.some(op => op.runId === operation.runId && op.status === 'started') ? 'waiting-tool' : 'running'
+    this.emit(!operation.readOnly)
+    if (this.settings.stopOnRepeatedActions && failureCount >= this.settings.noProgressWindow) this.stop('repeated-tool-failure', `The same ${operation.tool} invocation failed ${failureCount} times. Inspect the recorded ${outcome.outcome} outcome before resuming; no operation was retried automatically.`)
     if ((this.settings.stopOnNoProgress && failed || this.settings.stopOnRepeatedActions && repeated) && this.stagnant >= this.settings.noProgressWindow) this.stop('no-progress', `The last ${this.stagnant} repeated unsuccessful or unchanged operations produced no new evidence or verified changes. Completed work is saved. Inspect the blocker before resuming; no operation was retried automatically.`)
   }
 }

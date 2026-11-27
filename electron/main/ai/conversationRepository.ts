@@ -1,3 +1,4 @@
+import { nativeCodexThreadSchema, nativeCodexQuestionSchema, codexAccessStatusSchema } from '../../../shared/codex'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,15 +10,17 @@ import { slashCommandMetaSchema } from '../../../shared/slashCommands'
 import { aiOwnershipSchema } from '../../../shared/aiOwnership'
 import { choiceInteractionSchema } from '../../../shared/chatInteraction'
 
-const artifactSchema = z.object({ id: z.string().uuid(), name: z.string().max(255), mimeType: z.string().max(160), size: z.number().int().nonnegative(), createdAt: z.number(), storageKey: z.string().max(500), status: z.enum(['generated', 'saving', 'ready', 'failed', 'cancelled']).optional(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), provider: z.string().max(80).optional(), error: z.string().max(500).optional() })
-const messageSchema = z.object({ ownership: aiOwnershipSchema.optional(), id: z.string().uuid(), role: z.enum(['user', 'assistant']), content: z.string().max(48_000), status: z.enum(['complete', 'streaming', 'stopped', 'error']), createdAt: z.number(), error: z.string().optional(), requestId: z.string().uuid().optional(), execution: executionSchema.optional(), interaction: choiceInteractionSchema.optional(), attachments: z.array(attachmentSchema).max(8).optional(), artifacts: z.array(artifactSchema).max(32).optional(), sources: z.array(z.object({ workspace: z.string(), path: z.string(), start: z.number(), end: z.number() })).optional(), command: slashCommandMetaSchema.optional() })
-export const sessionSchema = z.object({ id: z.string().uuid(), title: z.string().max(120), createdAt: z.number(), updatedAt: z.number(), config: conversationConfigSchema, messages: z.array(messageSchema).max(10_000), draft: z.string().max(MAX_DRAFT_LENGTH).default(''), attachments: z.array(attachmentSchema).max(8).default([]), workspaces: z.array(workspaceSchema).max(8).default([]), contextCheckpoint: contextCheckpointSchema.optional().catch(undefined), unreadCompletion: z.enum(['complete', 'failed']).optional() })
+import { mediaJobSchema } from '../../../shared/mediaGeneration'
+const storedArtifact = z.object({ duration:z.number().positive().optional(), parentId:z.string().uuid().optional(), id: z.string().uuid(), name: z.string().max(255), mimeType: z.string().max(160), size: z.number().int().nonnegative(), createdAt: z.number(), storageKey: z.string().max(500), status: z.enum(['generated', 'saving', 'ready', 'failed', 'cancelled']).optional(), width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), provider: z.string().max(80).optional(), error: z.string().max(500).optional() })
+const artifactSchema = storedArtifact.extend({thumbnail:storedArtifact.optional()})
+const messageSchema = z.object({ nativeCodexQuestion: nativeCodexQuestionSchema.optional(), nativeTurnId: z.string().optional(), mediaJob: mediaJobSchema.optional(),mediaPreview:artifactSchema.optional(), ownership: aiOwnershipSchema.optional(), id: z.string().uuid(), role: z.enum(['user', 'assistant']), content: z.string().max(48_000), status: z.enum(['complete', 'streaming', 'stopped', 'error']), createdAt: z.number(), error: z.string().optional(), requestId: z.string().uuid().optional(), execution: executionSchema.optional(), interaction: choiceInteractionSchema.optional(), attachments: z.array(attachmentSchema).max(8).optional(), artifacts: z.array(artifactSchema).max(32).optional(), sources: z.array(z.object({ workspace: z.string(), path: z.string(), start: z.number(), end: z.number() })).optional(), command: slashCommandMetaSchema.optional() })
+export const sessionSchema = z.object({ codexAccess: codexAccessStatusSchema.optional(), nativeCodex: nativeCodexThreadSchema.optional(), id: z.string().uuid(), title: z.string().max(120), createdAt: z.number(), updatedAt: z.number(), config: conversationConfigSchema, messages: z.array(messageSchema).max(10_000), draft: z.string().max(MAX_DRAFT_LENGTH).default(''), attachments: z.array(attachmentSchema).max(8).default([]), workspaces: z.array(workspaceSchema).max(8).default([]), contextCheckpoint: contextCheckpointSchema.optional().catch(undefined), unreadCompletion: z.enum(['complete', 'failed']).optional() })
 export type Conversation = z.infer<typeof sessionSchema>
 export const librarySchema = z.object({ version: z.literal(1), activeId: z.string().uuid(), sessions: z.array(sessionSchema).min(1).max(500) })
 export type ConversationLibrary = z.infer<typeof librarySchema>
 export function newConversation(config: ConversationConfig = defaultConversationConfig()): Conversation {
   // Full Access is an explicit per-conversation and per-workspace decision.
-  const { fullAccessWorkspaceId: _scope, ...inherited } = config
+  const { fullAccessWorkspaceId: _scope, codexFullAccessConfirmed: _codexConfirmation, mediaMode: _mediaMode, mediaParentId: _mediaParent, mediaOperation: _mediaOperation, ...inherited } = config
   return { id: randomUUID(), title: 'New conversation', createdAt: Date.now(), updatedAt: Date.now(), config: { ...inherited, ...(config.agentMode === 'full-access' ? { agentMode: 'ask' as const } : {}) }, messages: [], draft: '', attachments: [], workspaces: [] }
 }
 export interface ConversationStorage { load(): ConversationLibrary; save(library: ConversationLibrary): void; archive(session: Conversation): void }
@@ -29,6 +32,7 @@ export class ConversationRepository implements ConversationStorage {
     // Do not silently overwrite damaged history. Startup can report a recovery error.
     const data = librarySchema.parse(JSON.parse(readFileSync(this.file, 'utf8')))
     for (const session of data.sessions) for (const message of session.messages) {
+      message.nativeCodexQuestion = undefined
       if (message.execution?.approval) {
         message.execution.approval = undefined
         message.execution.status = 'cancelled'

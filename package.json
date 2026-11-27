@@ -46,6 +46,7 @@
     "onnxruntime-web": "^1.22.0",
     "openai": "^7.30.0",
     "pdfjs-dist": "^6.4.299",
+    "playwright-core": "1.63.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
@@ -95,30 +96,18 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": "build/search-runtime/${platform}-${arch}", "to": "search-runtime" },
+      {
+        "from": "build/search-runtime/${platform}-${arch}",
+        "to": "search-runtime"
+      },
       {
         "from": "voice-service",
         "to": "voice-service",
         "filter": [
           "chatterbox.py",
-          "official_csm.py",
-          "higgs_tts.py",
-          "higgs_tokens.json",
-          "requirements-higgs.txt",
+          "audio-endpoints.ps1",
           "assets/VOICE_REFERENCE.md",
           "assets/athena-us-amy-reference.mp3"
-        ]
-      },
-      {
-        "from": "vendor/sesame-csm-official",
-        "to": "vendor/sesame-csm-official",
-        "filter": [
-          "generator.py",
-          "models.py",
-          "watermarking.py",
-          "requirements.txt",
-          "LICENSE",
-          "README.md"
         ]
       }
     ],
@@ -145,10 +134,23 @@
         {
           "from": "build/native/athena-screen-ocr",
           "to": "native/athena-screen-ocr"
+        },
+        {
+          "from": "build/native/athena-desktop-accessibility",
+          "to": "native/athena-desktop-accessibility"
         }
       ]
     },
-    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
     "asarUnpack": [
       "node_modules/@github/copilot-sdk-*/**"
     ]

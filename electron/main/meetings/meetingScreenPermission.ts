@@ -1,5 +1,5 @@
-import { app, desktopCapturer, shell, systemPreferences } from 'electron'
-import { dirname } from 'node:path'
+import { desktopCapturer, shell, systemPreferences } from 'electron'
+import { runningApplicationPath, revealRunningApplication } from '../permissions/runningApplication'
 import type { MeetingScreenAccess } from '../../../shared/meetings'
 
 export const screenPermissionHelp = 'macOS has not authorized this running copy of Athena. If Athena is already enabled, open Screen access below, show this Athena app, remove the stale Athena entry in System Settings and add this app again, then restart Athena.'
@@ -7,7 +7,7 @@ export const screenPermissionHelp = 'macOS has not authorized this running copy 
 export function meetingScreenAccess(): MeetingScreenAccess {
   return {
     status: process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('screen') : 'not-required',
-    appPath: app.isPackaged && process.platform === 'darwin' ? dirname(dirname(dirname(app.getPath('exe')))) : app.getAppPath(),
+    appPath: runningApplicationPath(),
   }
 }
 
@@ -36,4 +36,4 @@ export async function openMeetingScreenSettings(): Promise<void> {
   await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
 }
 
-export function revealMeetingApp(): void { shell.showItemInFolder(meetingScreenAccess().appPath) }
+export function revealMeetingApp(): void { revealRunningApplication() }

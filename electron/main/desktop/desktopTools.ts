@@ -16,8 +16,19 @@ interface AthenaTool {
 }
 
 export class DesktopTools {
+  private observations=new Map<string,{token?:string;at:number;elements:AccessibilityInspection['elements']}>()
+  async interactionBounds(app:unknown,label:string,signal:AbortSignal) {
+    const id=appIdentifierSchema.parse(app), prior=this.observations.get(id)
+    if(!prior || !prior.token || Date.now()-prior.at>60000)return
+    const previous=prior.elements.filter(e=>e.label===label && e.enabled)
+    if(previous.length!==1 || !previous[0].bounds)return
+    const current=await this.inspectAccessibleUI(id,signal)
+    const next=current.elements.filter(e=>e.label===label && e.enabled)
+    if(current.windowToken!==prior.token || next.length!==1 || !next[0].bounds || JSON.stringify(previous[0].bounds)!==JSON.stringify(next[0].bounds))throw new ChatError('The observed target moved or changed. Inspect it again.')
+    return next[0].bounds
+  }
   private tools: AthenaTool[]
-  constructor(private platform: DesktopPlatform, private allowed: () => boolean, private quiet: () => boolean, private resolveSearchResult?: (sessionId: string, index: number) => { url: string; title: string } | undefined) {
+  constructor(private platform: DesktopPlatform, private allowed: () => boolean, private quiet: () => boolean, private resolveSearchResult?: (sessionId: string, index: number) => { url: string; title: string } | undefined, private feedback?:import('./interactionOverlay').InteractionOverlay) {
     this.tools = [
       { name: 'open_application', description: 'Open an installed supported application. Returns whether macOS confirms it running. App IDs: vscode (Visual Studio Code), chrome, safari, finder, terminal, slack, spotify, notes, calculator. Cannot run commands or open files.', schema: applicationActionSchema,
         preview: (input) => `Open ${APPLICATIONS[applicationActionSchema.parse(input).app].name}.`,
@@ -33,13 +44,42 @@ export class DesktopTools {
         execute: (input, signal) => { const data = notificationActionSchema.parse(input); return platform.showNotification(data.title, data.body, signal) } },
     ]
   }
+  async installedAction(target:import('./installedApplications').InstalledApplication,operation:import('./installedApplications').InstalledOperation,label:string,signal:AbortSignal,text='') {
+    if (!this.allowed() || !this.platform.installedAction) throw new ChatError('Installed application control is unavailable.')
+    signal.throwIfAborted()
+    const run=this.platform.installedAction.bind(this.platform)
+    if(operation==='inspect'){
+      const view=await run(target,operation,label,signal,text)
+      if(view.ok && view.elements)this.observations.set(target.key,{token:view.windowToken,at:Date.now(),elements:view.elements.map(({label,role,bounds,enabled})=>({label,role,bounds,enabled}))})
+      return view
+    }
+    if(!['click','scroll','set-text'].includes(operation))return run(target,operation,label,signal,text)
+    const prior=this.observations.get(target.key)
+    if(!prior || !prior.token || Date.now()-prior.at>60000)throw new ChatError('Inspect the installed application before operating a control.')
+    const verify=async()=>{
+      const current=await run(target,'inspect','',signal)
+      const hits=current.elements?.filter(e=>e.enabled && e.label===label)
+      const old=prior.elements.filter(e=>e.enabled && e.label===label)
+      if(current.windowToken!==prior.token || hits?.length!==1 || old.length!==1 || JSON.stringify(hits[0].bounds)!==JSON.stringify(old[0].bounds))throw new ChatError('The accessible target changed. Inspect its window again.')
+      return hits[0].bounds
+    }
+    const bounds=await verify()
+    const mark=await this.feedback?.begin({bounds,nativePixels:true,click:operation==='click',label:operation},signal)
+    let verified=false
+    try{
+      await verify();signal.throwIfAborted()
+      const result=await run(target,operation,label,signal,text);verified=result.ok;return result
+    }finally{this.observations.delete(target.key);mark?.finish(verified)}
+  }
   isAllowed(): boolean { return this.allowed() }
   async inspectAccessibleUI(app: unknown, signal: AbortSignal): Promise<AccessibilityInspection> {
     const target = appIdentifierSchema.parse(app)
     if (!this.allowed()) throw new ChatError('Desktop Automation is disabled in Settings → Privacy.')
     if (!this.platform.inspectAccessibility) throw new ChatError('Accessible UI inspection is unavailable on this platform.')
     signal.throwIfAborted()
-    return this.platform.inspectAccessibility(target, signal)
+    const view=await this.platform.inspectAccessibility(target,signal)
+    this.observations.set(target,{at:Date.now(),token:view.windowToken,elements:view.elements.map(({label,enabled,role,bounds})=>({label,enabled,role,bounds}))})
+    return view
   }
   async clickAccessibleElement(app: unknown, label: string, signal: AbortSignal): Promise<AccessibilityActionResult> {
     const target = appIdentifierSchema.parse(app)
@@ -61,6 +101,22 @@ export class DesktopTools {
     if (!this.platform.pressShortcut) throw new ChatError('Accessible keyboard shortcuts are unavailable on this platform.')
     signal.throwIfAborted()
     return this.platform.pressShortcut(target, shortcut, signal)
+  }
+  async scrollAccessible(app: unknown, label: string, direction: 'up' | 'down', signal: AbortSignal): Promise<AccessibilityActionResult> {
+    const target = appIdentifierSchema.parse(app)
+    if (!this.allowed()) throw new ChatError('Desktop Automation is disabled in Settings → Privacy.')
+    if (!this.platform.scrollAccessible) throw new ChatError('Accessible scrolling is unavailable on this platform.')
+    signal.throwIfAborted()
+    return this.platform.scrollAccessible(target, label, direction, signal)
+  }
+  async manageWindow(app:unknown, operation:import('../../../shared/desktopActions').WindowOperation, point:string, signal:AbortSignal) {
+    signal.throwIfAborted()
+    if(!this.allowed() || !this.platform.manageWindow) throw new ChatError('Window management is unavailable or disabled.')
+    return this.platform.manageWindow(appIdentifierSchema.parse(app),operation,point,signal)
+  }
+  async runningApplications(signal: AbortSignal) {
+    if (!this.allowed() || !this.platform.runningApplications) throw new ChatError('Desktop application detection is unavailable or disabled.')
+    return this.platform.runningApplications(signal)
   }
   async openApplicationByVoice(app: unknown, signal: AbortSignal): Promise<DesktopActionResult> {
     if (!this.allowed()) return { ok: false, status: 'denied', message: 'Desktop Automation is off. Enable it in Settings → Privacy before asking me to open apps.' }

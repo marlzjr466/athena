@@ -1,3 +1,4 @@
+import { routeSpeech } from './audioDevices'
 import type { AthenaAPI } from '../../../shared/contracts'
 import type { SpeechAudioResult, SpeechIdentity, SpeechStart, SpeechStatus } from '../../../shared/speech'
 import { PlaybackAmplitude } from './playbackAmplitude'
@@ -12,12 +13,14 @@ export class SpeechPlayer {
   private waitingIndex?: number
   private advancingFor?: SpeechIdentity
   private retryAfterAdvance = false
+  private releaseRoute?: () => void
   private meter: PlaybackAmplitude
   constructor(private api: SpeechAPI, private changed: (status: SpeechStatus) => void, private volume: () => number, private speed: () => number = () => 1, onLevel: (level: number) => void = () => {}) {
     this.meter = new PlaybackAmplitude(onLevel)
   }
 
   private clearAudio(): void {
+    this.releaseRoute?.(); this.releaseRoute = undefined
     this.meter.stop()
     if (this.audio) {
       this.audio.onended = null; this.audio.onerror = null; this.audio.onplaying = null
@@ -82,8 +85,12 @@ export class SpeechPlayer {
       void this.advance(identity)
     }
     audio.onerror = () => { if (this.same(identity)) this.stop('Audio playback failed. Check your output device.') }
-    try { await audio.play() }
-    catch { if (this.same(identity)) this.stop('Audio playback was blocked. Press Send again or check your sound output.') }
+    try {
+      const release = await routeSpeech(audio, message => this.stop(message), this.meter)
+      if (!this.same(identity)) { release(); return }
+      this.releaseRoute = release
+      await audio.play()
+    } catch (error) { if (this.same(identity)) this.stop(error instanceof Error ? error.message : 'Audio playback was blocked. Check Voice Settings.') }
   }
   private async advance(identity: SpeechIdentity): Promise<void> {
     const index = this.waitingIndex

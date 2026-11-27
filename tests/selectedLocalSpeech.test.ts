@@ -12,41 +12,19 @@ function engine(bytes: number[], calls: string[]) {
 }
 
 describe('selected local voice routing', () => {
-  it('routes preview, floating replies and wake acknowledgments to Higgs and propagates errors without fallback', async () => {
-    const settings = structuredClone(defaultSettings)
-    settings.localVoice.engine = 'higgs-tts-3-4b'
-    const chatterbox = engine([1], []), sesame = engine([2], []), higgs = engine([3], [])
-    const speech = new SelectedLocalSpeech(() => settings, chatterbox, sesame, higgs)
+  it('routes local speech to Chatterbox and propagates errors without a hidden fallback', async () => {
+    const settings = structuredClone(defaultSettings), local = engine([1], [])
+    const speech = new SelectedLocalSpeech(() => settings, local)
     const signal = new AbortController().signal
-    for (const context of ['preview:higgs', 'athena-local:conversation', 'wake-ack:higgs']) {
-      await speech.generate('Hello', 'coral', 1, signal, context)
-    }
-    expect(higgs.generate).toHaveBeenCalledTimes(3)
-    higgs.generate.mockRejectedValueOnce(new Error('Unsupported Higgs architecture'))
-    await expect(speech.generate('Hello', 'coral', 1, signal)).rejects.toThrow('Unsupported Higgs architecture')
-    expect(chatterbox.generate).not.toHaveBeenCalled()
-    expect(sesame.generate).not.toHaveBeenCalled()
-    expect(settings.localVoice.engine).toBe('higgs-tts-3-4b')
-    speech.dispose()
-  })
-  it('routes both current and legacy Sesame selections to official CSM', async () => {
-    const settings = structuredClone(defaultSettings), chatterboxCalls: string[] = [], officialCalls: string[] = []
-    const chatterbox = engine([1], chatterboxCalls), official = engine([2], officialCalls)
-    const speech = new SelectedLocalSpeech(() => settings, chatterbox, official, engine([3], []))
-    for (const selected of ['sesame-csm-official', 'sesame-csm'] as const) {
-      settings.localVoice.engine = selected
-      expect(await speech.generate('hello', settings.voiceName, 1, new AbortController().signal)).toEqual(new Uint8Array([2]))
-    }
-    expect(officialCalls).toEqual(['hello', 'hello'])
-    expect(chatterboxCalls).toEqual([])
-    settings.localVoice.engine = 'higgs-tts-3-4b'
-    expect(await speech.generate('hello', settings.voiceName, 1, new AbortController().signal)).toEqual(new Uint8Array([3]))
-    speech.dispose()
+    expect(await speech.generate('Hello', 'coral', 1, signal)).toEqual(new Uint8Array([1]))
+    local.generate.mockRejectedValueOnce(new Error('Local runtime unavailable'))
+    await expect(speech.generate('Hello', 'coral', 1, signal)).rejects.toThrow('Local runtime unavailable')
+    speech.dispose(); expect(local.dispose).toHaveBeenCalledOnce()
   })
 
   it('caches wake acknowledgments per selected voice key and returns copies', async () => {
     const settings = structuredClone(defaultSettings), calls: string[] = []
-    const speech = new SelectedLocalSpeech(() => settings, engine([7, 8], calls), engine([9], []), engine([3], []))
+    const speech = new SelectedLocalSpeech(() => settings, engine([7, 8], calls))
     const signal = new AbortController().signal
     const first = await speech.generateCached('Hey!', settings.voiceName, 1, signal, 'wake:chatterbox:v1')
     const second = await speech.generateCached('Hey!', settings.voiceName, 1, signal, 'wake:chatterbox:v1')

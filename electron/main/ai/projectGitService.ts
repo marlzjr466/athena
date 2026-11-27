@@ -242,6 +242,9 @@ export class ProjectGitService {
         this.checked(result)
         this.chat.invalidateWorkspaceContext(command.workspaceId)
         const entry = this.repositories.get(root)
+        // A watcher may still be inspecting the previous HEAD. Never use that
+        // in-flight read as the verification receipt for a completed mutation.
+        if (entry?.pending) await entry.pending.catch(() => {})
         return { ok: true, state: entry ? await this.refresh(entry) : await this.snapshot(root) }
       } finally { release?.(); mutations.delete(root) }
     } catch (error) {
@@ -252,7 +255,7 @@ export class ProjectGitService {
 
   /** Monitor native runtimes as well as API agents; check HEAD again before each
    * shared tool dispatch. Branch changes interrupt with a resumable checkpoint. */
-  async guard(sessionId: string, workspaceId: string, signal: AbortSignal): Promise<(() => void) & { description?: string }> {
+  async guard(sessionId: string, workspaceId: string, signal: AbortSignal): Promise<(() => void) & { description?: string; repositoryRef?: string }> {
     const root = await this.authorize(sessionId, workspaceId)
     if (mutations.has(root)) throw new ChatError('A branch change is in progress. Retry the task after it finishes.')
     // Non-Git projects continue to work on machines without Git installed.
@@ -282,7 +285,7 @@ export class ProjectGitService {
     const release = () => { subscription.release(); running.delete(key); if (!running.size) executions.delete(root) }
     signal.addEventListener('abort', release, { once: true })
     if (signal.aborted) release()
-    return Object.assign(assert, { description: original.startsWith('ref: refs/heads/') ? `branch ${JSON.stringify(original.trim().slice('ref: refs/heads/'.length))}` : `detached HEAD ${original.trim().slice(0, 10)}` })
+    return Object.assign(assert, { repositoryRef: original.trim(), description: original.startsWith('ref: refs/heads/') ? `branch ${JSON.stringify(original.trim().slice('ref: refs/heads/'.length))}` : `detached HEAD ${original.trim().slice(0, 10)}` })
   }
   dispose(): void { this.lifetime.abort(); for (const entry of this.repositories.values()) { entry.closed = true; clearTimeout(entry.timer); entry.watchers.forEach(watcher => watcher.close()) }; this.repositories.clear(); this.subscriptions.clear() }
 }

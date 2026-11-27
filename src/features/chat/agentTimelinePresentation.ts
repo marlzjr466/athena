@@ -250,6 +250,7 @@ export function groupLabel(family: 'explore' | 'search', activities: AgentActivi
 }
 
 export function operationLabel(activity: AgentActivity): string {
+  if(activity.tool==='codex.mcpToolCall' && /^cua_repl · /.test(activity.label))return 'Native computer interaction'
   if (activity.subagent) return activity.subagent.request.role
   const family = activityFamily(activity)
   if (family === 'terminal') {

@@ -15,6 +15,14 @@ import type { HandsFreeAudio, HandsFreeReplyProgress, HandsFreeState } from '../
 contextBridge.exposeInMainWorld('athenaStartup', { ready: () => ipcRenderer.send(STARTUP_IPC.ready) })
 
 const api: AthenaAPI = {
+  mediaGeneration: input => ipcRenderer.invoke(IPC.mediaGeneration,input),
+  liveVoice: input => ipcRenderer.invoke(IPC.liveVoice, input),
+  audioDevices: input => ipcRenderer.invoke(IPC.audioDevices, input),
+  onAudioDevices: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, state: import('../../shared/audioDevices').AudioDeviceState) => callback(state)
+    ipcRenderer.on(IPC.audioDevicesChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.audioDevicesChanged, listener)
+  },
   beginSpeech: (input) => ipcRenderer.invoke(IPC.speechBegin, input),
   nextSpeech: (input) => ipcRenderer.invoke(IPC.speechNext, input),
   speechPlaying: (input) => ipcRenderer.invoke(IPC.speechPlaying, input),
@@ -30,8 +38,6 @@ const api: AthenaAPI = {
     ipcRenderer.on(IPC.speechLevelChanged, listener)
     return () => ipcRenderer.removeListener(IPC.speechLevelChanged, listener)
   },
-  officialCSM: (input) => ipcRenderer.invoke(IPC.officialCSM, input),
-  higgsTTS: (input) => ipcRenderer.invoke(IPC.higgsTTS, input),
   getLocalVoiceStatus: () => ipcRenderer.invoke(IPC.localVoiceStatus),
   installLocalVoice: (input) => ipcRenderer.invoke(IPC.localVoiceInstall, input),
   cancelLocalVoiceInstall: () => ipcRenderer.invoke(IPC.localVoiceCancel),
@@ -56,7 +62,19 @@ const api: AthenaAPI = {
   cancelHandsFreeTranscription: (input: { id: string }) => ipcRenderer.invoke(IPC.handsFreeCancelTranscription, input),
   answerHandsFree: (input) => ipcRenderer.invoke(IPC.handsFreeReply, input),
   onHandsFreeReplyProgress: (callback) => { const listener = (_event: Electron.IpcRendererEvent, progress: HandsFreeReplyProgress) => callback(progress); ipcRenderer.on(IPC.handsFreeReplyProgress, listener); return () => ipcRenderer.removeListener(IPC.handsFreeReplyProgress, listener) },
-  cancelHandsFreeReply: () => ipcRenderer.invoke(IPC.handsFreeCancelReply),
+  steerVoiceAutomation:input=>ipcRenderer.invoke(IPC.steerVoiceAutomation,input),
+  onVoiceSubmissionEnded:callback=>{
+    const listener=(_event:Electron.IpcRendererEvent,id:string,complete:boolean)=>callback(id,complete)
+    ipcRenderer.on(IPC.voiceSubmissionEnded,listener)
+    return ()=>{ipcRenderer.removeListener(IPC.voiceSubmissionEnded,listener)}
+  },
+  onVoiceAutomationStopped: callback => {
+    const listener=()=>callback()
+    ipcRenderer.on(IPC.voiceAutomationStopped,listener)
+    return ()=>{ipcRenderer.removeListener(IPC.voiceAutomationStopped,listener)}
+  },
+  computerUseCheck: action=>ipcRenderer.invoke(IPC.computerUseCheck,action),
+  cancelHandsFreeReply: emergency => ipcRenderer.invoke(IPC.handsFreeCancelReply,emergency),
   clearHandsFreeContext: () => ipcRenderer.invoke(IPC.handsFreeClearContext),
   speakHandsFree: (input) => ipcRenderer.invoke(IPC.handsFreeSpeak, input),
   nextHandsFreeSpeech: (input) => ipcRenderer.invoke(IPC.handsFreeSpeechNext, input),
@@ -140,6 +158,7 @@ const api: AthenaAPI = {
   signOutCursor: () => ipcRenderer.invoke(IPC.cursorLogout),
   antigravity: (input) => ipcRenderer.invoke(IPC.antigravityCommand, input),
   getChatGPTStatus: () => ipcRenderer.invoke(IPC.chatGPTStatus),
+  codexCommand: input => ipcRenderer.invoke(IPC.codexCommand, input),
   getCodexCLIStatus: (input) => ipcRenderer.invoke(IPC.codexCLIStatus, input),
   addChatGPTAccount: () => ipcRenderer.invoke(IPC.chatGPTAccountAdd),
   retryAddChatGPTAccount: () => ipcRenderer.invoke(IPC.chatGPTAccountRetry),
@@ -187,7 +206,10 @@ const api: AthenaAPI = {
     return () => { ipcRenderer.removeListener(IPC.changed, listener) }
   },
   onNavigate: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, page: string) => callback(page)
+    const listener = (_event: Electron.IpcRendererEvent, page: string, request?: string) => {
+      const current = callback(page)
+      if (request) ipcRenderer.send(IPC.navigationAck, request, current)
+    }
     ipcRenderer.on(IPC.navigate, listener)
     return () => { ipcRenderer.removeListener(IPC.navigate, listener) }
   },

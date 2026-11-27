@@ -30,3 +30,5 @@
 .filesystem-access-option strong { font-size: 12px; font-weight: 600; }
 .filesystem-access-option span { color: var(--muted); font-size: 11px; line-height: 1.5; }
 .filesystem-access-options + .permission-detail { margin: 10px 22px 16px; }
+.permission-app-recovery { margin-bottom: 12px; }
+.permission-app-recovery code { overflow-wrap: anywhere; }

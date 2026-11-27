@@ -1,0 +1,290 @@
+[
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "requested": {
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "mode": "ask"
+    },
+    "recovery": "new-thread"
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "thread/start",
+    "transmitted": {
+      "model": "gpt-6-astra",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": "workspace-write",
+      "approvalPolicy": "on-request",
+      "threadEffort": "high"
+    },
+    "confirmed": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": {
+        "type": "workspaceWrite",
+        "writableRoots": [],
+        "networkAccess": false,
+        "excludeTmpdirEnvVar": false,
+        "excludeSlashTmp": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    "durationMs": 45
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "turn/start",
+    "transmitted": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandboxPolicy": {
+        "type": "workspaceWrite",
+        "writableRoots": [
+          "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx"
+        ],
+        "networkAccess": false,
+        "excludeTmpdirEnvVar": false,
+        "excludeSlashTmp": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    "confirmed": {
+      "turnId": "01a2118c-5213-7253-aeb0-21e0d98c689b",
+      "status": "inProgress"
+    },
+    "durationMs": 5
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+    "turnId": "01a2118c-5213-7253-aeb0-21e0d98c689b",
+    "nativeStatus": "completed"
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "eventCounts": {
+      "thread/started": 1,
+      "mcpServer/startupStatus/updated": 12,
+      "thread/status/changed": 4,
+      "turn/started": 1,
+      "item/started": 5,
+      "item/completed": 5,
+      "item/agentMessage/delta": 51,
+      "turn/moderationMetadata": 3,
+      "serverRequest/resolved": 1,
+      "thread/tokenUsage/updated": 3,
+      "account/rateLimits/updated": 3,
+      "thread/readState/changed": 1,
+      "turn/completed": 1
+    },
+    "durationMs": 22864
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "requested": {
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "mode": "full-access"
+    },
+    "recovery": "loaded-thread"
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "thread/resume",
+    "transmitted": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": "danger-full-access",
+      "approvalPolicy": "never",
+      "threadEffort": "high"
+    },
+    "confirmed": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": {
+        "type": "workspaceWrite",
+        "writableRoots": [],
+        "networkAccess": false,
+        "excludeTmpdirEnvVar": false,
+        "excludeSlashTmp": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    "durationMs": 7
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "turn/start",
+    "transmitted": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandboxPolicy": {
+        "type": "dangerFullAccess"
+      },
+      "approvalPolicy": "never"
+    },
+    "confirmed": {
+      "turnId": "01a2118c-ab7c-7052-ada7-8372d66e745d",
+      "status": "inProgress"
+    },
+    "durationMs": 16
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "thread/resume",
+    "transmitted": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca"
+    },
+    "confirmed": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": {
+        "type": "dangerFullAccess"
+      },
+      "approvalPolicy": "never"
+    },
+    "durationMs": 6
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+    "turnId": "01a2118c-ab7c-7052-ada7-8372d66e745d",
+    "nativeStatus": "completed"
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "eventCounts": {
+      "mcpServer/startupStatus/updated": 13,
+      "thread/goal/cleared": 2,
+      "thread/settings/updated": 1,
+      "thread/status/changed": 2,
+      "turn/started": 1,
+      "item/started": 5,
+      "item/completed": 5,
+      "item/agentMessage/delta": 47,
+      "turn/moderationMetadata": 2,
+      "thread/tokenUsage/updated": 2,
+      "account/rateLimits/updated": 2,
+      "thread/readState/changed": 1,
+      "turn/completed": 1
+    },
+    "durationMs": 9182
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "requested": {
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "mode": "read-only"
+    },
+    "recovery": "app-server-restart"
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "thread/resume",
+    "transmitted": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": "read-only",
+      "approvalPolicy": "on-request",
+      "threadEffort": "high"
+    },
+    "confirmed": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandbox": {
+        "type": "readOnly",
+        "networkAccess": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    "durationMs": 182
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "executable": "/opt/homebrew/bin/codex",
+    "version": "0.171.0",
+    "authentication": "chatgpt",
+    "transport": "stdio",
+    "method": "turn/start",
+    "transmitted": {
+      "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "cwd": "/private/var/folders/hl/_jyj4l_j5nx9f25yhfxmt_rc0000gn/T/athena-native-access-MvYTyx",
+      "sandboxPolicy": {
+        "type": "readOnly",
+        "networkAccess": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    "confirmed": {
+      "turnId": "01a2118c-dbee-7303-bb80-1ca7e3fe782d",
+      "status": "inProgress"
+    },
+    "durationMs": 4
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "threadId": "01a2118c-51e8-7181-8d57-4a75925d7dca",
+    "turnId": "01a2118c-dbee-7303-bb80-1ca7e3fe782d",
+    "nativeStatus": "completed"
+  },
+  {
+    "conversationId": "0a0fa13a-a8b6-4f4b-882f-d4b4eeff9f2c",
+    "eventCounts": {
+      "mcpServer/startupStatus/updated": 10,
+      "thread/status/changed": 3,
+      "thread/tokenUsage/updated": 3,
+      "thread/goal/cleared": 1,
+      "turn/started": 1,
+      "item/started": 5,
+      "item/completed": 5,
+      "item/agentMessage/delta": 55,
+      "turn/moderationMetadata": 2,
+      "account/rateLimits/updated": 2,
+      "thread/readState/changed": 1,
+      "turn/completed": 1
+    },
+    "durationMs": 13041
+  }
+]

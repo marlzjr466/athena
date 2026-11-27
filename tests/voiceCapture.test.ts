@@ -17,7 +17,8 @@ class Recorder {
 }
 function fixture() {
   const stop = vi.fn()
-  const stream = { getTracks: () => [{ stop, addEventListener: vi.fn() }] } as unknown as MediaStream
+  const track = { stop, addEventListener: vi.fn(), getSettings: () => ({}), readyState: 'live' }
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream
   const getUserMedia = vi.fn(async () => stream)
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } })
   const api = { beginVoice: vi.fn(async (): Promise<VoiceResult> => ({ ok: true })), voiceRecording: vi.fn(async () => ({ ok: true })),
@@ -32,7 +33,7 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals()
 describe('push-to-talk recording', () => {
   it('records audio only, releases tracks before upload, and returns transcript to its original composer', async () => {
     const f = fixture(); await f.capture.begin(sessionId)
-    expect(f.getUserMedia).toHaveBeenCalledWith({ audio: { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, channelCount: { ideal: 1 } }, video: false })
+    expect(f.getUserMedia).toHaveBeenCalledWith({ audio: { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, autoGainControl: { ideal: true }, channelCount: { ideal: 1 } }, video: false })
     expect(f.capture.phase).toBe('listening')
     vi.advanceTimersByTime(600); f.capture.finish()
     expect(f.stop).toHaveBeenCalled()
@@ -49,7 +50,7 @@ describe('push-to-talk recording', () => {
   it('releases a late getUserMedia stream when cancelled while awaiting the device', async () => {
     const f = fixture(); let resolve!: (stream: MediaStream) => void
     f.getUserMedia.mockImplementation(() => new Promise((done) => { resolve = done }))
-    const begin = f.capture.begin(sessionId); await Promise.resolve()
+    const begin = f.capture.begin(sessionId); await vi.waitFor(() => expect(f.getUserMedia).toHaveBeenCalled())
     f.capture.cancel(); resolve(f.stream); await begin
     expect(f.stop).toHaveBeenCalledOnce(); expect(f.api.voiceRecording).not.toHaveBeenCalled()
   })

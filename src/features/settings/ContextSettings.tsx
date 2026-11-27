@@ -37,7 +37,7 @@ export function ContextSettings({ disabled, localMode = false, subscriptionMode 
     ['maxAgentIterations', 'Agent iterations per task', 8, 128, 1],
     ['maxToolCalls', 'Tool calls per task', 16, 400, 1],
     ['noProgressWindow', 'Stop after no-progress tool calls', 6, 30, 1],
-    ['maxExecutionMinutes', 'Non-ACP task deadline (minutes)', 2, 60, 1],
+    ['maxExecutionMinutes', 'Task timeout (minutes, idle for project work)', 2, 60, 1],
     ['acpInactivityMinutes', 'ACP model inactivity (minutes)', 2, 120, 1],
     ['acpToolInactivityMinutes', 'ACP native tool inactivity (minutes)', 2, 120, 1],
     ['socketConnectionSeconds', 'API socket connection timeout (seconds)', 5, 120, 5],

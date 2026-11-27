@@ -10,7 +10,7 @@ import { WorkspaceService } from '../electron/main/ai/workspaceService'
 import { ChatController } from '../electron/main/ai/chatController'
 import { ConversationRepository } from '../electron/main/ai/conversationRepository'
 import { contextDefaults } from '../shared/context'
-import type { ProjectGitCommand } from '../shared/projectGit'
+import type { ProjectGitCommand, ProjectGitState } from '../shared/projectGit'
 vi.mock('../electron/main/logger', () => ({ log: vi.fn() }))
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
@@ -29,6 +29,22 @@ async function fixture(initialize = true) {
   return { root, dir, git, chat, service, workspaces, workspace, target, run }
 }
 describe('authorized project branch integration — real Git fixtures', () => {
+  it('verifies mutations with a fresh snapshot instead of a watcher still reading the old branch', async () => {
+    const f = await fixture(), subscriptionId = randomUUID()
+    const before = (await f.run({ action: 'watch', subscriptionId })).state!
+    const internal = f.service as unknown as { repositories: Map<string, { pending?: Promise<ProjectGitState> }>; git(root: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> }
+    const original = internal.git.bind(internal)
+    vi.spyOn(internal, 'git').mockImplementation(async (root, args) => {
+      const result = await original(root, args)
+      if (args.includes('switch') && result.code === 0) {
+        const entry = internal.repositories.get(f.root)!
+        entry.pending = new Promise<ProjectGitState>(resolve => setTimeout(() => resolve(before), 20)).finally(() => { entry.pending = undefined })
+      }
+      return result
+    })
+    expect(await f.run({ action: 'create', branch: 'feature/voice', expectedHead: before.head })).toMatchObject({ ok: true, state: { branch: 'feature/voice' } })
+    expect(f.git('branch', '--show-current').trim()).toBe('feature/voice')
+  })
   it('detects root, local branches and staged, unstaged, untracked files without counting renames twice', async () => {
     const f = await fixture()
     await writeFile(join(f.root, 'a.txt'), 'staged\n'); f.git('add', 'a.txt'); await writeFile(join(f.root, 'a.txt'), 'unstaged\n')

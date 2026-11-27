@@ -1,3 +1,5 @@
+import { operationOutcome } from './toolOutcome'
+
 // Preserve both the beginning and diagnostic tail, prioritizing error locations
 // in long command logs. Full bounded output remains in private activity storage.
 export function summarizeLog(text: string, max: number): string {
@@ -9,9 +11,10 @@ export function summarizeLog(text: string, max: number): string {
 export function limitToolOutput(text: string, max: number): string {
   if (text.length <= max) return text
   // Preserve a valid envelope even if the original result is JSON.
+  const receipt = operationOutcome(text)
   let budget = Math.floor(max / 2) - 200
   for (;;) {
-    const encoded = JSON.stringify({ truncated: true, notice: 'Output shortened. Request narrower file ranges/searches for additional evidence.', excerpt: summarizeLog(text, budget) })
+    const encoded = JSON.stringify({ truncated: true, receipt, ok: receipt.outcome === 'success', notice: 'Output shortened. Request narrower file ranges/searches for additional evidence.', excerpt: summarizeLog(text, budget) })
     if (encoded.length <= max) return encoded
     budget = Math.floor(budget / 2)
   }

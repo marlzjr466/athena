@@ -23,6 +23,10 @@
   --faint: #566779;
   --border: rgba(159, 194, 222, 0.105);
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --settings-control-height: 36px;
+  --settings-control-font-size: 11px;
+  --settings-control-padding-block: 8px;
+  --settings-control-padding-inline: 11px;
   font-family: var(--font);
   color: var(--text);
   background: var(--bg);
@@ -195,16 +199,16 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 10px
 .slider-row:last-child { border-bottom: 0; }
 .slider-row .slider-field { max-width: 100%; }
 select { color: #a8c3d2; font-size: 10px; padding: 9px 10px; border-radius: 5px; border: 1px solid #2c4053; background: #14212e; max-width: 240px; }
-.custom-select { position: relative; min-width: 112px; max-width: 260px; -webkit-app-region: no-drag; }
-.custom-select-trigger { width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 11px; color: var(--text); background: #0d1824; border: 1px solid #244051; border-radius: 10px; font-size: 11px; font-weight: 570; text-align: left; }
+.custom-select { position: relative; width: min(250px, 100%); min-width: min(150px, 100%); max-width: 250px; -webkit-app-region: no-drag; }
+.custom-select-trigger { width: 100%; min-height: var(--settings-control-height); display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: var(--settings-control-padding-block) var(--settings-control-padding-inline); color: var(--text); background: #0d1824; border: 1px solid #244051; border-radius: 10px; font-size: var(--settings-control-font-size); font-weight: 570; text-align: left; }
 .custom-select-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .custom-select-trigger svg { flex-shrink: 0; color: #76aabd; transition: transform 150ms ease; }
 .custom-select.is-open .custom-select-trigger { color: #dffbff; background: #132735; border-color: #407487; }
 .custom-select.is-open .custom-select-trigger svg { transform: rotate(180deg); }
 .custom-select :is(button, button:focus, button:focus-visible, button:hover, button:active) { outline: none; box-shadow: none; }
-.custom-select-menu { position: absolute; z-index: 80; top: calc(100% + 6px); left: 0; min-width: 100%; width: max-content; max-width: 290px; max-height: 260px; overflow: auto; padding: 5px; background: #0b1520; border: 1px solid #29485a; border-radius: 10px; box-shadow: 0 14px 38px #000c, 0 0 18px #00bfff0a; }
-.custom-select.opens-up .custom-select-menu { top: auto; bottom: calc(100% + 6px); }
+.custom-select-menu { position: fixed; z-index: 80; width: max-content; max-width: calc(100vw - 16px); max-height: 260px; overflow: auto; padding: 5px; background: #0b1520; border: 1px solid #29485a; border-radius: 10px; box-shadow: 0 14px 38px #000c, 0 0 18px #00bfff0a; }
 .custom-select-menu button { width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 10px; border-radius: 7px; color: #91aabd; font-size: 11px; text-align: left; white-space: nowrap; }
+.custom-select-menu button span { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .custom-select-menu button:not(:disabled):hover, .custom-select-menu button.selected { color: #e9fcff; background: #153141; }
 .custom-select-menu button.selected { box-shadow: inset 2px 0 0 var(--cyan); }
 .custom-select-menu button svg { color: var(--cyan); }

@@ -14,10 +14,10 @@ import type { SpeechController } from '../electron/main/voice/speechController'
 import { newConversation } from '../electron/main/ai/conversationRepository'
 import type { CompanionConversation } from '../electron/main/ai/companionRouting'
 const handlers = vi.hoisted(() => new Map<string, (event: IpcMainInvokeEvent, input?: unknown) => unknown>())
-vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, fn: (event: IpcMainInvokeEvent, input?: unknown) => unknown) => handlers.set(channel, fn) } }))
+vi.mock('electron', () => ({ safeStorage: { isEncryptionAvailable: () => false }, app: { getPath: () => '/tmp', once: vi.fn() }, net: { fetch: vi.fn() }, ipcMain: { handle: (channel: string, fn: (event: IpcMainInvokeEvent, input?: unknown) => unknown) => handlers.set(channel, fn) } }))
 vi.mock('../electron/main/logger', () => ({ log: vi.fn() }))
 const methods = { getStatus: vi.fn(), test: vi.fn(), activate: vi.fn(), selectModel: vi.fn(), remove: vi.fn() }
-const controller = { settings: structuredClone(defaultSettings), windows: { all: () => [], owns: (sender: { id: number }) => [1, 2, 3].includes(sender.id), isTrustedURL: (_sender: unknown, url: string) => matchesRendererURL(url, 'file:///athena/index.html'), control: { webContents: { id: 1, on: vi.fn() } }, floating: { webContents: { id: 2 } }, panel: { webContents: { id: 3 } } } } as unknown as AthenaController
+const controller = { settings: structuredClone(defaultSettings), windows: { all: () => [], owns: (sender: { id: number }) => [1, 2, 3].includes(sender.id), isTrustedURL: (_sender: unknown, url: string) => matchesRendererURL(url, 'file:///athena/index.html'), control: { webContents: { id: 1, on: vi.fn() } }, floating: { webContents: { id: 2, on: vi.fn() } }, panel: { webContents: { id: 3 } } } } as unknown as AthenaController
 function event(id = 1, child = false, url = 'file:///athena/index.html'): IpcMainInvokeEvent {
   const frame = { url }
   return { sender: { id, mainFrame: frame }, senderFrame: child ? { url } : frame } as unknown as IpcMainInvokeEvent
@@ -44,10 +44,10 @@ describe('AI IPC authority', () => {
       expect(await handlers.get(channel)!(event(), { engine: 'sesame-csm', action: 'install' })).toMatchObject({ ok: false, message: expect.stringContaining('removed') })
     }
   })
-  it('previews the requested text through the active speech service despite a stale Sesame setting', async () => {
+  it('previews the requested text through the active speech service with the local fallback selected', async () => {
     const old = controller.settings
     const generate = vi.fn(async () => new Uint8Array([82, 73, 70, 70]))
-    controller.settings = { ...structuredClone(defaultSettings), localVoice: { ...defaultSettings.localVoice, engine: 'sesame-csm' } }
+    controller.settings = { ...structuredClone(defaultSettings), localVoice: { ...defaultSettings.localVoice, engine: 'chatterbox-turbo' } }
     const args: Parameters<typeof registerIPC> = [controller, methods as unknown as AIConfiguration, {} as ChatController, {} as PermissionService]
     args[9] = { generate, mimeType: 'audio/wav' }
     registerIPC(...args)
@@ -59,7 +59,7 @@ describe('AI IPC authority', () => {
       expect(generate).toHaveBeenCalledTimes(1)
     } finally { controller.settings = old }
   })
-  it.each([IPC.officialCSM, IPC.higgsTTS, IPC.localVoiceManage, IPC.localVoiceInstall, IPC.localVoicePreview, IPC.localVoiceProfile])('restricts voice management to the trusted control center: %s', async (channel) => {
+  it.each([IPC.localVoiceManage, IPC.localVoiceInstall, IPC.localVoicePreview, IPC.localVoiceProfile])('restricts voice management to the trusted control center: %s', async (channel) => {
     await expect(Promise.resolve().then(() => handlers.get(channel)!(event(2), { action: 'unload' }))).rejects.toThrow()
     await expect(Promise.resolve().then(() => handlers.get(channel)!(event(1, true), { action: 'unload' }))).rejects.toThrow()
   })
@@ -285,7 +285,7 @@ describe('AI IPC authority', () => {
     const thirdParty = { status: vi.fn(async (id: string) => ({ ok: true, status: { active: true, model: profileModel, models: [profileModel] }, message: id })) }
     chat.command({ action: 'configure-model', id: chat.current().id, model: 'model-from-another-provider' })
     const args: Parameters<typeof registerIPC> = [controller, methods as unknown as AIConfiguration, chat, {} as PermissionService]
-    args[30] = thirdParty as never
+    args[28] = thirdParty as never
     registerIPC(...args)
     try {
       const sessionId = chat.current().id
@@ -304,7 +304,7 @@ describe('AI IPC authority', () => {
     const secondRoute = { provider: 'third-party' as const, accountId: crypto.randomUUID() }
     const catalog = { accounts: [firstRoute, secondRoute].map(route => ({ route, enabled: true, state: 'connected', models: [{ id: 'shared-model', available: true }] })) }
     const args: Parameters<typeof registerIPC> = [controller, methods as unknown as AIConfiguration, chat, {} as PermissionService]
-    args[31] = { list: vi.fn(async () => catalog) } as never
+    args[29] = { list: vi.fn(async () => catalog) } as never
     registerIPC(...args)
     try {
       const first = chat.current().id

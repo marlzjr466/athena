@@ -47,7 +47,7 @@ describe('private Athena Chat page', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<AthenaChat />)
     fireEvent.click(await screen.findByRole('combobox', { name: 'Athena Chat project permissions' }))
-    expect(screen.getByRole('option', { name: 'Full Access' })).toHaveAttribute('title', 'Automatically allow permission-controlled operations without asking for confirmation.')
+    expect(screen.getByRole('option', { name: 'Full Access' })).toHaveAttribute('title', 'Full Access\nAutomatically allow permission-controlled operations without asking for confirmation.')
     fireEvent.click(screen.getByRole('option', { name: 'Full Access' }))
     await waitFor(() => expect(api.athenaChatSession).toHaveBeenCalledWith({ action: 'agent-mode', id: sessionId, mode: 'full-access', confirmed: true }))
     expect(confirm).toHaveBeenCalledOnce()

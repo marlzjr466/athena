@@ -18,7 +18,7 @@ beforeEach(() => {
   api.getLocalStatus.mockResolvedValue({ connected: false, message: 'Ollama unavailable', models: [], arch: 'arm64', totalMemoryBytes: 0, freeMemoryBytes: 0, whisperInstalled: false, macSpeechAvailable: false, macVoices: [] })
   api.getAcademy.mockResolvedValue({ profiles: [], sources: [], evaluations: [] })
   api.onLocalProgress.mockReturnValue(() => {})
-  api.getLocalVoiceStatus.mockResolvedValue({ runtime: 'ready', engines: { 'sesame-csm': { status: 'installed' }, 'chatterbox-turbo': { status: 'installed' }, 'sesame-csm-official': { status: 'installed' }, 'higgs-tts-3-4b': { status: 'not-installed' } }, profiles: [] })
+  api.getLocalVoiceStatus.mockResolvedValue({ runtime: 'ready', engines: { 'chatterbox-turbo': { status: 'installed' } }, profiles: [] })
   api.manageLocalVoice.mockResolvedValue({ ok: true, studio: { examples: [], samples: [] } })
   api.onLocalVoiceProgress.mockReturnValue(() => {}); api.onLocalVoicePlaybackStopped.mockReturnValue(() => {})
   useAthena.setState({ page: 'companion', error: null, snapshot: { settings: defaultSettings, state: 'idle' } as Snapshot })

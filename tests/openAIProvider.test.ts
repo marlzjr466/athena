@@ -259,6 +259,16 @@ describe('OpenAI Responses streaming provider', () => {
     const retried = JSON.parse(request.mock.calls[2][1]!.body as string)
     expect(retried.input).toContainEqual({ type: 'function_call_output', call_id: 'call-1', output: '{"files":["src/main.ts"]}' })
   })
+  it('shows a replayed progress prefix only once across an interrupted stream', async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(sse({type:'response.output_text.delta',delta:'Checking the fixture.'}))
+      .mockResolvedValueOnce(sse({type:'response.output_text.delta',delta:'Checking '},{type:'response.output_text.delta',delta:'the fixture. Verified.'},{type:'response.completed',response:{output:[]}}))
+    const provider = new OpenAIProvider('oauth-test','gpt-6.1-sol',request,undefined,true)
+    let visible = ''
+    for await (const chunk of provider.streamMessage(input,{contextSettings:{...contextDefaults(),maxStreamRecoveries:1}})) if (chunk.type === 'text') visible += chunk.text
+    expect(visible).toBe('Checking the fixture. Verified.')
+  })
+
   it('recovers an interrupted response after a completed edit and records sanitized late-task diagnostics', async () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(sse({ type: 'response.completed', response: { output: [{ id: 'edit-1', type: 'function_call', namespace: 'athena', name: 'edit_file', call_id: 'edit-call', arguments: '{"path":"src/a.ts"}', status: 'completed' }] } }))

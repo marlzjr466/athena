@@ -22,7 +22,7 @@ export class UnifiedAccounts {
   private cached: UnifiedAccountCatalog = { accounts: [], refreshedAt: 0 }
   private pending: Promise<UnifiedAccountCatalog> | null = null
   private pendingIsRefresh = false
-  constructor(private services: { ai: AIConfiguration; chatGPT: ChatGPTAuth; cursor: CursorACPService; copilot: CopilotService; claude: ClaudeAPIConfiguration; antigravity: AntigravityACPService; thirdParty: ThirdPartyInferenceService }, private enabledPreferences: () => Record<string, boolean> = () => ({}), private statusTimeoutMs = 8_000) {}
+  constructor(private services: { codex?: import('./codexCLIService').CodexCLIService; ai: AIConfiguration; chatGPT: ChatGPTAuth; cursor: CursorACPService; copilot: CopilotService; claude: ClaudeAPIConfiguration; antigravity: AntigravityACPService; thirdParty: ThirdPartyInferenceService }, private enabledPreferences: () => Record<string, boolean> = () => ({}), private statusTimeoutMs = 8_000) {}
   async list(refresh = false): Promise<UnifiedAccountCatalog> {
     // Keep the account/model snapshot stable while users move between screens
     // and conversations. Account mutations invalidate it; Settings also has
@@ -81,6 +81,17 @@ export class UnifiedAccounts {
     const value = <T>(index: number): T | undefined => sources[index].status === 'fulfilled' ? (sources[index] as PromiseFulfilledResult<T>).value : undefined
     const accounts: ConnectedAccount[] = []
     const chatgpt = value<Awaited<ReturnType<typeof s.chatGPT.status>>>(0)
+    if (s.codex) {
+      const codex = await s.codex.status(refresh)
+      const route = {provider:'subscription' as const,accountId:'codex-local'}
+      accounts.push({route,name:'Codex · ChatGPT',identity:codex.identity ?? undefined,plan:codex.plan ?? undefined,enabled:this.isEnabled(route),state:codex.authenticated?'connected':'disconnected',message:codex.message,models:codex.models.map(m=>({id:m.id,label:m.displayName,efforts:['auto',...m.efforts],available:codex.authenticated}))})
+      // Preserve saved account references without advertising the old engine.
+      for (const account of chatgpt?.accounts ?? []) {
+        const route={provider:'subscription' as const,accountId:account.id}
+        const matches=Boolean(codex.authenticated && account.email?.toLowerCase()===codex.identity?.toLowerCase())
+        accounts.push({route,name:'ChatGPT · Codex',identity:account.email ?? undefined,enabled:this.isEnabled(route),state:matches?'connected':'unavailable',message:matches?'Executed by the native Codex runtime.':'Sign in to Codex with this account before continuing.',models:codex.models.map(m=>({id:m.id,label:m.displayName,efforts:['auto',...m.efforts],available:matches}))})
+      }
+    } else {
     for (const account of chatgpt?.accounts ?? []) {
       const route = { provider: 'subscription' as const, accountId: account.id }
       const canUseAccount = account.active && account.connected && account.planEnabled && account.enabled
@@ -91,6 +102,7 @@ export class UnifiedAccounts {
         message: account.active ? account.message : `${account.message} Select this account in Settings → AI before using its models.`,
         models: account.models.map(model => ({ id: model.slug, label: model.displayName, ...(model.contextWindow ? { contextLimits: { contextWindow: model.contextWindow, source: 'reported' as const } } : {}), available: canUseAccount, ...(knownReasoningEfforts('subscription', model.slug) ? { efforts: knownReasoningEfforts('subscription', model.slug)! } : {}) })),
       })
+    }
     }
     const cursor = value<Awaited<ReturnType<typeof s.cursor.status>>>(1)
     if (cursor?.authenticated || previous.has('cursor:cursor')) {

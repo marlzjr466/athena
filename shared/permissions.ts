@@ -6,6 +6,7 @@ export type AthenaPermission = z.infer<typeof permissionSchema>
 export type PermissionStatus = 'not-requested' | 'allowed' | 'denied' | 'restricted' | 'unavailable'
 export type OSPermissionStatus = PermissionStatus | 'not-required'
 export const permissionInputSchema = z.object({ permission: permissionSchema }).strict()
+export const permissionSettingsSchema = permissionInputSchema.extend({ operation: z.enum(['settings', 'reveal-app']).optional() }).strict()
 export const permissionPreferenceSchema = permissionInputSchema.extend({ enabled: z.boolean() }).strict()
 export type PermissionPreferences = Record<AthenaPermission, boolean>
 export const filesystemAccessSchema = z.enum(['project-only', 'full-read-only', 'full-read-write'])
@@ -22,6 +23,7 @@ export interface PermissionInfo {
   canRequest: boolean
   canOpenSettings: boolean
   detail: string
+  appPath?: string
 }
 // Only host-created, unambiguous operations are eligible. No shell, deletion,
 // credentials, screen sharing, Git mutation, or generic provider approvals.

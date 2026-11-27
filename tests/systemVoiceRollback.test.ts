@@ -12,8 +12,9 @@ import { defaultSettings } from '../shared/settings'
 describe('neural voice rollback', () => {
   it('preserves the original Chatterbox voice without a system fallback or legacy MLX manager', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
-    expect(pkg.build.extraResources[0].filter).toContain('chatterbox.py')
-    expect(pkg.build.extraResources[0].filter).not.toContain('**/*')
+    const voiceResource = pkg.build.extraResources.find((entry: {from:string}) => entry.from === 'voice-service')
+    expect(voiceResource?.filter).toContain('chatterbox.py')
+    expect(voiceResource.filter).not.toContain('**/*')
     const main = readFileSync('electron/main/main.ts', 'utf8')
     expect(main).toContain('new ChatterboxSpeech(')
     expect(main).not.toContain('new LocalMacSpeech(')

@@ -5,6 +5,7 @@ import { Section, SettingRow, Toggle } from '../../components/ui/Controls'
 import { desktop, isDesktop } from '../../services/desktop'
 import { emptyAIStatus, type AIResult } from '../../../shared/ai'
 import '../../styles/ai.css'
+import { MediaGenerationSettings } from './MediaGenerationSettings'
 import { GenerationSettings } from './GenerationSettings'
 import { ContextSettings } from './ContextSettings'
 import { connectChat, useChat } from '../../store/chatStore'
@@ -181,6 +182,7 @@ export function AISettings() {
     </Section>
     <ProviderUsageDashboard provider="openai-api" account={status.hasKey ? "Saved API key · account-scoped local receipts" : "Not configured"} connected={status.active} connectionVersion={status.lastVerifiedAt} />
     <GenerationSettings model={chat.snapshot.config?.model ?? status.model} /></>}
+    <MediaGenerationSettings />
     <WebToolsSettings openAIConnectionVersion={status.lastVerifiedAt} />
     <AutomationPermissionsSettings />
     {backgroundTasks && <Section title="Background tasks" description="Keep independent conversations running when you switch chats or hide Athena. Local inference remains separately bounded.">

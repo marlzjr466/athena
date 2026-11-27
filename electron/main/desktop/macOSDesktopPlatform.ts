@@ -1,9 +1,14 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { Notification, systemPreferences } from 'electron'
+import { app as electronApp, Notification, systemPreferences } from 'electron'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { APPLICATIONS, appIdentifierSchema, webURLSchema, notificationActionSchema, type AccessibilityActionResult, type AccessibilityInspection, type AppIdentifier, type DesktopActionResult } from '../../../shared/desktopActions'
-import type { DesktopPlatform } from './desktopPlatform'
+import type { DesktopPlatform, NativePageRequest } from './desktopPlatform'
+import type { BrowserApp } from './desktopContext'
+import { chooseWindow, windowRequest, workspaceResultSchema, workspaceStateSchema, type WorkspaceRequest } from './desktopContext'
+import { desktopRectSchema } from '../../../shared/desktopActions'
+import { ChatError } from '../ai/AIProvider'
 import { openMacApplicationFolder } from './vscodeApplication'
 
 const executeFile = promisify(execFile)
@@ -25,64 +30,22 @@ function run(argv) {
   return JSON.stringify({ running: $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundle).count > 0, focused: false });
 }`
 const appResult = z.object({ running: z.boolean(), focused: z.boolean() }).strict()
-const accessibilityResult = z.union([
-  z.object({ app: z.string(), window: z.string(), elements: z.array(z.object({ label: z.string(), role: z.string(), enabled: z.boolean(), value: z.string().optional() }).strict()).max(120), verified: z.boolean(), changed: z.boolean(), message: z.string() }).strict(),
+export const accessibilityResult = z.union([
+  z.object({ app: z.string(), window: z.string(), pageURL:z.string().optional(), pageReference:z.string().optional(), pageBounds:desktopRectSchema.optional(), windowToken: z.string().optional(), inputIssued:z.boolean().optional(), elements: z.array(z.object({ label: z.string(), role: z.string(), enabled: z.boolean(), focused:z.boolean().optional(), searchField:z.boolean().optional(), searchFieldId:z.string().max(128).optional(), searchValueStamp:z.string().max(128).optional(), bounds: desktopRectSchema.optional(), value: z.string().optional() }).strict()).max(120), verified: z.boolean(), changed: z.boolean(), message: z.string() }).strict(),
   z.object({ error: z.string() }).strict(),
 ])
-const ACCESSIBILITY_SCRIPT = `function run(argv) {
-  var bundle = argv[0], action = argv[1], selector = argv[2], text = argv[3];
-  var events = Application('System Events');
-  var processes = events.processes.whose({ bundleIdentifier: bundle })();
-  if (!processes.length) return JSON.stringify({ error: 'The selected application is not running.' });
-  var process = processes[0], windows = process.windows();
-  if (!windows.length) return JSON.stringify({ error: 'The selected application has no accessible window.' });
-  function read(element, property) { try { var value = element[property](); if (value === null || value === undefined) return ''; return typeof value === 'string' ? value : ObjC.unwrap(value); } catch (_) { return ''; } }
-  function list() {
-    var output = [];
-    windows = process.windows();
-    for (var w = 0; w < windows.length; w++) {
-      var descendants = []; try { descendants = windows[w].entireContents(); } catch (_) {}
-      for (var i = 0; i < descendants.length && output.length < 120; i++) {
-        var element = descendants[i], role = String(read(element, 'role')), name = String(read(element, 'name'));
-        var label = String(read(element, 'description')) || name || String(read(element, 'title'));
-        if (!label) continue;
-        var value = role.indexOf('Secure') >= 0 ? '' : String(read(element, 'value'));
-        output.push({ label: label.slice(0, 160), role: role.slice(0, 80), enabled: read(element, 'enabled') !== false, ...(value && role.indexOf('Secure') < 0 ? { value: value.slice(0, 500) } : {}) });
-      }
-    }
-    return output;
-  }
-  var before = list(), title = String(read(windows[0], 'name') || read(windows[0], 'title'));
-  if (action === 'inspect') return JSON.stringify({ app: bundle, window: title, elements: before, verified: true, changed: false, message: 'Accessible controls were read.' });
-  var matches = [];
-  if (action !== 'shortcut') for (var wi = 0; wi < windows.length; wi++) { var children = []; try { children = windows[wi].entireContents(); } catch (_) {} for (var j = 0; j < children.length; j++) { var label = String(read(children[j], 'description') || read(children[j], 'name') || read(children[j], 'title')); if (label === selector) matches.push(children[j]); } }
-  if (action !== 'shortcut' && matches.length !== 1) return JSON.stringify({ app: bundle, window: title, elements: before, verified: false, changed: false, message: matches.length ? 'More than one accessible control has that exact label.' : 'No accessible control has that exact label.' });
-  try {
-    var element = matches[0];
-    if (action === 'click') element.click();
-    else if (action === 'set-text') { if (String(read(element, 'role')).indexOf('Secure') >= 0) throw new Error('Secure text controls are unavailable.'); element.value = text; }
-    else if (action === 'shortcut') {
-      process.frontmost = true;
-      var map = { copy:['c',['command down']], paste:['v',['command down']], 'select-all':['a',['command down']], save:['s',['command down']], undo:['z',['command down']], redo:['z',['command down','shift down']], enter:['return',[]], escape:['escape',[]], tab:['tab',[]] };
-      var keys = map[selector]; if (!keys) throw new Error('Unsupported shortcut.');
-      events.keystroke(keys[0], keys[1].length ? { using: keys[1] } : {});
-    }
-    var after = list(), afterTitle = String(read(process.windows()[0], 'name') || read(process.windows()[0], 'title'));
-    if (action === 'set-text') { var actual = String(read(element, 'value')); return JSON.stringify({ app: bundle, window: afterTitle, elements: after, verified: actual === text, changed: actual === text, message: actual === text ? 'The accessible text value matches the requested text.' : 'The application did not retain the requested text.' }); }
-    var changed = JSON.stringify(before) !== JSON.stringify(after) || title !== afterTitle;
-    return JSON.stringify({ app: bundle, window: afterTitle, elements: after, verified: changed, changed, message: changed ? 'The accessible application state changed after the action.' : 'The action was invoked, but Athena could not verify a visible state change.' });
-  } catch (error) { return JSON.stringify({ app: bundle, window: title, elements: before, verified: false, changed: false, message: 'macOS could not invoke that accessible control.' }); }
-}`
+
 
 export class MacOSDesktopPlatform implements DesktopPlatform {
+  private observed = new Map<string, { token: string; at: number }>()
   private notifications = new Set<Notification>()
   private abort = new AbortController()
   private lastNotification = -Infinity
-  constructor(private platform = process.platform, private run: CommandRunner = async (file, args, options) => executeFile(file, args, { ...options, encoding: 'utf8' })) {}
+  constructor(private platform = process.platform, private run: CommandRunner = async (file, args, options) => executeFile(file, args, { ...options, encoding: 'utf8' }), private accessibilityHelper?: string, private windowAccess:()=>boolean=()=>false) {}
 
-  private signal(signal: AbortSignal): AbortSignal {
-    if (this.platform !== 'darwin') throw new Error('Desktop actions currently support macOS only.')
-    const combined = AbortSignal.any([signal, this.abort.signal, AbortSignal.timeout(8_000)])
+  private signal(signal: AbortSignal, timeoutMs=8_000): AbortSignal {
+    if (this.platform !== 'darwin') throw new ChatError('Desktop actions currently support macOS only.')
+    const combined = AbortSignal.any([signal, this.abort.signal, AbortSignal.timeout(timeoutMs)])
     combined.throwIfAborted()
     return combined
   }
@@ -92,20 +55,42 @@ export class MacOSDesktopPlatform implements DesktopPlatform {
     })
     return appResult.parse(JSON.parse(stdout))
   }
-  async openApplication(input: AppIdentifier, signal: AbortSignal): Promise<DesktopActionResult> {
-    const app = appIdentifierSchema.parse(input), deadline = this.signal(signal), target = APPLICATIONS[app]
-    await this.run('/usr/bin/open', ['-b', target.bundleId], { timeout: 5_000, maxBuffer: 16 * 1024, signal: deadline })
-    const result = await this.inspect(app, false, deadline)
-    return result.running
-      ? { ok: true, status: 'completed', message: `${target.name} is running. Its foreground position was not checked.` }
-      : { ok: false, status: 'failed', message: `macOS accepted the launch request, but ${target.name} could not be confirmed running. Check the app before retrying.` }
+  private helperPath() {
+    return this.accessibilityHelper ?? (electronApp?.isPackaged ? join(process.resourcesPath,'native','athena-desktop-accessibility') : join(electronApp?.getAppPath() ?? process.cwd(),'build','native','athena-desktop-accessibility'))
   }
-  async focusApplication(input: AppIdentifier, signal: AbortSignal): Promise<DesktopActionResult> {
-    const app = appIdentifierSchema.parse(input), target = APPLICATIONS[app]
-    const result = await this.inspect(app, true, this.signal(signal))
-    return result.focused
-      ? { ok: true, status: 'completed', message: `${target.name} is now the frontmost application.` }
-      : { ok: false, status: 'failed', message: result.running ? `${target.name} is running, but macOS did not confirm switching to it.` : `${target.name} is not running. Ask to open it first.` }
+  private async nativeWorkspace(bundle:string, request:WorkspaceRequest, signal:AbortSignal) {
+    // Allow the helper's bounded navigation observation to finish and report an
+    // uncertain result, rather than killing it at the same eight-second mark.
+    const timeout=request.url?15_000:8_000
+    const {stdout}=await this.run(this.helperPath(),[bundle,'workspace',JSON.stringify(request)],{encoding:'utf8',timeout,maxBuffer:512*1024,signal:this.signal(signal,timeout)})
+    const value=JSON.parse(stdout)
+    if(typeof value?.error==='string')throw new ChatError(value.error)
+    return value as unknown
+  }
+  workspace(app:AppIdentifier, request:WorkspaceRequest, signal:AbortSignal) {
+    return this.nativeWorkspace(APPLICATIONS[appIdentifierSchema.parse(app)].bundleId,request,signal)
+  }
+  private async activate(bundle:string, name:string, signal:AbortSignal, launch:boolean, path?:string):Promise<DesktopActionResult> {
+    const observe={operation:'observe' as const,details:this.windowAccess(),path}
+    let state=workspaceStateSchema.parse(await this.nativeWorkspace(bundle,observe,signal))
+    if (!state.running) {
+      if(!launch)return {ok:false,status:'failed',message:name+' is not running.'}
+      await this.run('/usr/bin/open',path?[path]:['-b',bundle],{timeout:5000,maxBuffer:4096,signal})
+      state=workspaceStateSchema.parse(await this.nativeWorkspace(bundle,observe,signal))
+      if(!state.running)return {ok:false,status:'failed',message:'macOS accepted the launch. The running application could not be verified.'}
+    }
+    const win=chooseWindow(state)
+    if(state.focused && !win?.minimized && !win?.hidden)return {ok:true,status:'completed',message:name+' is already in the foreground.'}
+    const result=workspaceResultSchema.parse(await this.nativeWorkspace(bundle,{operation:'activate',...windowRequest(state,win),details:observe.details,path},signal))
+    return {...result,status:result.ok?'completed':'failed',message:result.ok?name+' is in the foreground.':result.message}
+  }
+  openApplication(input:AppIdentifier,signal:AbortSignal) {
+    const app=APPLICATIONS[appIdentifierSchema.parse(input)]
+    return this.activate(app.bundleId,app.name,this.signal(signal),true)
+  }
+  focusApplication(input:AppIdentifier,signal:AbortSignal) {
+    const app=APPLICATIONS[appIdentifierSchema.parse(input)]
+    return this.activate(app.bundleId,app.name,this.signal(signal),false)
   }
   async openWorkspace(path: string, app: 'vscode' | 'finder', signal: AbortSignal): Promise<DesktopActionResult> {
     const deadline = this.signal(signal)
@@ -116,17 +101,52 @@ export class MacOSDesktopPlatform implements DesktopPlatform {
       ? { ok: true, status: 'completed', message: `${app === 'vscode' ? 'Visual Studio Code' : 'Finder'} is running and macOS accepted the project folder. The folder view itself was not inspected.` }
       : { ok: false, status: 'failed', message: 'macOS accepted the folder request, but the application could not be confirmed running.' }
   }
+  private async installedBundle(target:import('./installedApplications').InstalledApplication,deadline:AbortSignal){
+    const info=await this.run('/usr/bin/plutil',['-extract','CFBundleIdentifier','raw','-o','-',join(target.path,'Contents','Info.plist')],{signal:deadline,timeout:3000,maxBuffer:2048})
+    const bundle=info.stdout.trim()
+    if (!/^[a-z\d][a-z\d.-]+$/i.test(bundle) || Object.values(APPLICATIONS).some(app=>app.bundleId===bundle)) throw new ChatError('Use the registered target for this application.')
+    return bundle
+  }
+  async workspaceInstalled(target:import('./installedApplications').InstalledApplication,request:WorkspaceRequest,signal:AbortSignal){
+    const bundle=await this.installedBundle(target,signal)
+    return this.nativeWorkspace(bundle,{...request,path:target.path},signal)
+  }
+  async installedAction(target:import('./installedApplications').InstalledApplication,operation:import('./installedApplications').InstalledOperation,label:string,signal:AbortSignal,text='') {
+    const deadline=this.signal(signal)
+    const bundle=await this.installedBundle(target,deadline)
+    if (operation==='open') return this.activate(bundle,target.name,deadline,true,target.path)
+    const path=await this.run('/usr/bin/osascript',['-l','JavaScript','-e', "ObjC.import('AppKit');function run(argv){var a=$.NSWorkspace.sharedWorkspace.frontmostApplication; return String(ObjC.unwrap(a.bundleURL.path))}",bundle],{signal:deadline,timeout:3000,maxBuffer:4096})
+    if (path.stdout.trim()!==target.path) throw new ChatError('The target application could not be verified in the foreground. Focus it before continuing.')
+    const result=await this.accessibleTarget(target.key,bundle,operation,label,text,deadline,target.path)
+    return {ok:result.verified,message:result.message,...(operation==='inspect'?{elements:result.elements,windowToken:result.windowToken}:{})}
+  }
   private async accessibility(app: AppIdentifier, action: string, selector: string, text: string, signal: AbortSignal) {
-    const target = appIdentifierSchema.parse(app), deadline = this.signal(signal)
-    if (!systemPreferences.isTrustedAccessibilityClient(false)) throw new Error('Enable Accessibility UI Control in Settings → Privacy, then allow Athena in macOS Accessibility settings.')
-    const { stdout } = await this.run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', ACCESSIBILITY_SCRIPT, APPLICATIONS[target].bundleId, action, selector, text], { timeout: 8_000, maxBuffer: 96 * 1024, signal: deadline })
+    const target = appIdentifierSchema.parse(app)
+    return this.accessibleTarget(target,APPLICATIONS[target].bundleId,action,selector,text,this.signal(signal))
+  }
+  async browserPage(app:BrowserApp,request:NativePageRequest,signal:AbortSignal) {
+    const result=await this.accessibleTarget(app+':page',APPLICATIONS[app].bundleId,'web-'+request.action,request.label??'',request.text??'',this.signal(signal),undefined,request.token??'')
+    return {ok:result.verified,verified:result.verified,message:result.message,pageURL:result.pageURL,pageReference:result.pageReference,pageBounds:result.pageBounds,windowToken:result.windowToken,elements:result.elements,inputIssued:result.inputIssued}
+  }
+  private async accessibleTarget(target:string,bundle:string,action:string,selector:string,text:string,deadline:AbortSignal,path?:string,explicitToken?:string) {
+    if (!systemPreferences.isTrustedAccessibilityClient(false)) throw new ChatError('Enable Accessibility UI Control in Settings → Privacy, then allow Athena in macOS Accessibility settings.')
+    const observation=this.observed.get(target)
+    const token=explicitToken ?? (action!=='inspect' && observation && Date.now()-observation.at<60_000 ? observation.token : '')
+    const { stdout } = await this.run(this.helperPath(), [bundle,action,selector,text,token,...(path?[path]:[])], { timeout: 8_000, maxBuffer: 96 * 1024, signal: deadline }).catch(error => {
+      this.observed.delete(target)
+      if (deadline.aborted) throw new ChatError(deadline.aborted ? 'Desktop action cancelled. Inspect the target before retrying.' : 'The application did not respond within the desktop action deadline. Inspect it before retrying.')
+      if (/-1743|not authorized.*apple events/i.test(String(error?.stderr ?? ''))) throw new ChatError('macOS Automation permission is missing. Allow Athena to control System Events under System Settings → Privacy & Security → Automation. Accessibility permission is separate.')
+      throw new ChatError('macOS could not inspect or control this application. Check Accessibility and Automation permissions separately, select the target window, then inspect again.')
+    })
     const result = accessibilityResult.parse(JSON.parse(stdout))
-    if ('error' in result) throw new Error(result.error)
+    if ('error' in result) throw new ChatError(result.error)
+    if (action === 'inspect' && result.windowToken) this.observed.set(target, { token: result.windowToken, at: Date.now() })
+    else if (action !== 'inspect') this.observed.delete(target)
     return result
   }
   async inspectAccessibility(app: AppIdentifier, signal: AbortSignal): Promise<AccessibilityInspection> {
     const result = await this.accessibility(app, 'inspect', '', '', signal)
-    return { app: APPLICATIONS[appIdentifierSchema.parse(app)].name, window: result.window, elements: result.elements }
+    return { app: APPLICATIONS[appIdentifierSchema.parse(app)].name, window: result.window, elements: result.elements, windowToken: result.windowToken }
   }
   async clickAccessibleElement(app: AppIdentifier, label: string, signal: AbortSignal): Promise<AccessibilityActionResult> {
     const result = await this.accessibility(app, 'click', label, '', signal)
@@ -139,6 +159,18 @@ export class MacOSDesktopPlatform implements DesktopPlatform {
   async pressShortcut(app: AppIdentifier, shortcut: string, signal: AbortSignal): Promise<AccessibilityActionResult> {
     const result = await this.accessibility(app, 'shortcut', shortcut, '', signal)
     return { ok: result.verified, verified: result.verified, message: result.message }
+  }
+  async manageWindow(app:AppIdentifier, operation:import('../../../shared/desktopActions').WindowOperation, point:string, signal:AbortSignal) {
+    const result=await this.accessibility(app,'window',operation,point,signal)
+    return {ok:result.verified,verified:result.verified,message:result.message}
+  }
+  async scrollAccessible(app: AppIdentifier, label: string, direction: 'up' | 'down', signal: AbortSignal): Promise<AccessibilityActionResult> {
+    const result = await this.accessibility(app, 'scroll', label, direction, signal)
+    return { ok: result.verified, verified: result.verified, message: result.message }
+  }
+  async runningApplications(signal: AbortSignal) {
+    const response=await this.nativeWorkspace('',{operation:'running'},signal)
+    return z.object({apps:z.array(z.object({app:z.string(),name:z.string(),active:z.boolean()})).max(200)}).parse(response).apps
   }
   async openURL(input: string, signal: AbortSignal): Promise<DesktopActionResult> {
     const url = webURLSchema.parse(input), deadline = this.signal(signal)
